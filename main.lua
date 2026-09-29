@@ -12,16 +12,15 @@ local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
 -- ==============================================================================
--- COORDENADAS PREDEFINIDAS DEL REACTOR (Pega aquí tus datos una vez obtenidos)
+-- OFFSETS LOCALES RELATIVOS A LA ORIENTACIÓN (Adelante, Derecha, Vertical)
 -- ==============================================================================
-local HARDCODED_REACTOR = {
-    Door = nil,       -- Ej: Vector3.new(120.5, 4.2, -350.1)
-    Center = nil,     -- Ej: Vector3.new(145.2, 3.8, -380.0)
-    Outside = nil,    -- Ej: Vector3.new(50.0, 10.0, -100.0)
-    Chests = {
-        -- Ej: Vector3.new(150.1, -12.4, -390.2),
-        -- Ej: Vector3.new(160.8, -12.4, -385.0),
-    }
+-- Vector3.new(Derecha, Altura_Y, Adelante)
+local LOCAL_CHEST_OFFSETS = {
+    Vector3.new(57.3, -18.9, -3.5),   -- Cofre 1
+    Vector3.new(60.3, -19.0, 20.6),   -- Cofres 2 y 3
+    Vector3.new(60.3, -19.0, 20.6),   -- Cofres 4 y 5
+    Vector3.new(-34.0, -38.7, 68.6),  -- Cofre 6
+    Vector3.new(-36.2, -38.7, 61.0)   -- Cofre 7
 }
 
 -- Variables de configuración
@@ -32,9 +31,9 @@ local Config = {
     LateralDist = 14,
     MoveSpeed = 45,
 
-    -- Teletransporte de Ítems (Telaraña)
+    -- Teletransporte de Ítems
     AutoSendItems = false,
-    CollectRadius = 25,
+    CollectRadius = 22,
     OnlyScrap = true,
     ChainTeleport = true,
     SingleTeleportLimit = false,
@@ -54,27 +53,29 @@ local Config = {
     -- Reactor Nuclear
     ReactorFarmEnabled = false,
     LootChests = true,
-    ChestWaitTime = 1.2,
+    ChestWaitTime = 1.3,
     ReactorResetWaitTime = 10.0,
     ReactorDetectionRadius = 130
 }
 
 local CurrentTarget = nil
 local TargetHighlight = nil
-local DeliveryPoints = {}   -- Bolitas de entrega
-local Waypoints = {}        -- Puntos amarillos
+local DeliveryPoints = {}
+local Waypoints = {}
 local WaypointMarkers = {}
 local TeleportedTracker = {}
 
--- Puntos del Reactor (Carga los predefinidos si existen)
+-- Puntos del Reactor (Valores iniciales guardados)
 local NuclearPoints = {
-    Door = HARDCODED_REACTOR.Door,
-    Center = HARDCODED_REACTOR.Center,
-    Outside = HARDCODED_REACTOR.Outside
+    Door = Vector3.new(310.4, 5.5, 1201.0),
+    Center = Vector3.new(353.8, 5.2, 1183.9),
+    Outside = nil
 }
 local NuclearMarkers = {}
-local ChestPoints = HARDCODED_REACTOR.Chests or {}
+local CalculatedChests = {}
 local ChestMarkers = {}
+
+local CachedGeneratorPos = nil
 
 local function clearHighlight()
     if TargetHighlight then
@@ -96,17 +97,51 @@ local function applyHighlight(obj)
     end
 end
 
--- Función para copiar texto al portapapeles y notificar
-local function copyToClipboard(text, label)
-    if setclipboard then
-        setclipboard(text)
+-- Cálculo de rotación real usando Puerta y Centro
+local function recalculateRotatedChests()
+    if not NuclearPoints.Door or not NuclearPoints.Center then return end
+
+    for _, m in ipairs(ChestMarkers) do
+        if m and m.Parent then m:Destroy() end
     end
-    print("\n--- [ZOMBIE HUB: " .. label .. "] ---\n" .. text .. "\n----------------------------------")
-    Fluent:Notify({
-        Title = "Copiado al Portapapeles",
-        Content = label .. " listo para pegar en GitHub o consola (F9).",
-        Duration = 3.5
-    })
+    table.clear(CalculatedChests)
+    table.clear(ChestMarkers)
+
+    local door = NuclearPoints.Door
+    local center = NuclearPoints.Center
+
+    -- Vector hacia adelante en el plano horizontal
+    local forwardDir = Vector3.new(center.X - door.X, 0, center.Z - door.Z).Unit
+    local upDir = Vector3.new(0, 1, 0)
+    -- Vector hacia la derecha relativo al edificio
+    local rightDir = forwardDir:Cross(upDir).Unit
+
+    for i, offset in ipairs(LOCAL_CHEST_OFFSETS) do
+        local rightDist = offset.X
+        local heightDist = offset.Y
+        local forwardDist = offset.Z
+
+        -- Sumar los vectores según la rotación exacta del reactor
+        local worldPos = center + (rightDir * rightDist) + (forwardDir * forwardDist) + Vector3.new(0, heightDist, 0)
+        table.insert(CalculatedChests, worldPos)
+
+        local marker = Instance.new("Part")
+        marker.Name = "RotatedChestMarker_" .. i
+        marker.Shape = Enum.PartType.Ball
+        marker.Size = Vector3.new(2.2, 2.2, 2.2)
+        marker.Material = Enum.Material.Neon
+        marker.Color = Color3.fromRGB(0, 200, 255)
+        marker.Anchored = true
+        marker.CanCollide = false
+        marker.Position = worldPos
+        marker.Parent = workspace
+        table.insert(ChestMarkers, marker)
+    end
+end
+
+-- Generar cofres si los puntos iniciales están definidos
+if NuclearPoints.Door and NuclearPoints.Center then
+    recalculateRotatedChests()
 end
 
 -- 1. VENTANA PRINCIPAL
@@ -125,7 +160,6 @@ local Tabs = {
     Items = Window:AddTab({ Title = "Teletransporte", Icon = "box" }),
     Patrol = Window:AddTab({ Title = "Ruta Amarilla", Icon = "map-pin" }),
     Reactor = Window:AddTab({ Title = "Reactor Nuclear", Icon = "flame" }),
-    Coords = Window:AddTab({ Title = "Config / Coords", Icon = "clipboard" }),
     Misc = Window:AddTab({ Title = "Utilidades", Icon = "wrench" })
 }
 
@@ -165,7 +199,7 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     Callback = function(Value) Config.MoveSpeed = Value end
 })
 
--- PESTAÑA 2: TELETRANSPORTE Y TELARAÑA
+-- PESTAÑA 2: TELETRANSPORTE
 Tabs.Items:AddSection("Red de Puntos de Entrega (Bolitas)")
 
 Tabs.Items:AddButton({
@@ -306,7 +340,7 @@ Tabs.Patrol:AddButton({
 })
 
 -- PESTAÑA 4: REACTOR NUCLEAR
-Tabs.Reactor:AddSection("Fijar los 3 Puntos Naranjas")
+Tabs.Reactor:AddSection("Fijar Puntos y Orientación")
 
 local function spawnOrangeMarker(pos, name)
     if NuclearMarkers[name] and NuclearMarkers[name].Parent then
@@ -326,95 +360,45 @@ local function spawnOrangeMarker(pos, name)
 end
 
 Tabs.Reactor:AddButton({
-    Title = "1. Fijar Punto Puerta",
+    Title = "1. Fijar Punto Puerta (Punto A)",
+    Description = "Establece el inicio del vector de dirección",
     Callback = function()
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if root then
             NuclearPoints.Door = root.Position
             spawnOrangeMarker(root.Position, "Door")
-            Fluent:Notify({ Title = "Punto 1 Guardado", Content = "Punto de la puerta fijado.", Duration = 2 })
+            recalculateRotatedChests()
+            Fluent:Notify({ Title = "Puerta Fijada", Content = "Punto 1 guardado.", Duration = 2 })
         end
     end
 })
 
 Tabs.Reactor:AddButton({
-    Title = "2. Fijar Punto Centro",
+    Title = "2. Fijar Punto Centro (Punto B)",
+    Description = "Orienta el reactor y calcula los 7 cofres rotados",
     Callback = function()
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if root then
             NuclearPoints.Center = root.Position
             spawnOrangeMarker(root.Position, "Center")
-            Fluent:Notify({ Title = "Punto 2 Guardado", Content = "Centro del reactor fijado.", Duration = 2 })
+            recalculateRotatedChests()
+            Fluent:Notify({ Title = "Centro Fijado", Content = "Cofres recalculados con orientación real.", Duration = 3 })
         end
     end
 })
 
 Tabs.Reactor:AddButton({
-    Title = "3. Fijar Punto Lejos",
+    Title = "3. Fijar Punto Lejos (Reset Bioma)",
     Callback = function()
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if root then
             NuclearPoints.Outside = root.Position
             spawnOrangeMarker(root.Position, "Outside")
-            Fluent:Notify({ Title = "Punto 3 Guardado", Content = "Punto lejano de salida fijado.", Duration = 2 })
+            Fluent:Notify({ Title = "Salida Fijada", Content = "Punto 3 exterior fijado.", Duration = 2 })
         end
-    end
-})
-
-Tabs.Reactor:AddSection("Ruta de Cofres Subterráneos")
-
-Tabs.Reactor:AddToggle("LootChestsToggle", {
-    Title = "Hacer Ruta de Cofres tras Limpiar",
-    Default = true,
-    Callback = function(Value) Config.LootChests = Value end
-})
-
-Tabs.Reactor:AddSlider("ChestWaitSlider", {
-    Title = "Tiempo de espera en cada cofre (Seg)",
-    Default = 1.2,
-    Min = 0.5,
-    Max = 4.0,
-    Rounding = 1,
-    Callback = function(Value) Config.ChestWaitTime = Value end
-})
-
-Tabs.Reactor:AddButton({
-    Title = "+ Agregar Posición de Cofre Aquí",
-    Callback = function()
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            table.insert(ChestPoints, root.Position)
-
-            local marker = Instance.new("Part")
-            marker.Name = "ChestMarker_" .. #ChestPoints
-            marker.Shape = Enum.PartType.Ball
-            marker.Size = Vector3.new(2.2, 2.2, 2.2)
-            marker.Material = Enum.Material.Neon
-            marker.Color = Color3.fromRGB(0, 200, 255)
-            marker.Anchored = true
-            marker.CanCollide = false
-            marker.Position = root.Position
-            marker.Parent = workspace
-
-            table.insert(ChestMarkers, marker)
-            Fluent:Notify({ Title = "Cofre Guardado", Content = "Cofre #" .. #ChestPoints .. " registrado.", Duration = 2 })
-        end
-    end
-})
-
-Tabs.Reactor:AddButton({
-    Title = "Borrar Ruta de Cofres",
-    Callback = function()
-        for _, m in ipairs(ChestMarkers) do
-            if m and m.Parent then m:Destroy() end
-        end
-        table.clear(ChestPoints)
-        table.clear(ChestMarkers)
-        Fluent:Notify({ Title = "Cofres Eliminados", Content = "Lista de cofres reiniciada.", Duration = 2 })
     end
 })
 
@@ -426,6 +410,21 @@ Tabs.Reactor:AddToggle("NuclearFarmToggle", {
     Callback = function(Value) Config.ReactorFarmEnabled = Value end
 })
 
+Tabs.Reactor:AddToggle("LootChestsToggle", {
+    Title = "Saquear 7 Cofres tras Limpiar",
+    Default = true,
+    Callback = function(Value) Config.LootChests = Value end
+})
+
+Tabs.Reactor:AddSlider("ChestWaitSlider", {
+    Title = "Tiempo en cada cofre (Seg)",
+    Default = 1.3,
+    Min = 0.5,
+    Max = 4.0,
+    Rounding = 1,
+    Callback = function(Value) Config.ChestWaitTime = Value end
+})
+
 Tabs.Reactor:AddSlider("NuclearWaitSlider", {
     Title = "Tiempo fuera del bioma (Seg)",
     Default = 10.0,
@@ -435,82 +434,7 @@ Tabs.Reactor:AddSlider("NuclearWaitSlider", {
     Callback = function(Value) Config.ReactorResetWaitTime = Value end
 })
 
--- PESTAÑA 5: EXPORTADOR Y COPIADOR DE COORDENADAS
-Tabs.Coords:AddSection("Copiador Rápido (Alternativa 1)")
-
-Tabs.Coords:AddButton({
-    Title = "Copiar Mi Posición Actual (Tecla 'C')",
-    Description = "Copia tu Vector3 exacto al portapapeles listo para GitHub",
-    Callback = function()
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            local pos = root.Position
-            local coordStr = string.format("Vector3.new(%.1f, %.1f, %.1f)", pos.X, pos.Y, pos.Z)
-            copyToClipboard(coordStr, "Posición Actual")
-        end
-    end
-})
-
-Tabs.Coords:AddSection("Exportar Datos de la Partida")
-
-Tabs.Coords:AddButton({
-    Title = "Copiar Todos los Puntos del Reactor",
-    Description = "Genera el bloque HARDCODED_REACTOR completo de puerta, centro, salida y cofres",
-    Callback = function()
-        local doorStr = NuclearPoints.Door and string.format("Vector3.new(%.1f, %.1f, %.1f)", NuclearPoints.Door.X, NuclearPoints.Door.Y, NuclearPoints.Door.Z) or "nil"
-        local centerStr = NuclearPoints.Center and string.format("Vector3.new(%.1f, %.1f, %.1f)", NuclearPoints.Center.X, NuclearPoints.Center.Y, NuclearPoints.Center.Z) or "nil"
-        local outStr = NuclearPoints.Outside and string.format("Vector3.new(%.1f, %.1f, %.1f)", NuclearPoints.Outside.X, NuclearPoints.Outside.Y, NuclearPoints.Outside.Z) or "nil"
-        
-        local chestList = "{\n"
-        for _, cp in ipairs(ChestPoints) do
-            chestList = chestList .. string.format("        Vector3.new(%.1f, %.1f, %.1f),\n", cp.X, cp.Y, cp.Z)
-        end
-        chestList = chestList .. "    }"
-
-        local output = string.format("local HARDCODED_REACTOR = {\n    Door = %s,\n    Center = %s,\n    Outside = %s,\n    Chests = %s\n}", doorStr, centerStr, outStr, chestList)
-        copyToClipboard(output, "Datos del Reactor")
-    end
-})
-
-Tabs.Coords:AddButton({
-    Title = "Copiar Toda la Red de Bolitas de Chatarra",
-    Description = "Copia la lista de bolitas verdes/azules que colocaste en este mapa",
-    Callback = function()
-        if #DeliveryPoints == 0 then
-            Fluent:Notify({ Title = "Sin Bolitas", Content = "No hay bolitas activas para exportar.", Duration = 2 })
-            return
-        end
-        local listStr = "{\n"
-        for _, pt in ipairs(DeliveryPoints) do
-            if pt and pt.Parent then
-                local p = pt.Position
-                listStr = listStr .. string.format("    Vector3.new(%.1f, %.1f, %.1f),\n", p.X, p.Y, p.Z)
-            end
-        end
-        listStr = listStr .. "}"
-        copyToClipboard(listStr, "Telaraña de Chatarra")
-    end
-})
-
-Tabs.Coords:AddButton({
-    Title = "Copiar Toda la Ruta Amarilla",
-    Description = "Copia la lista completa de puntos de patrulla",
-    Callback = function()
-        if #Waypoints == 0 then
-            Fluent:Notify({ Title = "Sin Ruta", Content = "No hay puntos amarillos creados.", Duration = 2 })
-            return
-        end
-        local listStr = "{\n"
-        for _, wp in ipairs(Waypoints) do
-            listStr = listStr .. string.format("    Vector3.new(%.1f, %.1f, %.1f),\n", wp.X, wp.Y, wp.Z)
-        end
-        listStr = listStr .. "}"
-        copyToClipboard(listStr, "Ruta Amarilla")
-    end
-})
-
--- PESTAÑA 6: UTILIDADES
+-- PESTAÑA 5: UTILIDADES
 Tabs.Misc:AddSection("Automatizaciones Ligeras")
 
 Tabs.Misc:AddToggle("InstantGasToggle", {
@@ -619,14 +543,14 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
     return count
 end
 
--- 4. BUCLE MAESTRO: SAQUEO DEL REACTOR Y RUTA DE COFRES
+-- 4. BUCLE MAESTRO: REACTOR Y COFRES
 task.spawn(function()
     while true do
         task.wait(0.5)
 
         if Config.ReactorFarmEnabled then
             if not NuclearPoints.Door or not NuclearPoints.Center or not NuclearPoints.Outside then
-                Fluent:Notify({ Title = "Puntos Incompletos", Content = "Fija los 3 puntos naranjas primero.", Duration = 3 })
+                Fluent:Notify({ Title = "Puntos Incompletos", Content = "Fija los 3 puntos del reactor primero.", Duration = 3 })
                 Config.ReactorFarmEnabled = false
             else
                 -- 1. Puerta
@@ -675,17 +599,17 @@ task.spawn(function()
                     end
                 end
 
-                -- 4. Ruta de Cofres
-                if Config.ReactorFarmEnabled and Config.LootChests and #ChestPoints > 0 then
-                    Fluent:Notify({ Title = "Sala Limpia", Content = "Recorriendo ruta de cofres...", Duration = 2.5 })
-                    for _, cPos in ipairs(ChestPoints) do
+                -- 4. Ruta de Cofres Rotados
+                if Config.ReactorFarmEnabled and Config.LootChests and #CalculatedChests > 0 then
+                    Fluent:Notify({ Title = "Reactor Despejado", Content = "Recorriendo los 7 cofres subterráneos...", Duration = 3 })
+                    for _, cPos in ipairs(CalculatedChests) do
                         if not Config.ReactorFarmEnabled then break end
-                        flyMoveTo(cPos, 36, 2.5, false)
+                        flyMoveTo(cPos, 38, 2.5, false)
                         task.wait(Config.ChestWaitTime)
                     end
                 end
 
-                -- 5. Salir al punto lejano
+                -- 5. Salir al exterior para reiniciar bioma
                 if Config.ReactorFarmEnabled then
                     Fluent:Notify({ Title = "Saqueo Completo", Content = "Saliendo a descargar el bioma...", Duration = 3 })
                     flyMoveTo(NuclearPoints.Outside, 55, 5, true)
@@ -730,15 +654,19 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- 6. BUCLE DE TELETRANSPORTE Y TELARAÑA
+-- 6. BUCLE DE TELETRANSPORTE OPTIMIZADO (CERO LAG)
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
 local function getGeneratorPosition()
-    local gen = workspace:FindFirstChild("Generator", true) or workspace:FindFirstChild("Center", true)
+    if CachedGeneratorPos then return CachedGeneratorPos end
+    local gen = workspace:FindFirstChild("Generator") or workspace:FindFirstChild("Center")
     if gen then
         local p = (gen:IsA("Model") and (gen.PrimaryPart or gen:FindFirstChildWhichIsA("BasePart"))) or gen
-        if p then return p.Position end
+        if p then 
+            CachedGeneratorPos = p.Position 
+            return CachedGeneratorPos
+        end
     end
     return nil
 end
@@ -782,15 +710,18 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.2)
+        task.wait(0.35)
         if Config.AutoSendItems and #DeliveryPoints > 0 then
             local char = lp.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             if root then
                 overlapParams.FilterDescendantsInstances = {char}
                 local partsNearby = workspace:GetPartBoundsInRadius(root.Position, Config.CollectRadius, overlapParams)
+                local processedCount = 0
 
                 for _, hitPart in ipairs(partsNearby) do
+                    if processedCount >= 4 then break end
+
                     if not hitPart.Anchored and not hitPart:FindFirstAncestorOfClass("Humanoid") then
                         local itemModel = hitPart:FindFirstAncestorOfClass("Model")
                         local targetEntity = (itemModel and itemModel.Parent ~= workspace.Characters and itemModel) or hitPart
@@ -817,7 +748,9 @@ task.spawn(function()
                                 local nextPoint = getNextBestDropPoint(rootPos)
 
                                 if nextPoint then
+                                    processedCount = processedCount + 1
                                     TeleportedTracker[targetEntity] = true
+
                                     local angle = math.random() * math.pi * 2
                                     local dist = math.random() * Config.SpreadRadius
                                     local destPos = nextPoint.Position + Vector3.new(math.cos(angle) * dist, 1.2, math.sin(angle) * dist)
@@ -903,7 +836,7 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- 9. SELECCIÓN CON TECLAS (T: Fijar, Y: Desmarcar, K: Punto Amarillo, C: Copiar Coords)
+-- 9. SELECCIÓN CON TECLAS
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
 
@@ -948,22 +881,11 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             Fluent:Notify({ Title = "Punto Amarillo Creado", Content = "Punto #" .. #Waypoints .. " guardado.", Duration = 1.5 })
         end
     end
-
-    -- Tecla C para copiar posición actual instantánea
-    if input.KeyCode == Enum.KeyCode.C then
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            local pos = root.Position
-            local coordStr = string.format("Vector3.new(%.1f, %.1f, %.1f)", pos.X, pos.Y, pos.Z)
-            copyToClipboard(coordStr, "Posición Actual")
-        end
-    end
 end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Copiador de Coordenadas y Exportador integrados.",
+    Content = "Cofres recalculados con orientación 2D.",
     Duration = 4
 })
 
