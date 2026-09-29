@@ -2,23 +2,44 @@
 -- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE
 -- ==============================================================================
 
--- 1. CARGA DE LIBRERÍA DE INTERFAZ (Fluent UI)
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
--- 2. SERVICIOS Y VARIABLES LOCALES
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
+local mouse = lp:GetMouse()
 
--- Variables de configuración controladas por el menú
+-- Variables de configuración
 local Config = {
     ZigZagEnabled = false,
-    SwitchInterval = 2.0,
-    LateralDist = 10,
-    OvershootDist = 5
+    SwitchInterval = 1.5,
+    LateralDist = 8,
+    OvershootDist = 4,
+    WalkSpeed = 22
 }
 
--- 3. CREACIÓN DE LA VENTANA PRINCIPAL
+local CurrentTarget = nil
+local TargetHighlight = nil
+
+-- Crear Highlight visual para ver a quién tenemos seleccionado
+local function highlightZombie(model)
+    if TargetHighlight then
+        TargetHighlight:Destroy()
+        TargetHighlight = nil
+    end
+    if model then
+        TargetHighlight = Instance.new("Highlight")
+        TargetHighlight.Name = "ZombieTargetHighlight"
+        TargetHighlight.FillColor = Color3.fromRGB(255, 0, 50)
+        TargetHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        TargetHighlight.FillTransparency = 0.5
+        TargetHighlight.Adornee = model
+        TargetHighlight.Parent = model
+    end
+end
+
+-- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
     Title = "ZOMBIE HUB | CUSTOM",
     SubTitle = "Sobrevive al Apocalipsis",
@@ -29,29 +50,30 @@ local Window = Fluent:CreateWindow({
     MinimizeKey = Enum.KeyCode.RightControl
 })
 
--- Pestañas del menú
 local Tabs = {
-    Combat = Window:AddTab({ Title = "Combate", Icon = "crosshair" }),
-    Settings = Window:AddTab({ Title = "Ajustes", Icon = "settings" })
+    Combat = Window:AddTab({ Title = "Combate", Icon = "crosshair" })
 }
 
--- 4. ELEMENTOS DE LA INTERFAZ
-Tabs.Combat:AddSection("Movimiento Automatizado")
+Tabs.Combat:AddSection("Controles")
 
 Tabs.Combat:AddToggle("ZigZagToggle", {
-    Title = "Zigzag hacia Zombie",
+    Title = "Activar Movimiento Zigzag",
     Default = false,
     Callback = function(Value)
         Config.ZigZagEnabled = Value
     end
 })
 
+Tabs.Combat:AddParagraph({
+    Title = "Selector Manual",
+    Content = "Apunta con el mouse a cualquier zombie y presiona 'E' para fijarlo como objetivo."
+})
+
 Tabs.Combat:AddSlider("IntervalSlider", {
     Title = "Tiempo de oscilación (Segundos)",
-    Description = "Tiempo que tarda en cambiar de izquierda a derecha",
-    Default = 2.0,
+    Default = 1.5,
     Min = 0.5,
-    Max = 5.0,
+    Max = 4.0,
     Rounding = 1,
     Callback = function(Value)
         Config.SwitchInterval = Value
@@ -59,22 +81,20 @@ Tabs.Combat:AddSlider("IntervalSlider", {
 })
 
 Tabs.Combat:AddSlider("DistSlider", {
-    Title = "Amplitud del Zigzag (Studs)",
-    Description = "Distancia lateral respecto al zombie",
-    Default = 10,
-    Min = 4,
-    Max = 25,
+    Title = "Amplitud lateral (Studs)",
+    Default = 8,
+    Min = 3,
+    Max = 20,
     Rounding = 0,
     Callback = function(Value)
         Config.LateralDist = Value
     end
 })
 
--- 5. BOTÓN FLOTANTE CIRCULAR ARRASTRABLE (DRAGGABLE TOGGLE)
+-- 2. BOTÓN FLOTANTE CÍRCULAR
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
--- Proteger UI según executor
 if gethui then
     ScreenGui.Parent = gethui()
 elseif syn and syn.protect_gui then
@@ -85,138 +105,110 @@ else
 end
 
 local FloatBtn = Instance.new("ImageButton")
-FloatBtn.Name = "OpenCloseCircle"
-FloatBtn.Size = UDim2.new(0, 52, 0, 52)
-FloatBtn.Position = UDim2.new(0.05, 0, 0.2, 0)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 20, 30)
-FloatBtn.BackgroundTransparency = 0.1
-FloatBtn.Image = "rbxassetid://10723415903" -- Ícono de mira/hub
-FloatBtn.ImageColor3 = Color3.fromRGB(255, 255, 255)
+FloatBtn.Size = UDim2.new(0, 50, 0, 50)
+FloatBtn.Position = UDim2.new(0.05, 0, 0.25, 0)
+FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
+FloatBtn.Image = "rbxassetid://10723415903"
 FloatBtn.Parent = ScreenGui
 
--- Redondear a círculo completo
 local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(1, 0)
 UICorner.Parent = FloatBtn
 
-local UIStroke = Instance.new("UIStroke")
-UIStroke.Thickness = 2
-UIStroke.Color = Color3.fromRGB(255, 255, 255)
-UIStroke.Transparency = 0.4
-UIStroke.Parent = FloatBtn
-
--- Función para arrastrar el botón flotante
-local dragging, dragInput, dragStart, startPos
-
-FloatBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = FloatBtn.Position
-
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
-
-FloatBtn.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
-        local delta = input.Position - dragStart
-        FloatBtn.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
-        )
-    end
-end)
-
--- Abrir/Cerrar la ventana al hacer clic en el círculo
-local isOpen = true
+local isWindowOpen = true
 FloatBtn.MouseButton1Click:Connect(function()
-    isOpen = not isOpen
-    Window.Root.Visible = isOpen
+    isWindowOpen = not isWindowOpen
+    Window.Root.Visible = isWindowOpen
 end)
 
--- 6. LÓGICA DE DETECCIÓN Y MOVIMIENTO
-local function getClosestZombie()
+-- 3. DETECCIÓN POR TECLA 'E' (SELECTOR)
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.E then
+        local targetPart = mouse.Target
+        if targetPart then
+            -- Buscar el modelo del zombie hacia arriba en la jerarquía
+            local model = targetPart:FindFirstAncestorOfClass("Model")
+            if model and model ~= lp.Character then
+                CurrentTarget = model
+                highlightZombie(model)
+                Fluent:Notify({
+                    Title = "Objetivo Fijado",
+                    Content = "Zombie seleccionado: " .. model.Name,
+                    Duration = 3
+                })
+            end
+        end
+    end
+end)
+
+-- 4. BÚSQUEDA AUTOMÁTICA DE RESPALDO (Si no se presiona E)
+local function getFallbackZombie()
     local char = lp.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then return nil end
 
-    local charactersFolder = workspace:FindFirstChild("Characters")
-    if not charactersFolder then return nil end
+    local charFolder = workspace:FindFirstChild("Characters") or workspace
+    local nearest, minDist = nil, math.huge
 
-    local closest = nil
-    local minDistance = math.huge
-
-    for _, entity in ipairs(charactersFolder:GetChildren()) do
-        if entity ~= char and entity:IsA("Model") then
-            local zRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso")
-            local zHum = entity:FindFirstChildOfClass("Humanoid")
-
-            if zRoot and zHum and zHum.Health > 0 then
-                local dist = (zRoot.Position - root.Position).Magnitude
-                if dist < minDistance then
-                    minDistance = dist
-                    closest = entity
+    for _, obj in ipairs(charFolder:GetChildren()) do
+        if obj:IsA("Model") and obj ~= char then
+            local part = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso") or obj:FindFirstChild("Head")
+            if part then
+                local d = (part.Position - root.Position).Magnitude
+                if d < minDist then
+                    minDist = d
+                    nearest = obj
                 end
             end
         end
     end
-    return closest
+    return nearest
 end
 
--- Bucle de movimiento
-task.spawn(function()
-    local sideMultiplier = 1
-    local lastSideChange = tick()
+-- 5. BUCLE DE MOVIMIENTO EN ZIGZAG (FORZADO)
+local side = 1
+local lastSwitch = tick()
 
-    while true do
-        task.wait(0.05)
+RunService.Heartbeat:Connect(function()
+    if not Config.ZigZagEnabled then return end
 
-        if Config.ZigZagEnabled then
-            local char = lp.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local root = char and char:FindFirstChild("HumanoidRootPart")
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not hum or not root then return end
 
-            if hum and root and hum.Health > 0 then
-                local zombie = getClosestZombie()
+    -- Usar el objetivo manual (E) o buscar el más cercano
+    local target = CurrentTarget
+    if not target or not target.Parent then
+        target = getFallbackZombie()
+    end
 
-                if zombie then
-                    local zRoot = zombie:FindFirstChild("HumanoidRootPart") or zombie:FindFirstChild("Torso")
-
-                    if zRoot then
-                        if tick() - lastSideChange >= Config.SwitchInterval then
-                            sideMultiplier = -sideMultiplier
-                            lastSideChange = tick()
-                        end
-
-                        local cf = zRoot.CFrame
-                        local lateralOffset = cf.RightVector * (sideMultiplier * Config.LateralDist)
-                        local forwardOffset = cf.LookVector * Config.OvershootDist
-                        local targetPosition = zRoot.Position + lateralOffset + forwardOffset
-
-                        hum:MoveTo(targetPosition)
-                    end
-                end
+    if target then
+        local zPart = target:FindFirstChild("HumanoidRootPart") or target:FindFirstChild("Torso") or target:FindFirstChild("Head")
+        if zPart then
+            -- Alternar de lado por tiempo
+            if tick() - lastSwitch >= Config.SwitchInterval then
+                side = -side
+                lastSwitch = tick()
             end
+
+            -- Cálculo matemático de posición
+            local zCF = zPart.CFrame
+            local lateral = zCF.RightVector * (side * Config.LateralDist)
+            local forward = zCF.LookVector * Config.OvershootDist
+            local destination = zPart.Position + lateral + forward
+
+            -- Forzar dirección del movimiento
+            local moveDir = (destination - root.Position).Unit
+            hum:Move(moveDir, false)
         end
     end
 end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB",
-    Content = "Menú activo. Toca el botón rojo flotante para abrir o cerrar.",
+    Content = "Presiona E mirando a un zombie para fijarlo.",
     Duration = 5
 })
 
