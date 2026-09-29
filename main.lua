@@ -18,14 +18,15 @@ local Config = {
     MoveSpeed = 45,
     AutoSendItems = false,
     CollectRadius = 25,
-    BasePrevent = true,       -- Evita mover cosas que ya estén en la base
-    BaseRadius = 45,          -- Radio considerado "dentro de la base"
-    SpreadRadius = 4          -- Dispersión para que no se amontonen en un punto
+    BasePrevent = true,
+    BaseRadius = 45,
+    SpreadRadius = 5
 }
 
 local CurrentTarget = nil
 local TargetHighlight = nil
 local DropPointMarker = nil
+local TeleportedCache = {} -- Registro de ítems ya procesados para no trabarlos
 
 local function clearHighlight()
     if TargetHighlight then
@@ -135,8 +136,11 @@ Tabs.Items:AddButton({
         DropPointMarker.Color = Color3.fromRGB(0, 255, 170)
         DropPointMarker.Anchored = true
         DropPointMarker.CanCollide = false
-        DropPointMarker.CFrame = root.CFrame - Vector3.new(0, 2, 0)
+        DropPointMarker.CFrame = root.CFrame - Vector3.new(0, 1.5, 0)
         DropPointMarker.Parent = workspace
+
+        -- Limpiar memoria de ítems al mover la bolita
+        table.clear(TeleportedCache)
 
         Fluent:Notify({
             Title = "Destino Guardado",
@@ -151,6 +155,9 @@ Tabs.Items:AddToggle("AutoSendToggle", {
     Default = false,
     Callback = function(Value)
         Config.AutoSendItems = Value
+        if not Value then
+            table.clear(TeleportedCache)
+        end
     end
 })
 
@@ -167,7 +174,6 @@ Tabs.Items:AddToggle("BasePreventToggle", {
 
 Tabs.Items:AddSlider("BaseRadiusSlider", {
     Title = "Radio Seguro de la Base (Studs)",
-    Description = "Distancia protegida alrededor del centro de tu base",
     Default = 45,
     Min = 20,
     Max = 100,
@@ -179,10 +185,9 @@ Tabs.Items:AddSlider("BaseRadiusSlider", {
 
 Tabs.Items:AddSlider("SpreadSlider", {
     Title = "Dispersión de Ítems al llegar (Studs)",
-    Description = "Evita que las cosas se apilen en el mismo punto y se bugeen",
-    Default = 4,
-    Min = 1,
-    Max = 10,
+    Default = 5,
+    Min = 2,
+    Max = 12,
     Rounding = 0,
     Callback = function(Value)
         Config.SpreadRadius = Value
@@ -305,26 +310,22 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- 5. BUCLE DE TELETRANSPORTE CON BASE PREVENT Y DISPERSIÓN ANTI-BUG
+-- 5. BUCLE DE TELETRANSPORTE ANTI-BUG (PIVOT + FÍSICA LIMPIA)
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
--- Función auxiliar para verificar si un ítem está dentro de la base (Center)
-local function isInsideBase(itemPos)
+local function isInsideBase(pos)
     local centerModel = workspace:FindFirstChild("Center")
     if centerModel then
         local centerPart = centerModel:FindFirstChildWhichIsA("BasePart") or centerModel.PrimaryPart
         if centerPart then
-            local dist = (itemPos - centerPart.Position).Magnitude
-            if dist <= Config.BaseRadius then
+            if (pos - centerPart.Position).Magnitude <= Config.BaseRadius then
                 return true
             end
         end
     end
-    -- Respaldo con la posición de la bolita si no encuentra la pieza Center
     if DropPointMarker and DropPointMarker.Parent then
-        local distToMarker = (itemPos - DropPointMarker.Position).Magnitude
-        if distToMarker <= (Config.BaseRadius * 0.4) then
+        if (pos - DropPointMarker.Position).Magnitude <= (Config.BaseRadius * 0.4) then
             return true
         end
     end
@@ -338,41 +339,48 @@ task.spawn(function()
             local char = lp.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             if root then
-                overlapParams.FilterDescendantsInstances = {char}
+                overlapParams.FilterDescendantsInstances = {char, DropPointMarker}
 
                 local partsNearby = workspace:GetPartBoundsInRadius(root.Position, Config.CollectRadius, overlapParams)
 
-                for _, item in ipairs(partsNearby) do
-                    if not item.Anchored and not item:FindFirstAncestorOfClass("Humanoid") then
-                        -- Comprobar si Base Prevent está activo y si el ítem ya está en la base
-                        local skipItem = false
-                        if Config.BasePrevent and isInsideBase(item.Position) then
-                            skipItem = true
-                        end
+                for _, hitPart in ipairs(partsNearby) do
+                    -- No mover partes ancladas ni entidades vivas
+                    if not hitPart.Anchored and not hitPart:FindFirstAncestorOfClass("Humanoid") then
+                        -- Encontrar el modelo completo del ítem
+                        local itemModel = hitPart:FindFirstAncestorOfClass("Model") or hitPart
+                        local rootEntity = (itemModel:IsA("Model") and (itemModel.PrimaryPart or hitPart)) or hitPart
 
-                        if not skipItem then
-                            -- 1. Calcular offset aleatorio en un círculo para que no choquen entre sí
+                        -- Si aún no ha sido transportado y no está en la base
+                        if not TeleportedCache[itemModel] and not isInsideBase(rootEntity.Position) then
+                            TeleportedCache[itemModel] = true
+
+                            -- Calcular dispersión en círculo
                             local angle = math.random() * math.pi * 2
                             local distance = math.random() * Config.SpreadRadius
                             local offsetX = math.cos(angle) * distance
                             local offsetZ = math.sin(angle) * distance
 
-                            local destinationPos = DropPointMarker.Position + Vector3.new(offsetX, 1.5, offsetZ)
+                            -- Punto destino apenas sobre el suelo (1.5 studs)
+                            local destCFrame = CFrame.new(DropPointMarker.Position + Vector3.new(offsetX, 1.5, offsetZ))
 
-                            -- 2. Limpieza de velocidades acumuladas (evita que rebote o salga disparado)
-                            item.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                            item.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                            -- Mover todo el modelo junto para no romper soldaduras
+                            if itemModel:IsA("Model") then
+                                itemModel:PivotTo(destCFrame)
+                            else
+                                itemModel.CFrame = destCFrame
+                            end
 
-                            -- 3. Asignar nueva posición sin colisión brusca
-                            item.CFrame = CFrame.new(destinationPos)
-
-                            -- Apagar colisiones brevemente para evitar efecto explosión
-                            item.CanCollide = false
-                            task.delay(0.15, function()
-                                if item and item.Parent then
-                                    item.CanCollide = true
+                            -- Reactivar gravedad natural y eliminar inercias de vuelo
+                            for _, p in ipairs(itemModel:GetDescendants()) do
+                                if p:IsA("BasePart") then
+                                    p.AssemblyLinearVelocity = Vector3.new(0, -2, 0) -- Forzar caída al suelo
+                                    p.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
                                 end
-                            end)
+                            end
+                            if itemModel:IsA("BasePart") then
+                                itemModel.AssemblyLinearVelocity = Vector3.new(0, -2, 0)
+                                itemModel.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                            end
                         end
                     end
                 end
@@ -383,7 +391,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Base Prevent y Dispersión Anti-Bug integradas.",
+    Content = "Teletransporte reparado (Física y Modelos fijados).",
     Duration = 4
 })
 
