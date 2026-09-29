@@ -7,39 +7,48 @@ local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
--- Configuración general
+-- Variables de configuración
 local Config = {
     -- Combate / Zigzag
     ZigZagEnabled = false,
     SwitchInterval = 1.2,
     LateralDist = 14,
     MoveSpeed = 45,
-    
-    -- Teletransporte de Ítems
+
+    -- Teletransporte de Ítems (Telaraña)
     AutoSendItems = false,
     CollectRadius = 25,
+    OnlyScrap = true,             -- Solo teletransporta chatarra
+    ChainTeleport = true,         -- Permite saltar entre bolitas hacia la base
+    SingleTeleportLimit = false,  -- Desactivado: se pueden teletransportar cuantas veces quieras
     BasePrevent = true,
-    GeneratorSafeRadius = 180,
-    SpreadRadius = 5,
+    GeneratorSafeRadius = 160,
+    SpreadRadius = 4,
 
-    -- Recorrido con Puntos Amarillos
+    -- Ruta Amarilla / Vuelo
     PatrolEnabled = false,
+    FlyPatrol = false,            -- Vuela 10 studs sobre el suelo
+    FlyHeight = 10,
     WaypointWaitTime = 2.0,
 
-    -- Surtidor
-    AutoGasStation = true
+    -- Utilidades / Surtidor
+    InstantGasStation = true      -- Instant prompt sin lag
 }
 
 local CurrentTarget = nil
 local TargetHighlight = nil
-
-local DeliveryPoints = {}   -- Lista de bolitas verdes
-local Waypoints = {}        -- Lista de bolitas amarillas
+local DeliveryPoints = {}   -- Bolitas verdes
+local Waypoints = {}        -- Puntos amarillos
 local WaypointMarkers = {}
 local TeleportedTracker = {}
+
+-- Respaldo de gravedad/física para vuelo
+local FloatAttachment = nil
+local FloatVelocity = nil
 
 -- Funciones de Highlight
 local function clearHighlight()
@@ -62,12 +71,12 @@ local function applyHighlight(obj)
     end
 end
 
--- 1. VENTANA PRINCIPAL (Fluent UI)
+-- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
     Title = "ZOMBIE HUB | CUSTOM",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(590, 480),
+    Size = UDim2.fromOffset(590, 490),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
@@ -129,12 +138,12 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     end
 })
 
--- PESTAÑA 2: TELETRANSPORTE Y BASE PREVENT (GENERATOR)
+-- PESTAÑA 2: TELETRANSPORTE Y TELARAÑA DE BOLITAS
 Tabs.Items:AddSection("Red de Puntos de Entrega (Bolitas Verdes)")
 
 Tabs.Items:AddButton({
-    Title = "+ Agregar Punto de Destino Aquí",
-    Description = "Coloca una bolita verde donde estés parado. Puedes poner varias.",
+    Title = "+ Agregar Bolita Verde Aquí",
+    Description = "Coloca una bolita verde. Los ítems saltarán de bolita en bolita hacia la base.",
     Callback = function()
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -156,8 +165,8 @@ Tabs.Items:AddButton({
 
         Fluent:Notify({
             Title = "Punto Agregado",
-            Content = "Nuevo destino fijado. Total activos: " .. #DeliveryPoints,
-            Duration = 3
+            Content = "Bolita agregada. Total en la red: " .. #DeliveryPoints,
+            Duration = 2.5
         })
     end
 })
@@ -170,12 +179,12 @@ Tabs.Items:AddButton({
         end
         table.clear(DeliveryPoints)
         table.clear(TeleportedTracker)
-        Fluent:Notify({ Title = "Puntos Borrados", Content = "Lista de destinos reiniciada.", Duration = 2 })
+        Fluent:Notify({ Title = "Red Reiniciada", Content = "Bolitas verdes eliminadas.", Duration = 2 })
     end
 })
 
 Tabs.Items:AddToggle("AutoSendToggle", {
-    Title = "Enviar Ítems al Pasar Sobre Ellos",
+    Title = "Activar Teletransporte de Ítems",
     Default = false,
     Callback = function(Value)
         Config.AutoSendItems = Value
@@ -183,11 +192,29 @@ Tabs.Items:AddToggle("AutoSendToggle", {
     end
 })
 
-Tabs.Items:AddSection("Protección del Generador (Base)")
+Tabs.Items:AddToggle("OnlyScrapToggle", {
+    Title = "Solo Teletransportar Chatarra (Scrap)",
+    Description = "Ignora bidones, herramientas y pilas para evitar bugs físicos",
+    Default = true,
+    Callback = function(Value)
+        Config.OnlyScrap = Value
+    end
+})
+
+Tabs.Items:AddToggle("ChainTeleportToggle", {
+    Title = "Permitir Teletransporte Continuo",
+    Description = "Permite que los ítems salten múltiples veces entre bolitas",
+    Default = true,
+    Callback = function(Value)
+        Config.ChainTeleport = Value
+    end
+})
+
+Tabs.Items:AddSection("Protección del Generador")
 
 Tabs.Items:AddToggle("BasePreventToggle", {
     Title = "Activar Generator Prevent",
-    Description = "No mueve ningún ítem si está cerca del Generador/Base",
+    Description = "No mueve ningún recurso que ya esté cerca del Generador",
     Default = true,
     Callback = function(Value)
         Config.BasePrevent = Value
@@ -196,7 +223,7 @@ Tabs.Items:AddToggle("BasePreventToggle", {
 
 Tabs.Items:AddSlider("BaseRadiusSlider", {
     Title = "Radio de Seguridad del Generador (Studs)",
-    Default = 180,
+    Default = 160,
     Min = 50,
     Max = 300,
     Rounding = 0,
@@ -205,8 +232,8 @@ Tabs.Items:AddSlider("BaseRadiusSlider", {
     end
 })
 
--- PESTAÑA 3: RUTA CON PUNTOS AMARILLOS (WAYPOINTS)
-Tabs.Patrol:AddSection("Configuración de Patrulla")
+-- PESTAÑA 3: RUTA AMARILLA Y VUELO
+Tabs.Patrol:AddSection("Patrullaje y Vuelo (+10 studs)")
 
 Tabs.Patrol:AddToggle("PatrolToggle", {
     Title = "Iniciar Patrullaje en Bucle",
@@ -216,9 +243,28 @@ Tabs.Patrol:AddToggle("PatrolToggle", {
     end
 })
 
+Tabs.Patrol:AddToggle("FlyPatrolToggle", {
+    Title = "Volar sobre la Ruta (+10 studs)",
+    Description = "Te eleva 10 studs sobre el suelo y vuela directo entre puntos",
+    Default = false,
+    Callback = function(Value)
+        Config.FlyPatrol = Value
+    end
+})
+
+Tabs.Patrol:AddSlider("WaitTimeSlider", {
+    Title = "Tiempo de espera en cada punto (Segundos)",
+    Default = 2.0,
+    Min = 0.5,
+    Max = 15.0,
+    Rounding = 1,
+    Callback = function(Value)
+        Config.WaypointWaitTime = Value
+    end
+})
+
 Tabs.Patrol:AddButton({
     Title = "Crear Punto Amarillo Aquí (Tecla 'K')",
-    Description = "Guarda la posición actual para el circuito de caminata",
     Callback = function()
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -239,23 +285,7 @@ Tabs.Patrol:AddButton({
         marker.Parent = workspace
 
         table.insert(WaypointMarkers, marker)
-
-        Fluent:Notify({
-            Title = "Punto Amarillo Creado",
-            Content = "Punto #" .. #Waypoints .. " guardado.",
-            Duration = 2
-        })
-    end
-})
-
-Tabs.Patrol:AddSlider("WaitTimeSlider", {
-    Title = "Tiempo de espera en cada punto (Segundos)",
-    Default = 2.0,
-    Min = 0.5,
-    Max = 15.0,
-    Rounding = 1,
-    Callback = function(Value)
-        Config.WaypointWaitTime = Value
+        Fluent:Notify({ Title = "Punto Amarillo Creado", Content = "Punto #" .. #Waypoints .. " guardado.", Duration = 1.5 })
     end
 })
 
@@ -271,15 +301,15 @@ Tabs.Patrol:AddButton({
     end
 })
 
--- PESTAÑA 4: UTILIDADES (SURTIDOR)
-Tabs.Misc:AddSection("Automatizaciones")
+-- PESTAÑA 4: UTILIDADES (SURTIDOR INSTANTÁNEO CERO LAG)
+Tabs.Misc:AddSection("Automatizaciones Ligeras")
 
-Tabs.Misc:AddToggle("AutoGasToggle", {
-    Title = "Auto-Activar Surtidor de Gasolina",
-    Description = "Presiona E automáticamente al pasar cerca del surtidor",
+Tabs.Misc:AddToggle("InstantGasToggle", {
+    Title = "Surtidor Instantáneo (Cero Lag / Móvil)",
+    Description = "Activa el surtidor de inmediato al acercarte sin mantener presionado",
     Default = true,
     Callback = function(Value)
-        Config.AutoGasStation = Value
+        Config.InstantGasStation = Value
     end
 })
 
@@ -345,7 +375,6 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         Fluent:Notify({ Title = "Objetivo Cancelado", Content = "Se desmarcó el objetivo.", Duration = 2 })
     end
 
-    -- Tecla K para colocar punto amarillo rápido
     if input.KeyCode == Enum.KeyCode.K then
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -409,36 +438,60 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- 5. BUCLE DE TELETRANSPORTE (MULTIPLE DROP POINTS + GENERATOR SAFE ZONE)
+-- 5. BUCLE DE TELETRANSPORTE Y TELARAÑA (CADENA HACIA EL GENERADOR)
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
--- Encontrar la bolita verde más cercana a una posición
-local function getClosestDeliveryPoint(pos)
+local function getGeneratorPosition()
+    local gen = workspace:FindFirstChild("Generator", true) or workspace:FindFirstChild("Center", true)
+    if gen then
+        local p = (gen:IsA("Model") and (gen.PrimaryPart or gen:FindFirstChildWhichIsA("BasePart"))) or gen
+        if p then return p.Position end
+    end
+    return nil
+end
+
+-- Busca la mejor bolita verde hacia donde hacer avanzar el ítem
+local function getNextBestDropPoint(itemPos)
+    local genPos = getGeneratorPosition()
     local bestPoint = nil
-    local shortestDist = math.huge
+    local currentDistToGen = genPos and (itemPos - genPos).Magnitude or math.huge
+    local shortestDistToItem = math.huge
+
     for _, pt in ipairs(DeliveryPoints) do
         if pt and pt.Parent then
-            local d = (pos - pt.Position).Magnitude
-            if d < shortestDist then
-                shortestDist = d
-                bestPoint = pt
+            local distItemToPoint = (itemPos - pt.Position).Magnitude
+
+            -- Si tenemos el generador como referencia, buscar bolitas más cercanas al generador que el ítem
+            if genPos and Config.ChainTeleport then
+                local pointDistToGen = (pt.Position - genPos).Magnitude
+                if pointDistToGen < currentDistToGen and distItemToPoint > 4 then
+                    if distItemToPoint < shortestDistToItem then
+                        shortestDistToItem = distItemToPoint
+                        bestPoint = pt
+                    end
+                end
+            else
+                -- Modo normal: la bolita verde más cercana
+                if distItemToPoint < shortestDistToItem and distItemToPoint > 4 then
+                    shortestDistToItem = distItemToPoint
+                    bestPoint = pt
+                end
             end
         end
     end
-    return bestPoint
-end
 
--- Verificar si está cerca del Generador
-local function isNearGenerator(pos)
-    local generator = workspace:FindFirstChild("Generator", true) or workspace:FindFirstChild("Center", true)
-    if generator then
-        local gPart = (generator:IsA("Model") and (generator.PrimaryPart or generator:FindFirstChildWhichIsA("BasePart"))) or generator
-        if gPart and (pos - gPart.Position).Magnitude <= Config.GeneratorSafeRadius then
-            return true
+    -- Respaldo si no hay ninguna más cerca del generador: usar la más cercana absoluta
+    if not bestPoint and #DeliveryPoints > 0 then
+        for _, pt in ipairs(DeliveryPoints) do
+            if pt and pt.Parent and (itemPos - pt.Position).Magnitude > 4 then
+                bestPoint = pt
+                break
+            end
         end
     end
-    return false
+
+    return bestPoint
 end
 
 task.spawn(function()
@@ -458,36 +511,53 @@ task.spawn(function()
                         local targetEntity = (itemModel and itemModel.Parent ~= workspace.Characters and itemModel) or hitPart
                         local rootPos = (targetEntity:IsA("Model") and targetEntity:GetPivot().Position) or targetEntity.Position
 
-                        -- No teletransportar si está dentro de la zona segura del Generador
-                        local inSafeZone = Config.BasePrevent and isNearGenerator(rootPos)
+                        -- 1. Filtro Only Scrap
+                        local nameLower = (targetEntity.Name):lower()
+                        local isScrap = nameLower:find("scrap") or nameLower:find("chatarra") or nameLower:find("metal") or nameLower:find("barrel")
 
-                        if not inSafeZone and not TeleportedTracker[targetEntity] then
-                            local targetDropPoint = getClosestDeliveryPoint(rootPos)
-
-                            if targetDropPoint then
-                                TeleportedTracker[targetEntity] = true
-
-                                -- Dispersión aleatoria alrededor de la bolita verde más cercana
-                                local angle = math.random() * math.pi * 2
-                                local dist = math.random() * Config.SpreadRadius
-                                local destPos = targetDropPoint.Position + Vector3.new(math.cos(angle) * dist, 1.2, math.sin(angle) * dist)
-
-                                if targetEntity:IsA("Model") then
-                                    targetEntity:PivotTo(CFrame.new(destPos))
-                                else
-                                    targetEntity.CFrame = CFrame.new(destPos)
+                        if not Config.OnlyScrap or isScrap then
+                            -- 2. Base Prevent (Generator)
+                            local genPos = getGeneratorPosition()
+                            local insideBase = false
+                            if Config.BasePrevent and genPos then
+                                if (rootPos - genPos).Magnitude <= Config.GeneratorSafeRadius then
+                                    insideBase = true
                                 end
+                            end
 
-                                -- Limpiar inercia y activar gravedad limpia
-                                for _, p in ipairs(targetEntity:GetDescendants()) do
-                                    if p:IsA("BasePart") then
-                                        p.AssemblyLinearVelocity = Vector3.new(0, -4, 0)
-                                        p.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                            -- 3. Teletransportar a través de la red
+                            local canTeleport = not insideBase
+                            if Config.SingleTeleportLimit and TeleportedTracker[targetEntity] then
+                                canTeleport = false
+                            end
+
+                            if canTeleport then
+                                local nextPoint = getNextBestDropPoint(rootPos)
+
+                                if nextPoint then
+                                    TeleportedTracker[targetEntity] = true
+
+                                    local angle = math.random() * math.pi * 2
+                                    local dist = math.random() * Config.SpreadRadius
+                                    local destPos = nextPoint.Position + Vector3.new(math.cos(angle) * dist, 1.2, math.sin(angle) * dist)
+
+                                    if targetEntity:IsA("Model") then
+                                        targetEntity:PivotTo(CFrame.new(destPos))
+                                    else
+                                        targetEntity.CFrame = CFrame.new(destPos)
                                     end
-                                end
-                                if targetEntity:IsA("BasePart") then
-                                    targetEntity.AssemblyLinearVelocity = Vector3.new(0, -4, 0)
-                                    targetEntity.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+
+                                    -- Limpieza física suave
+                                    for _, p in ipairs(targetEntity:GetDescendants()) do
+                                        if p:IsA("BasePart") then
+                                            p.AssemblyLinearVelocity = Vector3.new(0, -3, 0)
+                                            p.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                                        end
+                                    end
+                                    if targetEntity:IsA("BasePart") then
+                                        targetEntity.AssemblyLinearVelocity = Vector3.new(0, -3, 0)
+                                        targetEntity.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                                    end
                                 end
                             end
                         end
@@ -498,7 +568,7 @@ task.spawn(function()
     end
 end)
 
--- 6. BUCLE DE PATRULLA POR PUNTOS AMARILLOS (WAYPOINTS)
+-- 6. BUCLE DE PATRULLAJE CON OPCIÓN DE VUELO (+10 STUDS)
 task.spawn(function()
     while true do
         task.wait(0.2)
@@ -511,17 +581,40 @@ task.spawn(function()
                 for i, targetPos in ipairs(Waypoints) do
                     if not Config.PatrolEnabled then break end
 
-                    -- Caminar hacia el punto amarillo
-                    hum:MoveTo(targetPos)
-
-                    -- Esperar a llegar cerca del punto
-                    local timeout = tick() + 15
-                    while (root.Position - targetPos).Magnitude > 4 and Config.PatrolEnabled and tick() < timeout do
-                        task.wait(0.1)
+                    local finalDestination = targetPos
+                    if Config.FlyPatrol then
+                        finalDestination = targetPos + Vector3.new(0, Config.FlyHeight, 0)
                     end
 
-                    -- Esperar el tiempo configurado en el punto
+                    local reached = false
+                    local timeout = tick() + 20
+
+                    while Config.PatrolEnabled and not reached and tick() < timeout do
+                        task.wait(0.05)
+
+                        if Config.FlyPatrol then
+                            -- Volar directo hacia el punto elevado
+                            local dir = (finalDestination - root.Position)
+                            if dir.Magnitude <= 3.5 then
+                                reached = true
+                                root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                            else
+                                root.AssemblyLinearVelocity = dir.Unit * Config.MoveSpeed
+                            end
+                        else
+                            -- Caminar normal por tierra
+                            hum:MoveTo(targetPos)
+                            if (root.Position - targetPos).Magnitude <= 4 then
+                                reached = true
+                            end
+                        end
+                    end
+
+                    -- Esperar en el punto
                     if Config.PatrolEnabled then
+                        if Config.FlyPatrol then
+                            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        end
                         task.wait(Config.WaypointWaitTime)
                     end
                 end
@@ -530,38 +623,21 @@ task.spawn(function()
     end
 end)
 
--- 7. BUCLE DEL SURTIDOR DE GASOLINA (AUTO PROXIMITY PROMPT)
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        if Config.AutoGasStation then
-            local char = lp.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            if root then
-                -- Buscar prompts de gasolinera cerca
-                for _, prompt in ipairs(workspace:GetDescendants()) do
-                    if prompt:IsA("ProximityPrompt") then
-                        local parentPart = prompt.Parent
-                        if parentPart and parentPart:IsA("BasePart") then
-                            local dist = (parentPart.Position - root.Position).Magnitude
-                            if dist <= prompt.MaxActivationDistance + 4 then
-                                -- Si dice Surtidor o Gasolina
-                                local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
-                                if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") then
-                                    fireproximityprompt(prompt)
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
+-- 7. SURTIDOR INSTANTÁNEO POR EVENTO NATIVO (CERO LAG / COMPATIBLE CON MÓVIL)
+ProximityPromptService.PromptShown:Connect(function(prompt)
+    if not Config.InstantGasStation then return end
+
+    local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
+    if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") then
+        -- Vuelve la interacción instantánea (sin mantener pulsado)
+        prompt.HoldDuration = 0
+        fireproximityprompt(prompt)
     end
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB COMPLETO",
-    Content = "Múltiples destinos, Patrulla (K) y Auto-Surtidor listos.",
+    Title = "ZOMBIE HUB LISTO",
+    Content = "Cadena de bolitas, Modo Vuelo y Surtidor Instantáneo activos.",
     Duration = 5
 })
 
