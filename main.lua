@@ -1,5 +1,5 @@
 -- ==============================================================================
--- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE (OPTIMIZADO)
+-- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -17,7 +17,10 @@ local Config = {
     LateralDist = 14,
     MoveSpeed = 45,
     AutoSendItems = false,
-    CollectRadius = 25
+    CollectRadius = 25,
+    BasePrevent = true,       -- Evita mover cosas que ya estén en la base
+    BaseRadius = 45,          -- Radio considerado "dentro de la base"
+    SpreadRadius = 4          -- Dispersión para que no se amontonen en un punto
 }
 
 local CurrentTarget = nil
@@ -49,7 +52,7 @@ local Window = Fluent:CreateWindow({
     Title = "ZOMBIE HUB | CUSTOM",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(580, 440),
+    Size = UDim2.fromOffset(580, 460),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
@@ -109,7 +112,7 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     end
 })
 
--- PESTAÑA 2: TELETRANSPORTE
+-- PESTAÑA 2: TELETRANSPORTE Y BASE PREVENT
 Tabs.Items:AddSection("Punto de Entrega (Trituradora / Base)")
 
 Tabs.Items:AddButton({
@@ -151,14 +154,38 @@ Tabs.Items:AddToggle("AutoSendToggle", {
     end
 })
 
-Tabs.Items:AddSlider("RadiusSlider", {
-    Title = "Radio de Recolección (Studs)",
-    Default = 25,
-    Min = 10,
-    Max = 50,
+Tabs.Items:AddSection("Protección de Base (Base Prevent)")
+
+Tabs.Items:AddToggle("BasePreventToggle", {
+    Title = "Activar Base Prevent",
+    Description = "No mueve ningún ítem que ya se encuentre dentro del área de la base",
+    Default = true,
+    Callback = function(Value)
+        Config.BasePrevent = Value
+    end
+})
+
+Tabs.Items:AddSlider("BaseRadiusSlider", {
+    Title = "Radio Seguro de la Base (Studs)",
+    Description = "Distancia protegida alrededor del centro de tu base",
+    Default = 45,
+    Min = 20,
+    Max = 100,
     Rounding = 0,
     Callback = function(Value)
-        Config.CollectRadius = Value
+        Config.BaseRadius = Value
+    end
+})
+
+Tabs.Items:AddSlider("SpreadSlider", {
+    Title = "Dispersión de Ítems al llegar (Studs)",
+    Description = "Evita que las cosas se apilen en el mismo punto y se bugeen",
+    Default = 4,
+    Min = 1,
+    Max = 10,
+    Rounding = 0,
+    Callback = function(Value)
+        Config.SpreadRadius = Value
     end
 })
 
@@ -278,29 +305,75 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- 5. BUCLE DE TELETRANSPORTE OPTIMIZADO (CERO LAG)
--- Usa detección espacial de Roblox en lugar de recorrer todo el workspace
+-- 5. BUCLE DE TELETRANSPORTE CON BASE PREVENT Y DISPERSIÓN ANTI-BUG
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
+-- Función auxiliar para verificar si un ítem está dentro de la base (Center)
+local function isInsideBase(itemPos)
+    local centerModel = workspace:FindFirstChild("Center")
+    if centerModel then
+        local centerPart = centerModel:FindFirstChildWhichIsA("BasePart") or centerModel.PrimaryPart
+        if centerPart then
+            local dist = (itemPos - centerPart.Position).Magnitude
+            if dist <= Config.BaseRadius then
+                return true
+            end
+        end
+    end
+    -- Respaldo con la posición de la bolita si no encuentra la pieza Center
+    if DropPointMarker and DropPointMarker.Parent then
+        local distToMarker = (itemPos - DropPointMarker.Position).Magnitude
+        if distToMarker <= (Config.BaseRadius * 0.4) then
+            return true
+        end
+    end
+    return false
+end
+
 task.spawn(function()
     while true do
-        task.wait(0.25)
+        task.wait(0.2)
         if Config.AutoSendItems and DropPointMarker and DropPointMarker.Parent then
             local char = lp.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             if root then
-                -- Excluir a nuestro personaje de la búsqueda
                 overlapParams.FilterDescendantsInstances = {char}
 
-                -- Solo busca piezas en el radio exacto a tu alrededor (altamente eficiente)
                 local partsNearby = workspace:GetPartBoundsInRadius(root.Position, Config.CollectRadius, overlapParams)
 
                 for _, item in ipairs(partsNearby) do
-                    -- Filtrar solo piezas sueltas que no sean del mapa ni de jugadores/zombies
                     if not item.Anchored and not item:FindFirstAncestorOfClass("Humanoid") then
-                        item.CFrame = DropPointMarker.CFrame + Vector3.new(0, 2, 0)
-                        item.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        -- Comprobar si Base Prevent está activo y si el ítem ya está en la base
+                        local skipItem = false
+                        if Config.BasePrevent and isInsideBase(item.Position) then
+                            skipItem = true
+                        end
+
+                        if not skipItem then
+                            -- 1. Calcular offset aleatorio en un círculo para que no choquen entre sí
+                            local angle = math.random() * math.pi * 2
+                            local distance = math.random() * Config.SpreadRadius
+                            local offsetX = math.cos(angle) * distance
+                            local offsetZ = math.sin(angle) * distance
+
+                            local destinationPos = DropPointMarker.Position + Vector3.new(offsetX, 1.5, offsetZ)
+
+                            -- 2. Limpieza de velocidades acumuladas (evita que rebote o salga disparado)
+                            item.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                            item.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+
+                            -- 3. Asignar nueva posición sin colisión brusca
+                            item.CFrame = CFrame.new(destinationPos)
+
+                            -- Apagar colisiones brevemente para evitar efecto explosión
+                            item.CanCollide = false
+                            task.delay(0.15, function()
+                                if item and item.Parent then
+                                    item.CanCollide = true
+                                end
+                            end)
+                        end
                     end
                 end
             end
@@ -310,7 +383,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Modo Optimizado cargado sin lag.",
+    Content = "Base Prevent y Dispersión Anti-Bug integradas.",
     Duration = 4
 })
 
