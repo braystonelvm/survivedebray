@@ -1,5 +1,5 @@
 -- ==============================================================================
--- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE
+-- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE (OPTIMIZADO)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -22,9 +22,8 @@ local Config = {
 
 local CurrentTarget = nil
 local TargetHighlight = nil
-local DropPointMarker = nil -- La bolita marcadora
+local DropPointMarker = nil
 
--- Funciones del Highlight
 local function clearHighlight()
     if TargetHighlight then
         TargetHighlight:Destroy()
@@ -110,7 +109,7 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     end
 })
 
--- PESTAÑA 2: TELETRANSPORTE DE ÍTEMS / RECURSOS
+-- PESTAÑA 2: TELETRANSPORTE
 Tabs.Items:AddSection("Punto de Entrega (Trituradora / Base)")
 
 Tabs.Items:AddButton({
@@ -125,7 +124,6 @@ Tabs.Items:AddButton({
             DropPointMarker:Destroy()
         end
 
-        -- Crear la esfera visual
         DropPointMarker = Instance.new("Part")
         DropPointMarker.Name = "CustomDropPoint"
         DropPointMarker.Shape = Enum.PartType.Ball
@@ -157,14 +155,14 @@ Tabs.Items:AddSlider("RadiusSlider", {
     Title = "Radio de Recolección (Studs)",
     Default = 25,
     Min = 10,
-    Max = 60,
+    Max = 50,
     Rounding = 0,
     Callback = function(Value)
         Config.CollectRadius = Value
     end
 })
 
--- 2. BOTÓN FLOTANTE CÍRCULAR
+-- 2. BOTÓN FLOTANTE
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -213,8 +211,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             if chosen then
                 CurrentTarget = chosen
                 applyHighlight(chosen)
-                
-                -- Limpiar nombres genéricos como "Mesh"
+
                 local displayName = chosen.Name
                 if displayName == "Mesh" or displayName == "MeshPart" then
                     if chosen.Parent and chosen.Parent ~= workspace then
@@ -281,26 +278,29 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- 5. BUCLE DE TELETRANSPORTE DE ÍTEMS / CHATARRA
+-- 5. BUCLE DE TELETRANSPORTE OPTIMIZADO (CERO LAG)
+-- Usa detección espacial de Roblox en lugar de recorrer todo el workspace
+local overlapParams = OverlapParams.new()
+overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+
 task.spawn(function()
     while true do
-        task.wait(0.2)
+        task.wait(0.25)
         if Config.AutoSendItems and DropPointMarker and DropPointMarker.Parent then
             local char = lp.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             if root then
-                -- Buscar objetos interactivos o sueltos cerca
-                for _, item in ipairs(workspace:GetDescendants()) do
-                    if item:IsA("BasePart") and not item.Anchored and item:IsDescendantOf(workspace) then
-                        -- Ignorar partes del propio jugador o zombies
-                        if not item:IsDescendantOf(char) and not item:FindFirstAncestorOfClass("Humanoid") then
-                            local dist = (item.Position - root.Position).Magnitude
-                            if dist <= Config.CollectRadius then
-                                -- Mover la chatarra al destino marcado
-                                item.CFrame = DropPointMarker.CFrame + Vector3.new(0, 2, 0)
-                                item.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                            end
-                        end
+                -- Excluir a nuestro personaje de la búsqueda
+                overlapParams.FilterDescendantsInstances = {char}
+
+                -- Solo busca piezas en el radio exacto a tu alrededor (altamente eficiente)
+                local partsNearby = workspace:GetPartBoundsInRadius(root.Position, Config.CollectRadius, overlapParams)
+
+                for _, item in ipairs(partsNearby) do
+                    -- Filtrar solo piezas sueltas que no sean del mapa ni de jugadores/zombies
+                    if not item.Anchored and not item:FindFirstAncestorOfClass("Humanoid") then
+                        item.CFrame = DropPointMarker.CFrame + Vector3.new(0, 2, 0)
+                        item.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
                     end
                 end
             end
@@ -310,8 +310,8 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "T: Fijar | Y: Cancelar | Revisa la pestaña Teletransporte.",
-    Duration = 5
+    Content = "Modo Optimizado cargado sin lag.",
+    Duration = 4
 })
 
 Window:SelectTab(1)
