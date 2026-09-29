@@ -13,15 +13,18 @@ local mouse = lp:GetMouse()
 -- Variables de configuración
 local Config = {
     ZigZagEnabled = false,
-    SwitchInterval = 1.2,   -- Tiempo hacia cada lado
-    LateralDist = 12,       -- Amplitud del zigzag en studs
-    MoveSpeed = 24          -- Velocidad forzada de desplazamiento
+    SwitchInterval = 1.2,
+    LateralDist = 14,
+    MoveSpeed = 45,
+    AutoSendItems = false,
+    CollectRadius = 25
 }
 
 local CurrentTarget = nil
 local TargetHighlight = nil
+local DropPointMarker = nil -- La bolita marcadora
 
--- Crear o limpiar Highlight visual
+-- Funciones del Highlight
 local function clearHighlight()
     if TargetHighlight then
         TargetHighlight:Destroy()
@@ -47,20 +50,22 @@ local Window = Fluent:CreateWindow({
     Title = "ZOMBIE HUB | CUSTOM",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(580, 430),
+    Size = UDim2.fromOffset(580, 440),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
 
 local Tabs = {
-    Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" })
+    Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" }),
+    Items = Window:AddTab({ Title = "Teletransporte", Icon = "box" })
 }
 
-Tabs.Combat:AddSection("Controles de Zigzag")
+-- PESTAÑA 1: COMBATE Y AUTO
+Tabs.Combat:AddSection("Controles de Zigzag / Atropello")
 
 Tabs.Combat:AddToggle("ZigZagToggle", {
-    Title = "Activar Movimiento Automático",
+    Title = "Activar Movimiento / Atropello Automático",
     Default = false,
     Callback = function(Value)
         Config.ZigZagEnabled = Value
@@ -68,14 +73,14 @@ Tabs.Combat:AddToggle("ZigZagToggle", {
 })
 
 Tabs.Combat:AddParagraph({
-    Title = "Controles de Teclas",
-    Content = "• Presiona 'E' apuntando a un Zombie o a la Carretera (StraightRoad) para fijarlo.\n• Presiona 'R' para desmarcar el objetivo."
+    Title = "Teclas de Selector",
+    Content = "• Presiona 'T' apuntando a un Zombie o Zona para fijarlo.\n• Presiona 'Y' para desmarcar el objetivo."
 })
 
 Tabs.Combat:AddSlider("IntervalSlider", {
     Title = "Frecuencia de oscilación (Segundos)",
     Default = 1.2,
-    Min = 0.4,
+    Min = 0.3,
     Max = 3.0,
     Rounding = 1,
     Callback = function(Value)
@@ -84,10 +89,10 @@ Tabs.Combat:AddSlider("IntervalSlider", {
 })
 
 Tabs.Combat:AddSlider("DistSlider", {
-    Title = "Amplitud / Ancho de pista (Studs)",
-    Default = 12,
+    Title = "Ancho de Atropello (Studs)",
+    Default = 14,
     Min = 4,
-    Max = 30,
+    Max = 35,
     Rounding = 0,
     Callback = function(Value)
         Config.LateralDist = Value
@@ -95,17 +100,71 @@ Tabs.Combat:AddSlider("DistSlider", {
 })
 
 Tabs.Combat:AddSlider("SpeedSlider", {
-    Title = "Velocidad de Movimiento",
-    Default = 24,
+    Title = "Velocidad de Movimiento / Auto",
+    Default = 45,
     Min = 16,
-    Max = 80,
+    Max = 120,
     Rounding = 0,
     Callback = function(Value)
         Config.MoveSpeed = Value
     end
 })
 
--- 2. BOTÓN FLOTANTE
+-- PESTAÑA 2: TELETRANSPORTE DE ÍTEMS / RECURSOS
+Tabs.Items:AddSection("Punto de Entrega (Trituradora / Base)")
+
+Tabs.Items:AddButton({
+    Title = "Poner Bolita de Destino Aquí",
+    Description = "Coloca el marcador en la posición exacta donde estás parado",
+    Callback = function()
+        local char = lp.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+
+        if DropPointMarker then
+            DropPointMarker:Destroy()
+        end
+
+        -- Crear la esfera visual
+        DropPointMarker = Instance.new("Part")
+        DropPointMarker.Name = "CustomDropPoint"
+        DropPointMarker.Shape = Enum.PartType.Ball
+        DropPointMarker.Size = Vector3.new(3, 3, 3)
+        DropPointMarker.Material = Enum.Material.Neon
+        DropPointMarker.Color = Color3.fromRGB(0, 255, 170)
+        DropPointMarker.Anchored = true
+        DropPointMarker.CanCollide = false
+        DropPointMarker.CFrame = root.CFrame - Vector3.new(0, 2, 0)
+        DropPointMarker.Parent = workspace
+
+        Fluent:Notify({
+            Title = "Destino Guardado",
+            Content = "Punto de entrega fijado con la esfera verde.",
+            Duration = 3
+        })
+    end
+})
+
+Tabs.Items:AddToggle("AutoSendToggle", {
+    Title = "Enviar Ítems al Pasar Sobre Ellos",
+    Default = false,
+    Callback = function(Value)
+        Config.AutoSendItems = Value
+    end
+})
+
+Tabs.Items:AddSlider("RadiusSlider", {
+    Title = "Radio de Recolección (Studs)",
+    Default = 25,
+    Min = 10,
+    Max = 60,
+    Rounding = 0,
+    Callback = function(Value)
+        Config.CollectRadius = Value
+    end
+})
+
+-- 2. BOTÓN FLOTANTE CÍRCULAR
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -135,26 +194,18 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- 3. SELECCIÓN CON TECLA 'E' Y LIMPIEZA CON 'R'
+-- 3. SELECCIÓN CON TECLA 'T' Y CANCELACIÓN CON 'Y'
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
-    
-    -- Tecla E: Fijar
-    if input.KeyCode == Enum.KeyCode.E then
+
+    if input.KeyCode == Enum.KeyCode.T then
         local target = mouse.Target
         if target then
-            -- Intentar detectar si es un Zombie
             local model = target:FindFirstAncestorOfClass("Model")
             local chosen = nil
 
-            if model and model ~= lp.Character then
-                -- Si es un zombie dentro de Characters o con Humanoid
-                if model.Parent and model.Parent.Name == "Characters" or model:FindFirstChildOfClass("Humanoid") then
-                    chosen = model
-                else
-                    -- Si es una pieza de pista/mapa (StraightRoad, TSection, etc.)
-                    chosen = target
-                end
+            if model and model ~= lp.Character and model ~= workspace then
+                chosen = model
             else
                 chosen = target
             end
@@ -162,28 +213,36 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             if chosen then
                 CurrentTarget = chosen
                 applyHighlight(chosen)
+                
+                -- Limpiar nombres genéricos como "Mesh"
+                local displayName = chosen.Name
+                if displayName == "Mesh" or displayName == "MeshPart" then
+                    if chosen.Parent and chosen.Parent ~= workspace then
+                        displayName = chosen.Parent.Name
+                    end
+                end
+
                 Fluent:Notify({
                     Title = "Objetivo Seleccionado",
-                    Content = "Fijado: " .. chosen.Name,
+                    Content = "Fijado: " .. displayName,
                     Duration = 3
                 })
             end
         end
     end
 
-    -- Tecla R: Desmarcar
-    if input.KeyCode == Enum.KeyCode.R then
+    if input.KeyCode == Enum.KeyCode.Y then
         CurrentTarget = nil
         clearHighlight()
         Fluent:Notify({
-            Title = "Objetivo Limpiado",
-            Content = "Se canceló el objetivo actual.",
+            Title = "Objetivo Cancelado",
+            Content = "Se desmarcó el objetivo.",
             Duration = 2
         })
     end
 end)
 
--- 4. BUCLE DE MOVIMIENTO FÍSICO (MOTOR POR VELOCIDAD)
+-- 4. BUCLE DE MOVIMIENTO (COMBATE / ATROPELLO)
 local side = 1
 local lastSwitch = tick()
 
@@ -195,7 +254,6 @@ RunService.Heartbeat:Connect(function()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not root or not hum or hum.Health <= 0 then return end
 
-    -- Obtener pieza física de referencia
     local targetPart = nil
     if CurrentTarget:IsA("BasePart") then
         targetPart = CurrentTarget
@@ -204,32 +262,55 @@ RunService.Heartbeat:Connect(function()
     end
 
     if targetPart and targetPart.Parent then
-        -- Alternar dirección cada N segundos
         if tick() - lastSwitch >= Config.SwitchInterval then
             side = -side
             lastSwitch = tick()
         end
 
-        -- Calcular punto lateral oscilante
         local cf = targetPart.CFrame
         local lateralOffset = cf.RightVector * (side * Config.LateralDist)
         local destination = targetPart.Position + lateralOffset
 
-        -- Vector de dirección hacia la meta
         local direction = (destination - root.Position)
         local horizontalDir = Vector3.new(direction.X, 0, direction.Z)
 
         if horizontalDir.Magnitude > 1.5 then
-            -- Mover usando velocidad física directa (empuja al muñeco o auto sin que el teclado estorbe)
             local targetVelocity = horizontalDir.Unit * Config.MoveSpeed
             root.AssemblyLinearVelocity = Vector3.new(targetVelocity.X, root.AssemblyLinearVelocity.Y, targetVelocity.Z)
         end
     end
 end)
 
+-- 5. BUCLE DE TELETRANSPORTE DE ÍTEMS / CHATARRA
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        if Config.AutoSendItems and DropPointMarker and DropPointMarker.Parent then
+            local char = lp.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            if root then
+                -- Buscar objetos interactivos o sueltos cerca
+                for _, item in ipairs(workspace:GetDescendants()) do
+                    if item:IsA("BasePart") and not item.Anchored and item:IsDescendantOf(workspace) then
+                        -- Ignorar partes del propio jugador o zombies
+                        if not item:IsDescendantOf(char) and not item:FindFirstAncestorOfClass("Humanoid") then
+                            local dist = (item.Position - root.Position).Magnitude
+                            if dist <= Config.CollectRadius then
+                                -- Mover la chatarra al destino marcado
+                                item.CFrame = DropPointMarker.CFrame + Vector3.new(0, 2, 0)
+                                item.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
 Fluent:Notify({
-    Title = "ZOMBIE HUB CARGADO",
-    Content = "E: Seleccionar | R: Quitar marca | RightCtrl: Ocultar",
+    Title = "ZOMBIE HUB LISTO",
+    Content = "T: Fijar | Y: Cancelar | Revisa la pestaña Teletransporte.",
     Duration = 5
 })
 
