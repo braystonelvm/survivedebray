@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - CON AUTO-KILL TÁCTICO Y VUELO DE ABATIDO GARANTIZADO
+-- REACTOR NUCLEAR HUB - COORDENADAS PREDEFINIDAS Y TOTALMENTE MODIFICABLES
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -9,12 +9,15 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 
-local LOCAL_CHEST_OFFSETS = {
-    Vector3.new(57.3, -18.9, 43.1),   -- Cofre 1
-    Vector3.new(60.3, -19.0, 67.2),   -- Cofres 2 y 3
-    Vector3.new(60.3, -19.0, 67.2),   -- Cofres 4 y 5
-    Vector3.new(-34.0, -38.7, 115.2), -- Cofre 6
-    Vector3.new(-36.2, -38.7, 107.6)  -- Cofre 7
+-- Coordenadas predefinidas por defecto
+local DEFAULT_DOOR = Vector3.new(312.1, 3.2, 1200.0)
+local DEFAULT_CENTER = Vector3.new(360.2, 2.7, 1181.3)
+local DEFAULT_CHESTS = {
+    Vector3.new(371.4, -16.2, 1242.2), -- Cofre 1
+    Vector3.new(398.4, -16.3, 1234.3), -- Cofre 2
+    Vector3.new(413.4, -16.3, 1207.3), -- Cofre 3
+    Vector3.new(413.7, -36.0, 1138.6), -- Cofre 4
+    Vector3.new(402.9, -35.5, 1133.7)  -- Cofre 5
 }
 
 local GAS_STATION_1 = Vector3.new(246.3, 3.9, 235.4)
@@ -31,14 +34,19 @@ local State = {
     DetectionRadius = 270
 }
 
+-- Puntos activos (inician con los valores predeterminados)
 local Point1_Front = nil
-local Point2_Door = nil
-local CalculatedCenter = nil
-local DoorForwardDir = nil
+local Point2_Door = DEFAULT_DOOR
+local CalculatedCenter = DEFAULT_CENTER
+local DoorForwardDir = Vector3.new(DEFAULT_CENTER.X - DEFAULT_DOOR.X, 0, DEFAULT_CENTER.Z - DEFAULT_DOOR.Z).Unit
 
 local Markers = {}
 local CalculatedChests = {}
 local ChestMarkers = {}
+
+for _, cPos in ipairs(DEFAULT_CHESTS) do
+    table.insert(CalculatedChests, cPos)
+end
 
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
@@ -61,7 +69,7 @@ local Tabs = {
 
 local StatusParagraph = Tabs.Main:AddParagraph({
     Title = "Estado del Bot",
-    Content = "Inactivo. Presiona PLAY para iniciar."
+    Content = "Listo con coordenadas predefinidas. Presiona PLAY."
 })
 
 local FlyDiagnosticsParagraph = Tabs.Main:AddParagraph({
@@ -73,6 +81,58 @@ local function updateStatus(text)
     State.CurrentStatus = text
     StatusParagraph:SetDesc(text)
 end
+
+-- GENERAR MARCADORES VISUALES EN EL MAPA
+local function refreshVisualMarkers()
+    for _, m in pairs(Markers) do if m and m.Parent then m:Destroy() end end
+    for _, m in ipairs(ChestMarkers) do if m and m.Parent then m:Destroy() end end
+    table.clear(Markers)
+    table.clear(ChestMarkers)
+
+    if Point2_Door then
+        local dMarker = Instance.new("Part")
+        dMarker.Name = "NuclearDoorMarker"
+        dMarker.Shape = Enum.PartType.Ball
+        dMarker.Size = Vector3.new(3, 3, 3)
+        dMarker.Material = Enum.Material.Neon
+        dMarker.Color = Color3.fromRGB(255, 60, 0)
+        dMarker.Anchored = true
+        dMarker.CanCollide = false
+        dMarker.Position = Point2_Door
+        dMarker.Parent = workspace
+        Markers["Door"] = dMarker
+    end
+
+    if CalculatedCenter then
+        local cMarker = Instance.new("Part")
+        cMarker.Name = "NuclearCenterMarker"
+        cMarker.Shape = Enum.PartType.Ball
+        cMarker.Size = Vector3.new(3, 3, 3)
+        cMarker.Material = Enum.Material.Neon
+        cMarker.Color = Color3.fromRGB(255, 170, 0)
+        cMarker.Anchored = true
+        cMarker.CanCollide = false
+        cMarker.Position = CalculatedCenter
+        cMarker.Parent = workspace
+        Markers["Center"] = cMarker
+    end
+
+    for i, pos in ipairs(CalculatedChests) do
+        local marker = Instance.new("Part")
+        marker.Name = "ChestMarker_" .. i
+        marker.Shape = Enum.PartType.Ball
+        marker.Size = Vector3.new(2.2, 2.2, 2.2)
+        marker.Material = Enum.Material.Neon
+        marker.Color = Color3.fromRGB(0, 200, 255)
+        marker.Anchored = true
+        marker.CanCollide = false
+        marker.Position = pos
+        marker.Parent = workspace
+        table.insert(ChestMarkers, marker)
+    end
+end
+
+refreshVisualMarkers()
 
 -- MOTOR DEAD-FLY: OBTENER PIEZA DE TRACCIÓN
 local function getBestFlightPart()
@@ -90,13 +150,11 @@ local function getBestFlightPart()
     return hrp or torso
 end
 
--- FUNCIÓN PARA ROMPER SOLDADURAS AL SUELO
 local function breakGroundWelds()
     local char = lp.Character
     if char then
         for _, obj in ipairs(char:GetDescendants()) do
             if obj:IsA("Weld") or obj:IsA("WeldConstraint") or obj:IsA("Snap") then
-                -- Si está pegado al Workspace o fuera del personaje, destruirlo
                 if obj.Part0 and not obj.Part0:IsDescendantOf(char) then
                     obj:Destroy()
                 elseif obj.Part1 and not obj.Part1:IsDescendantOf(char) then
@@ -107,7 +165,6 @@ local function breakGroundWelds()
     end
 end
 
--- FUNCIÓN AUTO-KILL EN EL AIRE (FAVORECE EL VUELO)
 local function executeAirAutoKill()
     local char = lp.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -125,11 +182,9 @@ local function executeAirAutoKill()
         return
     end
 
-    -- 1. Impulsar hacia arriba antes de morir para despegar del suelo
     root.AssemblyLinearVelocity = Vector3.new(0, 45, 0)
     task.wait(0.08)
 
-    -- 2. Aplicar muerte
     pcall(function()
         hum.Health = 0
     end)
@@ -227,7 +282,6 @@ local function restoreCollisions()
     end
 end
 
--- ELIMINACIÓN DE COLISIONES
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused then
         local char = lp.Character
@@ -428,46 +482,6 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
     return count
 end
 
--- CALIBRACIÓN
-local function recalculateReactor()
-    if not Point1_Front or not Point2_Door then return end
-
-    local delta = (Point2_Door - Point1_Front)
-    local horizontalDir = Vector3.new(delta.X, 0, delta.Z)
-
-    if horizontalDir.Magnitude < 0.5 then
-        Fluent:Notify({ Title = "Puntos muy juntos", Content = "Separa un poco más los 2 puntos.", Duration = 3 })
-        return
-    end
-
-    DoorForwardDir = horizontalDir.Unit
-    local rightDir = DoorForwardDir:Cross(Vector3.new(0, 1, 0)).Unit
-    CalculatedCenter = Point2_Door + (DoorForwardDir * 46.6)
-
-    for _, m in ipairs(ChestMarkers) do if m and m.Parent then m:Destroy() end end
-    table.clear(CalculatedChests)
-    table.clear(ChestMarkers)
-
-    for i, offset in ipairs(LOCAL_CHEST_OFFSETS) do
-        local worldPos = Point2_Door + (rightDir * offset.X) + (DoorForwardDir * offset.Z) + Vector3.new(0, offset.Y, 0)
-        table.insert(CalculatedChests, worldPos)
-
-        local marker = Instance.new("Part")
-        marker.Name = "RotatedChestMarker_" .. i
-        marker.Shape = Enum.PartType.Ball
-        marker.Size = Vector3.new(2.2, 2.2, 2.2)
-        marker.Material = Enum.Material.Neon
-        marker.Color = Color3.fromRGB(0, 200, 255)
-        marker.Anchored = true
-        marker.CanCollide = false
-        marker.Position = worldPos
-        marker.Parent = workspace
-        table.insert(ChestMarkers, marker)
-    end
-
-    Fluent:Notify({ Title = "Calibración Completa", Content = "Orientación y 7 cofres listos.", Duration = 3 })
-end
-
 -- PESTAÑA 1: CONTROLES
 Tabs.Main:AddSection("Operación")
 
@@ -475,7 +489,7 @@ Tabs.Main:AddButton({
     Title = "▶ PLAY / INICIAR",
     Callback = function()
         if not Point2_Door or not CalculatedCenter then
-            Fluent:Notify({ Title = "Sin Calibrar", Content = "Fija los 2 puntos de la puerta primero.", Duration = 3 })
+            Fluent:Notify({ Title = "Sin Coordenadas", Content = "Falta fijar la puerta o el centro.", Duration = 3 })
             return
         end
         State.Running = true
@@ -506,7 +520,7 @@ Tabs.Main:AddButton({
 })
 
 Tabs.Main:AddToggle("LootChestsQuickToggle", {
-    Title = "Saquear 7 Cofres tras Limpiar",
+    Title = "Saquear Cofres tras Limpiar",
     Default = false,
     Callback = function(Value) State.LootChests = Value end
 })
@@ -535,70 +549,47 @@ Tabs.Death:AddButton({
     end
 })
 
--- PESTAÑA 3: CALIBRACIÓN
-Tabs.Setup:AddSection("2 Puntos en la Entrada")
+-- PESTAÑA 3: CALIBRACIÓN Y PERSONALIZACIÓN DE COORDENADAS
+Tabs.Setup:AddSection("Sobrescribir Puntos en Vivo")
 
 Tabs.Setup:AddButton({
-    Title = "1. Fijar Punto 1 (Frente a la Puerta)",
-    Callback = function()
-        local root = getBestFlightPart()
-        if root then
-            Point1_Front = root.Position
-            if Markers["P1"] and Markers["P1"].Parent then Markers["P1"]:Destroy() end
-            local m = Instance.new("Part")
-            m.Shape = Enum.PartType.Ball
-            m.Size = Vector3.new(2.5, 2.5, 2.5)
-            m.Material = Enum.Material.Neon
-            m.Color = Color3.fromRGB(255, 170, 0)
-            m.Anchored = true
-            m.CanCollide = false
-            m.Position = root.Position
-            m.Parent = workspace
-            Markers["P1"] = m
-
-            Fluent:Notify({ Title = "Punto 1 Guardado", Content = "Pégate a la puerta para el Punto 2.", Duration = 2 })
-            recalculateReactor()
-        end
-    end
-})
-
-Tabs.Setup:AddButton({
-    Title = "2. Fijar Punto 2 (Pegado a la Puerta)",
+    Title = "Fijar Puerta en Mi Posición Actual",
     Callback = function()
         local root = getBestFlightPart()
         if root then
             Point2_Door = root.Position
-            if Markers["P2"] and Markers["P2"].Parent then Markers["P2"]:Destroy() end
-            local m = Instance.new("Part")
-            m.Shape = Enum.PartType.Ball
-            m.Size = Vector3.new(2.5, 2.5, 2.5)
-            m.Material = Enum.Material.Neon
-            m.Color = Color3.fromRGB(255, 60, 0)
-            m.Anchored = true
-            m.CanCollide = false
-            m.Position = root.Position
-            m.Parent = workspace
-            Markers["P2"] = m
-
-            Fluent:Notify({ Title = "Punto 2 Guardado", Content = "Puerta fijada.", Duration = 2 })
-            recalculateReactor()
+            DoorForwardDir = Vector3.new(CalculatedCenter.X - Point2_Door.X, 0, CalculatedCenter.Z - Point2_Door.Z).Unit
+            refreshVisualMarkers()
+            Fluent:Notify({ Title = "Puerta Actualizada", Content = "Nueva coordenada guardada.", Duration = 2 })
         end
     end
 })
 
 Tabs.Setup:AddButton({
-    Title = "Borrar Calibración",
+    Title = "Fijar Centro en Mi Posición Actual",
     Callback = function()
-        Point1_Front = nil
-        Point2_Door = nil
-        CalculatedCenter = nil
-        DoorForwardDir = nil
-        for _, m in pairs(Markers) do if m and m.Parent then m:Destroy() end end
-        for _, m in ipairs(ChestMarkers) do if m and m.Parent then m:Destroy() end end
-        table.clear(Markers)
+        local root = getBestFlightPart()
+        if root then
+            CalculatedCenter = root.Position
+            DoorForwardDir = Vector3.new(CalculatedCenter.X - Point2_Door.X, 0, CalculatedCenter.Z - Point2_Door.Z).Unit
+            refreshVisualMarkers()
+            Fluent:Notify({ Title = "Centro Actualizado", Content = "Nueva coordenada guardada.", Duration = 2 })
+        end
+    end
+})
+
+Tabs.Setup:AddButton({
+    Title = "Restaurar Coordenadas Predeterminadas",
+    Callback = function()
+        Point2_Door = DEFAULT_DOOR
+        CalculatedCenter = DEFAULT_CENTER
+        DoorForwardDir = Vector3.new(DEFAULT_CENTER.X - DEFAULT_DOOR.X, 0, DEFAULT_CENTER.Z - DEFAULT_DOOR.Z).Unit
         table.clear(CalculatedChests)
-        table.clear(ChestMarkers)
-        updateStatus("Calibración reiniciada.")
+        for _, cPos in ipairs(DEFAULT_CHESTS) do
+            table.insert(CalculatedChests, cPos)
+        end
+        refreshVisualMarkers()
+        Fluent:Notify({ Title = "Restaurado", Content = "Valores iniciales fijados.", Duration = 2 })
     end
 })
 
@@ -690,7 +681,7 @@ task.spawn(function()
 
         if State.Running and not State.Paused then
             if not Point2_Door or not CalculatedCenter or not DoorForwardDir then
-                updateStatus("Error: Calibra los 2 puntos primero.")
+                updateStatus("Error: Coordenadas incompletas.")
                 State.Running = false
             else
                 local root = getBestFlightPart()
@@ -724,7 +715,6 @@ task.spawn(function()
                     task.wait(1.5)
                 end
 
-                -- ENTRAR AL CENTRO (Mantiene altura +10 studs fija de la puerta)
                 flyMoveTo(CalculatedCenter, 40, 3, true)
 
                 -- ESTADO 3: CACERÍA Y BARRIDO CON ÓRBITAS
@@ -763,7 +753,7 @@ task.spawn(function()
 
                 -- ESTADO 4: SAQUEO DE COFRES
                 if State.Running and not State.Paused and State.LootChests and #CalculatedChests > 0 then
-                    updateStatus("[4/5] Saqueando los 7 cofres subterráneos...")
+                    updateStatus("[4/5] Saqueando los 5 cofres predefinidos...")
                     for _, cPos in ipairs(CalculatedChests) do
                         if not State.Running or State.Paused then break end
                         lootChestSafe(cPos, State.ChestWaitTime)
@@ -819,7 +809,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Auto-Kill táctico y eliminador de soldaduras activo.",
+    Content = "Puerta, centro y 5 cofres predefinidos cargados.",
     Duration = 4
 })
 
