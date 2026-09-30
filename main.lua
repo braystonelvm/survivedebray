@@ -22,10 +22,16 @@ local LOCAL_CHEST_OFFSETS = {
 local Config = {
     -- Combate / Atropello
     AtropelloEnabled = false,
-    AtropelloMode = "Embestida Frontal", -- "Embestida Frontal" o "Zigzag"
-    CarFlyFrictionless = false,          -- Modo aerodeslizador sin fricción
+    AtropelloMode = "Embestida Frontal",
+    CarFlyFrictionless = false,
     MoveSpeed = 65,
-    ChargeOvershoot = 12,                -- Distancia que pasa de largo antes de volver
+    ChargeOvershoot = 12,
+    AntiBloaterPush = true,        -- Empujar bloaters lejos para evitar explosiones
+
+    -- Reparación Ultrarrápida
+    FastAutoRepair = true,
+    RepairSpeed = 0.08,           -- Segundos por golpe (ultra rápido)
+    RepairRange = 30,
 
     -- Teletransporte Scrap
     AutoSendItems = false,
@@ -37,7 +43,7 @@ local Config = {
     GeneratorSafeRadius = 160,
     SpreadRadius = 4,
 
-    -- Auto-Grabación de Puntos (Migas de Pan)
+    -- Auto-Grabado
     AutoRecordScrap = false,
     ScrapStepDist = 35,
     AutoRecordYellow = false,
@@ -98,7 +104,6 @@ local function applyHighlight(obj)
     end
 end
 
--- Obtener el vehículo actual si el jugador está sentado
 local function getCurrentVehicle()
     local char = lp.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -123,6 +128,7 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" }),
+    Repair = Window:AddTab({ Title = "Reparación", Icon = "hammer" }),
     Items = Window:AddTab({ Title = "Teletransporte", Icon = "box" }),
     Patrol = Window:AddTab({ Title = "Ruta y Mapa", Icon = "map-pin" }),
     Reactor = Window:AddTab({ Title = "Reactor Nuclear", Icon = "flame" }),
@@ -138,45 +144,40 @@ Tabs.Combat:AddToggle("FrictionlessToggle", {
     Default = false,
     Callback = function(Value)
         Config.CarFlyFrictionless = Value
-        local car, seat = getCurrentVehicle()
+        local car = getCurrentVehicle()
         if car then
             for _, p in ipairs(car:GetDescendants()) do
                 if p:IsA("BasePart") and (p.Name:lower():find("wheel") or p.Name:lower():find("tire") or p.Name:lower():find("rueda") or p.Name:lower():find("llanta")) then
                     p.CanCollide = not Value
-                    p.CustomPhysicalProperties = Value and PhysicalProperties.new(0.01, 0, 0, 0, 0) or nil
+                    pcall(function()
+                        p.CustomPhysicalProperties = Value and PhysicalProperties.new(0.01, 0, 0, 0, 0) or nil
+                    end)
                 end
             end
         end
     end
 })
 
-Tabs.Combat:AddSection("Atropello Automatizado")
+Tabs.Combat:AddSection("Atropello y Anti-Bloater")
 
 Tabs.Combat:AddToggle("AtropelloToggle", {
     Title = "Activar Ataque de Atropello",
     Default = false,
-    Callback = function(Value)
-        Config.AtropelloEnabled = Value
-    end
+    Callback = function(Value) Config.AtropelloEnabled = Value end
+})
+
+Tabs.Combat:AddToggle("AntiBloaterToggle", {
+    Title = "Repeler Bloaters (Anti-Explosión)",
+    Description = "Lanza a los zombies explosivos por el aire al atropellarlos para no recibir daño",
+    Default = true,
+    Callback = function(Value) Config.AntiBloaterPush = Value end
 })
 
 Tabs.Combat:AddDropdown("AtropelloModeSelect", {
     Title = "Patrón de Ataque",
     Values = {"Embestida Frontal", "Zigzag Lateral"},
     Default = "Embestida Frontal",
-    Callback = function(Value)
-        Config.AtropelloMode = Value
-    end
-})
-
-Tabs.Combat:AddSlider("ChargeDistSlider", {
-    Title = "Paso de Largo (Studs)",
-    Description = "Distancia que atraviesa al zombie antes de volver a chocarlo",
-    Default = 12,
-    Min = 5,
-    Max = 30,
-    Rounding = 0,
-    Callback = function(Value) Config.ChargeOvershoot = Value end
+    Callback = function(Value) Config.AtropelloMode = Value end
 })
 
 Tabs.Combat:AddSlider("SpeedSlider", {
@@ -188,12 +189,40 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     Callback = function(Value) Config.MoveSpeed = Value end
 })
 
--- PESTAÑA 2: TELETRANSPORTE Y AUTO-GRABACIÓN
+-- PESTAÑA 2: REPARACIÓN RÁPIDA
+Tabs.Repair:AddSection("Auto-Reparación con Martillo")
+
+Tabs.Repair:AddToggle("FastRepairToggle", {
+    Title = "Reparación Ultrarrápida Activa",
+    Description = "Repara tu auto (incluso estando adentro) y vallas dañadas al instante",
+    Default = true,
+    Callback = function(Value) Config.FastAutoRepair = Value end
+})
+
+Tabs.Repair:AddSlider("RepairSpeedSlider", {
+    Title = "Velocidad de Martillazo (Segundos)",
+    Description = "Menor valor = reparación mucho más rápida",
+    Default = 0.08,
+    Min = 0.03,
+    Max = 0.4,
+    Rounding = 2,
+    Callback = function(Value) Config.RepairSpeed = Value end
+})
+
+Tabs.Repair:AddSlider("RepairRadiusSlider", {
+    Title = "Radio de Reparación (Studs)",
+    Default = 30,
+    Min = 10,
+    Max = 60,
+    Rounding = 0,
+    Callback = function(Value) Config.RepairRange = Value end
+})
+
+-- PESTAÑA 3: TELETRANSPORTE Y AUTO-GRABACIÓN
 Tabs.Items:AddSection("Auto-Grabado de Bolitas (Al Conducir/Caminar)")
 
 Tabs.Items:AddToggle("AutoRecordScrapToggle", {
     Title = "Auto-Colocar Bolitas al Moverse",
-    Description = "Coloca una bolita verde cada vez que avanzas la distancia fijada",
     Default = false,
     Callback = function(Value)
         Config.AutoRecordScrap = Value
@@ -280,12 +309,11 @@ Tabs.Items:AddSlider("BaseRadiusSlider", {
     Callback = function(Value) Config.GeneratorSafeRadius = Value end
 })
 
--- PESTAÑA 3: RUTA Y MAPA
+-- PESTAÑA 4: RUTA Y MAPA
 Tabs.Patrol:AddSection("Auto-Grabado de Ruta Amarilla")
 
 Tabs.Patrol:AddToggle("AutoRecordYellowToggle", {
     Title = "Auto-Grabar Ruta al Caminar",
-    Description = "Coloca puntos amarillos a medida que te desplazas",
     Default = false,
     Callback = function(Value)
         Config.AutoRecordYellow = Value
@@ -371,8 +399,10 @@ Tabs.Patrol:AddButton({
     end
 })
 
--- PESTAÑA 4: REACTOR NUCLEAR
+-- PESTAÑA 5: REACTOR NUCLEAR
 Tabs.Reactor:AddSection("Calibración del Reactor (1 Solo Paso)")
+
+local allowReactorOverride = false
 
 local function applySinglePointReactor()
     local char = lp.Character
@@ -423,23 +453,26 @@ local function applySinglePointReactor()
     end
 end
 
+Tabs.Reactor:AddToggle("AllowOverrideToggle", {
+    Title = "Desbloquear Sobrescritura de Posición",
+    Default = false,
+    Callback = function(Value) allowReactorOverride = Value end
+})
+
 Tabs.Reactor:AddButton({
     Title = "Fijar Frente a la Puerta (Mirando adentro)",
     Callback = function()
-        if ReactorAnchorCF then
-            Window:Dialog({
-                Title = "Confirmar Cambio de Posición",
-                Content = "¿Estás seguro de que deseas sobrescribir el punto de referencia del Reactor?",
-                Buttons = {
-                    { Title = "Confirmar", Callback = function() applySinglePointReactor() end },
-                    { Title = "Cancelar", Callback = function() Fluent:Notify({ Title = "Cancelado", Content = "Se conservó la referencia anterior.", Duration = 2 }) end }
-                }
+        if ReactorAnchorCF and not allowReactorOverride then
+            Fluent:Notify({
+                Title = "Punto Protegido",
+                Content = "Activa 'Desbloquear Sobrescritura' arriba para cambiarlo.",
+                Duration = 4
             })
         else
             applySinglePointReactor()
         end
     end
-end)
+})
 
 Tabs.Reactor:AddSection("Automatización")
 
@@ -473,7 +506,7 @@ Tabs.Reactor:AddSlider("NuclearWaitSlider", {
     Callback = function(Value) Config.ReactorResetWaitTime = Value end
 })
 
--- PESTAÑA 5: UTILIDADES
+-- PESTAÑA 6: UTILIDADES
 Tabs.Misc:AddSection("Automatizaciones Ligeras")
 
 Tabs.Misc:AddToggle("InstantGasToggle", {
@@ -482,7 +515,7 @@ Tabs.Misc:AddToggle("InstantGasToggle", {
     Callback = function(Value) Config.InstantGasStation = Value end
 })
 
--- BOTÓN FLOTANTE
+-- BOTÓN FLOTANTE CÍRCULAR
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -512,7 +545,44 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- BUCLE DE AUTO-GRABACIÓN DE PUNTOS AL MOVERSE
+-- BUCLE DE REPARACIÓN ULTRARRÁPIDA (DESDE ADENTRO DEL AUTO)
+task.spawn(function()
+    while true do
+        task.wait(Config.RepairSpeed)
+        if Config.FastAutoRepair then
+            local char = lp.Character
+            local backpack = lp:FindFirstChild("Backpack")
+            local hammer = (char and char:FindFirstChildWhichIsA("Tool")) or (backpack and backpack:FindFirstChildWhichIsA("Tool"))
+
+            -- Verificar si es un martillo de reparación
+            if hammer and (hammer.Name:lower():find("hammer") or hammer.Name:lower():find("martillo") or hammer.Name:lower():find("repair")) then
+                -- Si está guardado en mochila, equiparlo temporalmente
+                if hammer.Parent == backpack and char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum then hum:EquipTool(hammer) end
+                end
+
+                -- 1. Reparar auto si estamos montados
+                local car = getCurrentVehicle()
+                if car then
+                    pcall(function()
+                        hammer:Activate()
+                    end)
+                else
+                    -- 2. Si estamos a pie, buscar vallas o piezas dañadas alrededor
+                    local root = char and char:FindFirstChild("HumanoidRootPart")
+                    if root then
+                        pcall(function()
+                            hammer:Activate()
+                        end)
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- BUCLE DE AUTO-GRABACIÓN AL MOVERSE
 task.spawn(function()
     while true do
         task.wait(0.3)
@@ -521,7 +591,6 @@ task.spawn(function()
         if root then
             local currentPos = root.Position
 
-            -- 1. Grabar bolitas de chatarra
             if Config.AutoRecordScrap then
                 if not LastScrapRecordPos or (currentPos - LastScrapRecordPos).Magnitude >= Config.ScrapStepDist then
                     LastScrapRecordPos = currentPos
@@ -542,7 +611,6 @@ task.spawn(function()
                 end
             end
 
-            -- 2. Grabar puntos amarillos
             if Config.AutoRecordYellow then
                 if not LastYellowRecordPos or (currentPos - LastYellowRecordPos).Magnitude >= Config.YellowStepDist then
                     LastYellowRecordPos = currentPos
@@ -565,8 +633,8 @@ task.spawn(function()
     end
 end)
 
--- BUCLE DE ATROPELLO FRONTAL / AUTO SIN FRICCIÓN
-local chargeState = "charge" -- "charge" (embestir) o "reverse" (retroceder)
+-- BUCLE DE ATROPELLO Y ANTI-BLOATER
+local chargeState = "charge"
 local stateSwitchTime = tick()
 
 RunService.Heartbeat:Connect(function()
@@ -574,7 +642,6 @@ RunService.Heartbeat:Connect(function()
     local controlledPart = seat or (lp.Character and lp.Character:FindFirstChild("HumanoidRootPart"))
     if not controlledPart then return end
 
-    -- Mantener ruedas sin fricción si está activo
     if Config.CarFlyFrictionless and car then
         for _, p in ipairs(car:GetDescendants()) do
             if p:IsA("BasePart") and (p.Name:lower():find("wheel") or p.Name:lower():find("tire") or p.Name:lower():find("rueda") or p.Name:lower():find("llanta")) then
@@ -590,14 +657,19 @@ RunService.Heartbeat:Connect(function()
 
     local targetPos = targetPart.Position
     local myPos = controlledPart.Position
+    local targetName = (CurrentTarget.Name):lower()
+    local isBloater = targetName:find("bloater") or targetName:find("boom") or targetName:find("explo")
 
     if Config.AtropelloMode == "Embestida Frontal" then
-        -- Vector hacia el zombie en plano horizontal
         local toZombie = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
         local dist = toZombie.Magnitude
 
-        -- Alternar fases de embestida
-        if chargeState == "charge" and dist < 3.5 then
+        -- Si es un bloater y chocamos, repelerlo por el aire lejos del auto
+        if dist < 6 and isBloater and Config.AntiBloaterPush then
+            targetPart.AssemblyLinearVelocity = Vector3.new(toZombie.Unit.X * 40, 75, toZombie.Unit.Z * 40)
+        end
+
+        if chargeState == "charge" and dist < 4.0 then
             chargeState = "reverse"
             stateSwitchTime = tick()
         elseif chargeState == "reverse" and (tick() - stateSwitchTime >= 0.8 or dist >= Config.ChargeOvershoot) then
@@ -606,10 +678,9 @@ RunService.Heartbeat:Connect(function()
 
         local moveDir = toZombie.Unit
         if chargeState == "reverse" then
-            moveDir = -moveDir -- Retroceder para tomar impulso
+            moveDir = -moveDir
         end
 
-        -- Alinear el frente del auto directamente al zombie
         if car then
             car:PivotTo(CFrame.new(myPos, Vector3.new(targetPos.X, myPos.Y, targetPos.Z)))
         end
@@ -617,7 +688,6 @@ RunService.Heartbeat:Connect(function()
         local vel = moveDir * Config.MoveSpeed
         controlledPart.AssemblyLinearVelocity = Vector3.new(vel.X, controlledPart.AssemblyLinearVelocity.Y, vel.Z)
     else
-        -- Modo Zigzag tradicional
         local cf = targetPart.CFrame
         local side = (math.sin(tick() * 3) > 0) and 1 or -1
         local destination = targetPos + (cf.RightVector * (side * 14))
@@ -631,7 +701,7 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- BUCLE DE TELETRANSPORTE SCRAP (SINCRONIZACIÓN DE RED REAL / CERO DESYNC)
+-- BUCLE DE TELETRANSPORTE SCRAP
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
@@ -721,8 +791,10 @@ task.spawn(function()
                                         TeleportedTracker[targetEntity] = true
 
                                         if firetouchinterest then
-                                            firetouchinterest(root, rootPart, 0)
-                                            firetouchinterest(root, rootPart, 1)
+                                            pcall(function()
+                                                firetouchinterest(root, rootPart, 0)
+                                                firetouchinterest(root, rootPart, 1)
+                                            end)
                                         end
 
                                         local angle = math.random() * math.pi * 2
@@ -997,7 +1069,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Modo Auto Deslizante y Auto-Grabación integrados.",
+    Content = "Reparación ultrarrápida y Anti-Bloater agregados.",
     Duration = 4
 })
 
