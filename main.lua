@@ -155,7 +155,7 @@ local function secureFlightStart()
     local root = getRootPart()
     if not root then return false end
 
-    local safeY = Point2_Door.Y + 10
+    local safeY = Point2_Door.Y + 3
     root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     local bodyPos = getOrCreatePhysics(root, safeY)
     bodyPos.Position = Vector3.new(root.Position.X, safeY, root.Position.Z)
@@ -171,7 +171,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
 
     local targetY = targetPos.Y
     if lockAltitudeToDoor and Point2_Door then
-        targetY = Point2_Door.Y + 10
+        targetY = Point2_Door.Y + 3
     end
 
     local finalDest = Vector3.new(targetPos.X, targetY, targetPos.Z)
@@ -223,7 +223,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
 
-    local targetY = Point2_Door.Y + 10
+    local targetY = Point2_Door.Y + 3
     local endTime = tick() + duration
     local angle = 0
 
@@ -231,7 +231,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
         RunService.Heartbeat:Wait()
-        angle = angle + (speed * 0.05)
+        angle = angle + (speed * 0.015)
         local tPos = targetRoot.Position
         local orbitDest = Vector3.new(
             tPos.X + math.cos(angle) * radius,
@@ -617,7 +617,7 @@ task.spawn(function()
                         local name = targetModel.Name
                         updateStatus("Rodeando a " .. name .. " para el dron...")
 
-                        -- Vuela hacia el zombie a altura segura (+10 studs)
+                        -- Vuela hacia el zombie a altura segura (+3 studs)
                         flyMoveTo(targetRoot.Position, 42, 6, true)
 
                         -- 1. Órbita cerrada (25.0 segundos)
