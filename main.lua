@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - INTELIGENTE, ANTI-TRABAS Y SIN LAG
+-- REACTOR NUCLEAR HUB - AUTÓNOMO CON RUTA DE GASOLINERAS
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -17,13 +17,18 @@ local LOCAL_CHEST_OFFSETS = {
     Vector3.new(-36.2, -38.7, 107.6)  -- Cofre 7
 }
 
+-- Coordenadas de las 2 Gasolineras
+local GAS_STATION_1 = Vector3.new(246.3, 3.9, 235.4)
+local GAS_STATION_2 = Vector3.new(610.9, 4.1, 409.6)
+
 local State = {
     Running = false,
     Paused = false,
     CurrentStatus = "Inactivo",
     LootChests = true,
     ChestWaitTime = 1.3,
-    BaseNuclearWait = 900,
+    BaseNuclearWait = 900, -- 15 minutos en segundos
+    GasCycleInterval = 180, -- 3 minutos entre rondas de gasolineras
     DetectionRadius = 130
 }
 
@@ -69,7 +74,6 @@ local function getRootPart()
     return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
 end
 
--- FUNCIÓN PARA COPIAR COORDENADAS CON RESPALDO
 local function copyCurrentCoords()
     local root = getRootPart()
     if root then
@@ -82,18 +86,12 @@ local function copyCurrentCoords()
             toclipboard(str)
         end
         
-        print("\n[REACTOR COORDS COPIADAS]: " .. str .. "\n")
+        print("\n[COORDS COPIADAS]: " .. str .. "\n")
         
         Fluent:Notify({
             Title = "¡Coordenada Copiada!",
             Content = str,
             Duration = 4
-        })
-    else
-        Fluent:Notify({
-            Title = "Error",
-            Content = "No se detectó el personaje.",
-            Duration = 2
         })
     end
 end
@@ -135,7 +133,7 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- VUELO RÍGIDO CON ANTI-TRABAS
+-- VUELO RÍGIDO CON ANTI-TRABAS (+10 studs fijos)
 local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
     stopDistance = stopDistance or 3.5
     local root = getRootPart()
@@ -143,7 +141,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
 
     local fixedHeight = applyElevation and 10 or 0
     local finalDest = targetPos + Vector3.new(0, fixedHeight, 0)
-    local timeout = tick() + 20
+    local timeout = tick() + 25
 
     local bodyPos = root:FindFirstChild("ReactorFloatBP")
     if not bodyPos then
@@ -183,6 +181,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
             return true
         end
 
+        -- Anti-Trabas: Si no avanza, micro-impulso vertical
         if (root.Position - lastPos).Magnitude < 0.2 then
             stuckCounter = stuckCounter + 1
             if stuckCounter >= 25 then
@@ -200,6 +199,22 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
 
     if bodyPos then bodyPos.Position = finalDest end
     return false
+end
+
+-- ACCIONAR SURTIDOR / PROMPT DE GASOLINA
+local function interactWithGasPump(stationPos)
+    local activated = false
+    for _, prompt in ipairs(workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") then
+            local pPart = prompt.Parent
+            if pPart and pPart:IsA("BasePart") and (pPart.Position - stationPos).Magnitude <= 18 then
+                prompt.HoldDuration = 0
+                fireproximityprompt(prompt)
+                activated = true
+            end
+        end
+    end
+    return activated
 end
 
 -- LECTURA DEL COOLDOWN DE LA PUERTA (SIN LAG)
@@ -222,7 +237,7 @@ local function getDoorCooldownRemaining(doorPos)
     return nil
 end
 
--- DETECCIÓN DE ENEMIGOS EN EL REACTOR
+-- DETECCIÓN DE PHASERS Y ZOMBIES EN EL REACTOR
 local function getActivePhaser(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     for _, entity in ipairs(charFolder:GetChildren()) do
@@ -259,7 +274,7 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
     return count
 end
 
--- CALIBRACIÓN
+-- CALIBRACIÓN POR 2 PUNTOS
 local function recalculateReactor()
     if not Point1_Front or not Point2_Door then return end
 
@@ -299,7 +314,7 @@ local function recalculateReactor()
         table.insert(ChestMarkers, marker)
     end
 
-    Fluent:Notify({ Title = "Calibración Completa", Content = "Orientación y 7 cofres listos.", Duration = 3 })
+    Fluent:Notify({ Title = "Calibración Completa", Content = "Puerta, centro y 7 cofres listos.", Duration = 3 })
 end
 
 -- PESTAÑA 1: CONTROLES
@@ -307,7 +322,7 @@ Tabs.Main:AddSection("Operación")
 
 Tabs.Main:AddButton({
     Title = "▶ PLAY / INICIAR",
-    Description = "Inicia o reanuda la rutina de farmeo",
+    Description = "Inicia el farmeo del reactor y recargas de gas",
     Callback = function()
         if not Point2_Door or not CalculatedCenter then
             Fluent:Notify({ Title = "Sin Calibrar", Content = "Fija los 2 puntos de la puerta primero.", Duration = 3 })
@@ -415,7 +430,6 @@ local LiveCoordsParagraph = Tabs.Coords:AddParagraph({
     Content = "X: 0, Y: 0, Z: 0"
 })
 
--- Actualización en vivo del párrafo de coordenadas
 task.spawn(function()
     while true do
         task.wait(0.3)
@@ -429,7 +443,6 @@ end)
 
 Tabs.Coords:AddButton({
     Title = "📋 Copiar Mi Posición Actual",
-    Description = "Guarda tu Vector3 exacto en el portapapeles",
     Callback = function()
         copyCurrentCoords()
     end
@@ -488,14 +501,14 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- TECLA C DIRECTA (SIN FILTRO DE GAMEPROCESSED PARA QUE SIEMPRE REACCIONE)
+-- TECLA C DIRECTA
 UserInputService.InputBegan:Connect(function(input)
     if input.KeyCode == Enum.KeyCode.C then
         copyCurrentCoords()
     end
 end)
 
--- MÁQUINA DE ESTADOS Y EJECUCIÓN AUTÓNOMA INTELIGENTE
+-- MÁQUINA DE ESTADOS Y EJECUCIÓN AUTÓNOMA
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -534,7 +547,7 @@ task.spawn(function()
 
                 flyMoveTo(CalculatedCenter, 40, 3, true)
 
-                -- ESTADO 3: CACERÍA Y ESPERA DE PHASERS (ANTI-TRABAS)
+                -- ESTADO 3: CACERÍA Y ESPERA DE PHASERS
                 updateStatus("[3/5] Vigilando Reactor / Esperando Dron...")
                 local inCombat = true
                 local clearStreak = 0
@@ -577,23 +590,48 @@ task.spawn(function()
                     end
                 end
 
-                -- ESTADO 5: ESPERAR 15 MINUTOS EN LA BASE Y RESETEAR BIOMA
+                -- ESTADO 5: RECORRIDO DE GASOLINERAS CADA 3 MINUTOS (DURANTE LOS 15 MINUTOS)
                 if State.Running and not State.Paused then
-                    flyMoveTo(CalculatedCenter, 40, 3, true)
-                    local waitStart = tick()
+                    local cooldownStart = tick()
 
-                    while State.Running and not State.Paused and (tick() - waitStart < State.BaseNuclearWait) do
-                        local left = math.floor(State.BaseNuclearWait - (tick() - waitStart))
-                        local mins = math.floor(left / 60)
-                        local secs = left % 60
-                        updateStatus(string.format("[5/5] En base. Esperando recarga: %02dm %02ds", mins, secs))
-                        task.wait(1)
+                    while State.Running and not State.Paused and (tick() - cooldownStart < State.BaseNuclearWait) do
+                        local roundStart = tick()
+
+                        -- 1. Viajar a Gasolinera 1 y recargar
+                        updateStatus("[5/5] Viajando a Gasolinera 1...")
+                        flyMoveTo(GAS_STATION_1, 55, 4, false)
+                        task.wait(0.5)
+                        interactWithGasPump(GAS_STATION_1)
+                        task.wait(1.5)
+
+                        -- 2. Viajar a Gasolinera 2 y recargar
+                        if not State.Running or State.Paused then break end
+                        updateStatus("[5/5] Viajando a Gasolinera 2...")
+                        flyMoveTo(GAS_STATION_2, 55, 4, false)
+                        task.wait(0.5)
+                        interactWithGasPump(GAS_STATION_2)
+                        task.wait(1.5)
+
+                        -- 3. Regresar a la Puerta del Reactor
+                        if not State.Running or State.Paused then break end
+                        updateStatus("[5/5] Regresando a la puerta del Reactor...")
+                        flyMoveTo(Point2_Door, 55, 4, true)
+
+                        -- 4. Esperar el resto de los 3 minutos en la puerta antes de volver a salir
+                        while State.Running and not State.Paused and (tick() - roundStart < State.GasCycleInterval) do
+                            local totalLeft = math.floor(State.BaseNuclearWait - (tick() - cooldownStart))
+                            if totalLeft <= 0 then break end
+
+                            local nextGas = math.floor(State.GasCycleInterval - (tick() - roundStart))
+                            local mins = math.floor(totalLeft / 60)
+                            local secs = totalLeft % 60
+                            updateStatus(string.format("Nuclear: %02dm %02ds | Próximo Gas en: %ds", mins, secs, math.max(0, nextGas)))
+                            task.wait(1)
+                        end
                     end
 
-                    updateStatus("Descargando bioma (420 studs)...")
-                    local resetPos = Point2_Door - (DoorForwardDir * 420) + Vector3.new(0, 15, 0)
-                    flyMoveTo(resetPos, 60, 6, false)
-                    task.wait(3)
+                    updateStatus("Cooldown completado. Reiniciando bucle del Reactor...")
+                    task.wait(1)
                 end
             end
         else
@@ -604,7 +642,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Copiador de Coords activo en pestaña y con tecla 'C'.",
+    Content = "Ruta de Gasolineras (15 min) integrada.",
     Duration = 4
 })
 
