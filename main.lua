@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - REGLA DE ALTURA ABSOLUTA INQUEBRANTABLE (+10 STUDS)
+-- REACTOR NUCLEAR HUB - CON AUTO-KILL TÁCTICO Y VUELO DE ABATIDO GARANTIZADO
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -24,7 +24,7 @@ local State = {
     Running = false,
     Paused = false,
     CurrentStatus = "Inactivo",
-    LootChests = false, -- Por defecto APAGADO para máxima seguridad (actívalo si deseas)
+    LootChests = false,
     ChestWaitTime = 1.3,
     BaseNuclearWait = 900,
     GasCycleInterval = 180,
@@ -45,7 +45,7 @@ local Window = Fluent:CreateWindow({
     Title = "REACTOR HUB | NUCLEAR",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(560, 490),
+    Size = UDim2.fromOffset(560, 520),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
@@ -53,6 +53,7 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Main = Window:AddTab({ Title = "Controles", Icon = "play" }),
+    Death = Window:AddTab({ Title = "Auto-Kill / Vuelo", Icon = "skull" }),
     Setup = Window:AddTab({ Title = "Calibración", Icon = "map-pin" }),
     Coords = Window:AddTab({ Title = "Coords", Icon = "clipboard" }),
     Settings = Window:AddTab({ Title = "Ajustes", Icon = "settings" })
@@ -63,18 +64,112 @@ local StatusParagraph = Tabs.Main:AddParagraph({
     Content = "Inactivo. Presiona PLAY para iniciar."
 })
 
+local FlyDiagnosticsParagraph = Tabs.Main:AddParagraph({
+    Title = "Diagnóstico Dead-Fly (ZHUB)",
+    Content = "Verificando físicas..."
+})
+
 local function updateStatus(text)
     State.CurrentStatus = text
     StatusParagraph:SetDesc(text)
 end
 
-local function getRootPart()
+-- MOTOR DEAD-FLY: OBTENER PIEZA DE TRACCIÓN
+local function getBestFlightPart()
     local char = lp.Character
-    return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    if not char then return nil end
+
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local isDowned = (hum and hum.Health <= 0) or char:FindFirstChild("ReviveProgress") or char:FindFirstChild("Downed")
+
+    if isDowned and torso then
+        return torso
+    end
+    return hrp or torso
 end
 
+-- FUNCIÓN PARA ROMPER SOLDADURAS AL SUELO
+local function breakGroundWelds()
+    local char = lp.Character
+    if char then
+        for _, obj in ipairs(char:GetDescendants()) do
+            if obj:IsA("Weld") or obj:IsA("WeldConstraint") or obj:IsA("Snap") then
+                -- Si está pegado al Workspace o fuera del personaje, destruirlo
+                if obj.Part0 and not obj.Part0:IsDescendantOf(char) then
+                    obj:Destroy()
+                elseif obj.Part1 and not obj.Part1:IsDescendantOf(char) then
+                    obj:Destroy()
+                end
+            end
+        end
+    end
+end
+
+-- FUNCIÓN AUTO-KILL EN EL AIRE (FAVORECE EL VUELO)
+local function executeAirAutoKill()
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local root = getBestFlightPart()
+
+    if not char or not hum or not root then
+        Fluent:Notify({ Title = "Error", Content = "Personaje no detectado.", Duration = 2 })
+        return
+    end
+
+    if hum.Health <= 0 then
+        Fluent:Notify({ Title = "Ya estás abatido", Content = "Liberando restricciones de suelo...", Duration = 2 })
+        breakGroundWelds()
+        root.AssemblyLinearVelocity = Vector3.new(0, 30, 0)
+        return
+    end
+
+    -- 1. Impulsar hacia arriba antes de morir para despegar del suelo
+    root.AssemblyLinearVelocity = Vector3.new(0, 45, 0)
+    task.wait(0.08)
+
+    -- 2. Aplicar muerte
+    pcall(function()
+        hum.Health = 0
+    end)
+
+    task.wait(0.1)
+    breakGroundWelds()
+
+    Fluent:Notify({
+        Title = "Auto-Kill Ejecutado",
+        Content = "Cuerpo en el aire sin restricciones de suelo.",
+        Duration = 3
+    })
+end
+
+-- DIAGNÓSTICO EN TIEMPO REAL
+task.spawn(function()
+    while true do
+        task.wait(0.3)
+        local char = lp.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local part = getBestFlightPart()
+
+        if not char or not part then
+            FlyDiagnosticsParagraph:SetDesc("🔴 SIN PERSONAJE (Esperando spawn)")
+        elseif hum and hum.Health > 0 then
+            FlyDiagnosticsParagraph:SetDesc("🟢 PERSONAJE VIVO | Físicas normales (Vuelo al 100%)")
+        else
+            breakGroundWelds()
+            local canFly = not part.Anchored
+            if canFly then
+                FlyDiagnosticsParagraph:SetDesc(string.format("🟡 ABATIDO LIBRE | Pieza: %s (Vuelo desbloqueado)", part.Name))
+            else
+                FlyDiagnosticsParagraph:SetDesc("🔴 ABATIDO Y ANCLADO | Servidor bloqueó la pieza")
+            end
+        end
+    end
+end)
+
 local function copyCurrentCoords()
-    local root = getRootPart()
+    local root = getBestFlightPart()
     if root then
         local p = root.Position
         local str = string.format("Vector3.new(%.1f, %.1f, %.1f)", p.X, p.Y, p.Z)
@@ -84,39 +179,42 @@ local function copyCurrentCoords()
     end
 end
 
--- CONTROL DE FÍSICA ESTRICTO CON FUERZA INFINITA EN Y
-local function getOrCreatePhysics(root)
-    local bodyPos = root:FindFirstChild("ReactorFloatBP")
+-- CONTROL DE FÍSICA CON FUERZA INFINITA EN Y
+local function getOrCreatePhysics(part)
+    local bodyPos = part:FindFirstChild("ReactorFloatBP")
     if not bodyPos then
         bodyPos = Instance.new("BodyPosition")
         bodyPos.Name = "ReactorFloatBP"
-        -- Fuerza vertical extrema para anular cualquier gravedad o caída
         bodyPos.MaxForce = Vector3.new(1e6, math.huge, 1e6)
-        bodyPos.P = 30000
+        bodyPos.P = 35000
         bodyPos.D = 600
-        bodyPos.Parent = root
+        bodyPos.Parent = part
     end
 
-    local bodyGyro = root:FindFirstChild("ReactorFloatBG")
+    local bodyGyro = part:FindFirstChild("ReactorFloatBG")
     if not bodyGyro then
         bodyGyro = Instance.new("BodyGyro")
         bodyGyro.Name = "ReactorFloatBG"
         bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-        bodyGyro.CFrame = root.CFrame
-        bodyGyro.Parent = root
+        bodyGyro.CFrame = part.CFrame
+        bodyGyro.Parent = part
     end
 
     return bodyPos, bodyGyro
 end
 
 local function removePhysicsHelpers()
-    local root = getRootPart()
-    if root then
-        local bp = root:FindFirstChild("ReactorFloatBP")
-        if bp then bp:Destroy() end
-        local bg = root:FindFirstChild("ReactorFloatBG")
-        if bg then bg:Destroy() end
-        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    local char = lp.Character
+    if char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                local bp = part:FindFirstChild("ReactorFloatBP")
+                if bp then bp:Destroy() end
+                local bg = part:FindFirstChild("ReactorFloatBG")
+                if bg then bg:Destroy() end
+                part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            end
+        end
     end
 end
 
@@ -129,30 +227,33 @@ local function restoreCollisions()
     end
 end
 
+-- ELIMINACIÓN DE COLISIONES
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused then
         local char = lp.Character
         if char then
             for _, p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") then p.CanCollide = false end
+                if p:IsA("BasePart") then
+                    p.CanCollide = false
+                end
             end
         end
     end
 end)
 
--- VUELO CON BLOQUEO MATEMÁTICO DE ALTURA
+-- VUELO CON ALTITUD BLINDADA
 local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     stopDistance = stopDistance or 3.5
-    local root = getRootPart()
+    local root = getBestFlightPart()
     if not root then return false end
 
-    -- Regla absoluta: la altura objetivo se fija de forma inmutable
+    breakGroundWelds()
+
     local safeY = (lockAltitudeToDoor and Point2_Door) and (Point2_Door.Y + 10) or targetPos.Y
     local finalDest = Vector3.new(targetPos.X, safeY, targetPos.Z)
     local timeout = tick() + 20
 
     local bodyPos = getOrCreatePhysics(root)
-    -- Clavar de inmediato la altura Y para que no ceda ni un milímetro
     bodyPos.Position = Vector3.new(root.Position.X, safeY, root.Position.Z)
 
     local lastPos = root.Position
@@ -161,6 +262,13 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     while State.Running and tick() < timeout do
         RunService.Heartbeat:Wait()
 
+        local currentRoot = getBestFlightPart()
+        if currentRoot and currentRoot ~= root then
+            removePhysicsHelpers()
+            root = currentRoot
+            bodyPos = getOrCreatePhysics(root)
+        end
+
         while State.Running and State.Paused do
             bodyPos.Position = Vector3.new(root.Position.X, safeY, root.Position.Z)
             task.wait(0.2)
@@ -168,19 +276,18 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
 
         if not State.Running then break end
 
-        -- Distancia medida solo en el plano horizontal para no engañar al bot si hay desnivel
         local horizontalDist = (Vector3.new(finalDest.X, 0, finalDest.Z) - Vector3.new(root.Position.X, 0, root.Position.Z)).Magnitude
         if horizontalDist <= stopDistance then
             bodyPos.Position = finalDest
             return true
         end
 
-        -- Detección anti-bloqueo horizontal
         local movedHorizontal = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(lastPos.X, 0, lastPos.Z)).Magnitude
         if movedHorizontal < 0.2 then
             stuckCounter = stuckCounter + 1
             if stuckCounter >= 25 then
                 bodyPos.Position = Vector3.new(root.Position.X, safeY + 4, root.Position.Z)
+                breakGroundWelds()
                 stuckCounter = 0
             end
         else
@@ -188,7 +295,6 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
             lastPos = root.Position
         end
 
-        -- El avance hacia adelante mantiene fija la cota Y
         local hDir = (Vector3.new(finalDest.X, 0, finalDest.Z) - Vector3.new(root.Position.X, 0, root.Position.Z)).Unit
         local nextStepX = root.Position.X + (hDir.X * (speed * 0.1))
         local nextStepZ = root.Position.Z + (hDir.Z * (speed * 0.1))
@@ -199,22 +305,20 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     return false
 end
 
--- ÓRBITAS CON ALTURA PURA Y FIJA
+-- ÓRBITAS TÁCTICAS
 local function orbitTarget(targetRoot, radius, duration, speed)
-    local root = getRootPart()
+    local root = getBestFlightPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
 
     local safeY = Point2_Door.Y + 10
     local endTime = tick() + duration
     local angle = 0
-
     local bodyPos = getOrCreatePhysics(root)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
         RunService.Heartbeat:Wait()
         angle = angle + (speed * 0.05)
         local tPos = targetRoot.Position
-        -- Gira en X y Z, pero Y jamás se mueve de safeY
         bodyPos.Position = Vector3.new(
             tPos.X + math.cos(angle) * radius,
             safeY,
@@ -223,22 +327,19 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     end
 end
 
--- RUTINA SEGURA DE COFRES (ALINEACIÓN AÉREA + BAJADA DIRECTA + REGRESO VERTICAL)
+-- COFRES SEGUROS
 local function lootChestSafe(chestWorldPos, waitTime)
-    local root = getRootPart()
+    local root = getBestFlightPart()
     if not root or not Point2_Door then return end
 
     local safeY = Point2_Door.Y + 10
 
-    -- 1. Viajar primero por el aire exactamente arriba del cofre (sin bajar)
     flyMoveTo(chestWorldPos, 38, 3, true)
     task.wait(0.2)
 
-    -- 2. Bajar verticalmente de forma limpia
     flyMoveTo(chestWorldPos, 25, 2.5, false)
     task.wait(waitTime)
 
-    -- 3. Volver a subir de inmediato al cielo (+10 studs) antes de pensar en el siguiente
     local returnSky = Vector3.new(chestWorldPos.X, safeY, chestWorldPos.Z)
     flyMoveTo(returnSky, 30, 2.5, false)
     task.wait(0.2)
@@ -306,9 +407,7 @@ local function getAnyTargetZombie(centerPos, maxDist)
         end
     end
 
-    if priorityPhaser then
-        return priorityPhaser, priorityRoot
-    end
+    if priorityPhaser then return priorityPhaser, priorityRoot end
     return bestTarget, bestRoot
 end
 
@@ -408,18 +507,41 @@ Tabs.Main:AddButton({
 
 Tabs.Main:AddToggle("LootChestsQuickToggle", {
     Title = "Saquear 7 Cofres tras Limpiar",
-    Description = "Desactívalo si prefieres quedarte siempre flotando sin bajar",
     Default = false,
     Callback = function(Value) State.LootChests = Value end
 })
 
--- PESTAÑA 2: CALIBRACIÓN
+-- PESTAÑA 2: AUTO-KILL / CONDICIONES DE VUELO
+Tabs.Death:AddSection("Muerte Asistida para Desbloquear Vuelo")
+
+Tabs.Death:AddButton({
+    Title = "💀 Morir en el Aire (Salto + Kill)",
+    Description = "Salta y muere en el aire para que el torso nunca se pegue al suelo",
+    Callback = function()
+        executeAirAutoKill()
+    end
+})
+
+Tabs.Death:AddButton({
+    Title = "🔓 Romper Soldaduras de Suelo Manualmente",
+    Description = "Destruye uniones si tu cadáver quedó trabado contra el suelo",
+    Callback = function()
+        breakGroundWelds()
+        local root = getBestFlightPart()
+        if root then
+            root.AssemblyLinearVelocity = Vector3.new(0, 25, 0)
+        end
+        Fluent:Notify({ Title = "Soldaduras Eliminadas", Content = "Impulso vertical aplicado.", Duration = 2 })
+    end
+})
+
+-- PESTAÑA 3: CALIBRACIÓN
 Tabs.Setup:AddSection("2 Puntos en la Entrada")
 
 Tabs.Setup:AddButton({
     Title = "1. Fijar Punto 1 (Frente a la Puerta)",
     Callback = function()
-        local root = getRootPart()
+        local root = getBestFlightPart()
         if root then
             Point1_Front = root.Position
             if Markers["P1"] and Markers["P1"].Parent then Markers["P1"]:Destroy() end
@@ -443,7 +565,7 @@ Tabs.Setup:AddButton({
 Tabs.Setup:AddButton({
     Title = "2. Fijar Punto 2 (Pegado a la Puerta)",
     Callback = function()
-        local root = getRootPart()
+        local root = getBestFlightPart()
         if root then
             Point2_Door = root.Position
             if Markers["P2"] and Markers["P2"].Parent then Markers["P2"]:Destroy() end
@@ -480,7 +602,7 @@ Tabs.Setup:AddButton({
     end
 })
 
--- PESTAÑA 3: COORDS
+-- PESTAÑA 4: COORDS
 Tabs.Coords:AddSection("Extraer Coordenadas")
 
 local LiveCoordsParagraph = Tabs.Coords:AddParagraph({
@@ -491,7 +613,7 @@ local LiveCoordsParagraph = Tabs.Coords:AddParagraph({
 task.spawn(function()
     while true do
         task.wait(0.3)
-        local root = getRootPart()
+        local root = getBestFlightPart()
         if root then
             local p = root.Position
             LiveCoordsParagraph:SetDesc(string.format("X: %.1f | Y: %.1f | Z: %.1f", p.X, p.Y, p.Z))
@@ -504,7 +626,7 @@ Tabs.Coords:AddButton({
     Callback = function() copyCurrentCoords() end
 })
 
--- PESTAÑA 4: AJUSTES
+-- PESTAÑA 5: AJUSTES
 Tabs.Settings:AddSection("Tiempos")
 
 Tabs.Settings:AddSlider("BaseWaitSlider", {
@@ -561,7 +683,7 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
--- MÁQUINA DE ESTADOS - ALTITUD BLINDADA
+-- MÁQUINA DE ESTADOS - EJECUCIÓN AUTÓNOMA
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -571,7 +693,7 @@ task.spawn(function()
                 updateStatus("Error: Calibra los 2 puntos primero.")
                 State.Running = false
             else
-                local root = getRootPart()
+                local root = getBestFlightPart()
                 local distToCenter = root and (root.Position - CalculatedCenter).Magnitude or 999
                 local alreadyInside = distToCenter < 140
 
@@ -605,7 +727,7 @@ task.spawn(function()
                 -- ENTRAR AL CENTRO (Mantiene altura +10 studs fija de la puerta)
                 flyMoveTo(CalculatedCenter, 40, 3, true)
 
-                -- ESTADO 3: CACERÍA Y BARRIDO CON ÓRBITAS (270 STUDS - ALTURA BLINDADA)
+                -- ESTADO 3: CACERÍA Y BARRIDO CON ÓRBITAS
                 updateStatus("[3/5] Barriendo reactor (270 studs) con órbitas...")
                 local inCombat = true
                 local clearStreak = 0
@@ -619,18 +741,13 @@ task.spawn(function()
                         local name = targetModel.Name
                         updateStatus("Rodeando a " .. name .. " para el dron...")
 
-                        -- Acercarse al zombie en horizontal sin alterar la cota Y segura
                         flyMoveTo(targetRoot.Position, 42, 6, true)
-
-                        -- Órbita cerrada (radio 7 studs)
                         orbitTarget(targetRoot, 7, 1.8, 4)
 
-                        -- Órbita amplia (radio 15 studs)
                         if targetModel.Parent and targetRoot.Parent then
                             orbitTarget(targetRoot, 15, 2.2, 3)
                         end
 
-                        -- Retorno seguro al centro a cota fija
                         flyMoveTo(CalculatedCenter, 40, 3, true)
                     else
                         local remaining = countLivingZombiesInReactor(CalculatedCenter, State.DetectionRadius)
@@ -644,18 +761,17 @@ task.spawn(function()
                     end
                 end
 
-                -- ESTADO 4: SAQUEO SEGURO DE COFRES (ALINEACIÓN AÉREA + BAJADA DIRECTA + SUBIDA)
+                -- ESTADO 4: SAQUEO DE COFRES
                 if State.Running and not State.Paused and State.LootChests and #CalculatedChests > 0 then
-                    updateStatus("[4/5] Saqueando los 7 cofres subterráneos de forma segura...")
+                    updateStatus("[4/5] Saqueando los 7 cofres subterráneos...")
                     for _, cPos in ipairs(CalculatedChests) do
                         if not State.Running or State.Paused then break end
                         lootChestSafe(cPos, State.ChestWaitTime)
                     end
-                    -- Volver a asegurar la altura central del reactor
                     flyMoveTo(CalculatedCenter, 40, 3, true)
                 end
 
-                -- ESTADO 5: RECORRIDO DE GASOLINERAS CADA 3 MINUTOS (DURANTE LOS 15 MINUTOS)
+                -- ESTADO 5: RECORRIDO DE GASOLINERAS CADA 3 MINUTOS
                 if State.Running and not State.Paused then
                     local cooldownStart = tick()
 
@@ -703,7 +819,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Piso virtual indestructible activado. Cero caídas.",
+    Content = "Auto-Kill táctico y eliminador de soldaduras activo.",
     Duration = 4
 })
 
