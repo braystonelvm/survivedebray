@@ -1,14 +1,14 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - EXCLUSIVO Y LIGERO
+-- REACTOR NUCLEAR HUB - INTELIGENTE, ANTI-TRABAS Y SIN LAG
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
 local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 
--- Offsets locales relativos a la orientación (Derecha, Altura_Y, Adelante)
 local LOCAL_CHEST_OFFSETS = {
     Vector3.new(57.3, -18.9, 43.1),   -- Cofre 1
     Vector3.new(60.3, -19.0, 67.2),   -- Cofres 2 y 3
@@ -20,13 +20,13 @@ local LOCAL_CHEST_OFFSETS = {
 local State = {
     Running = false,
     Paused = false,
+    CurrentStatus = "Inactivo",
     LootChests = true,
     ChestWaitTime = 1.3,
-    ResetWaitTime = 10.0,
+    BaseNuclearWait = 900, -- 15 minutos en segundos
     DetectionRadius = 130
 }
 
--- Puntos de calibración
 local Point1_Front = nil
 local Point2_Door = nil
 local CalculatedCenter = nil
@@ -41,7 +41,7 @@ local Window = Fluent:CreateWindow({
     Title = "REACTOR HUB | NUCLEAR",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(560, 480),
+    Size = UDim2.fromOffset(560, 490),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
@@ -49,17 +49,47 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Main = Window:AddTab({ Title = "Controles", Icon = "play" }),
-    Setup = Window:AddTab({ Title = "Calibración (2 Puntos)", Icon = "map-pin" }),
-    Settings = Window:AddTab({ Title = "Tiempos / Ajustes", Icon = "settings" })
+    Setup = Window:AddTab({ Title = "Calibración", Icon = "map-pin" }),
+    Coords = Window:AddTab({ Title = "Coords", Icon = "clipboard" }),
+    Settings = Window:AddTab({ Title = "Ajustes", Icon = "settings" })
 }
 
--- FUNCIONES DE FÍSICA Y LIMPIEZA
-local function removeFly()
+-- Párrafo de Estado
+local StatusParagraph = Tabs.Main:AddParagraph({
+    Title = "Estado del Bot",
+    Content = "Inactivo. Presiona PLAY para iniciar."
+})
+
+local function updateStatus(text)
+    State.CurrentStatus = text
+    StatusParagraph:SetDesc(text)
+end
+
+local function copyToClipboard(text, label)
+    if setclipboard then
+        setclipboard(text)
+    end
+    print("\n[COORDS] " .. label .. ":\n" .. text .. "\n")
+    Fluent:Notify({
+        Title = "Copiado al Portapapeles",
+        Content = label .. " listo para usar.",
+        Duration = 3
+    })
+end
+
+-- CONTROL DE FÍSICA Y FLOTACIÓN ANCLADA
+local function getRootPart()
     local char = lp.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+end
+
+local function removePhysicsHelpers()
+    local root = getRootPart()
     if root then
-        local bv = root:FindFirstChild("ReactorFlyForce")
-        if bv then bv:Destroy() end
+        local bp = root:FindFirstChild("ReactorFloatBP")
+        if bp then bp:Destroy() end
+        local bg = root:FindFirstChild("ReactorFloatBG")
+        if bg then bg:Destroy() end
         root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     end
 end
@@ -75,7 +105,7 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP CONSTANTE (Solo cuando está corriendo y no pausado)
+-- NOCLIP CONSTANTE ACTIVO
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused then
         local char = lp.Character
@@ -89,52 +119,95 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- VUELO REFORZADO (+10 STUDS FIJOS SIN CAÍDAS)
+-- VUELO RÍGIDO CON ANTI-TRABAS
 local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
     stopDistance = stopDistance or 3.5
-    local char = lp.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    local root = getRootPart()
     if not root then return false end
 
-    local elevatedHeight = applyElevation and 10 or 0
-    local finalDest = targetPos + Vector3.new(0, elevatedHeight, 0)
-    local timeout = tick() + 25
+    local fixedHeight = applyElevation and 10 or 0
+    local finalDest = targetPos + Vector3.new(0, fixedHeight, 0)
+    local timeout = tick() + 20 -- 20 segundos máximo para evitar atascos permanentes
 
-    local bodyVel = root:FindFirstChild("ReactorFlyForce")
-    if not bodyVel then
-        bodyVel = Instance.new("BodyVelocity")
-        bodyVel.Name = "ReactorFlyForce"
-        bodyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-        bodyVel.Parent = root
+    local bodyPos = root:FindFirstChild("ReactorFloatBP")
+    if not bodyPos then
+        bodyPos = Instance.new("BodyPosition")
+        bodyPos.Name = "ReactorFloatBP"
+        bodyPos.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+        bodyPos.P = 15000
+        bodyPos.D = 800
+        bodyPos.Parent = root
     end
+
+    local bodyGyro = root:FindFirstChild("ReactorFloatBG")
+    if not bodyGyro then
+        bodyGyro = Instance.new("BodyGyro")
+        bodyGyro.Name = "ReactorFloatBG"
+        bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+        bodyGyro.CFrame = root.CFrame
+        bodyGyro.Parent = root
+    end
+
+    local lastPos = root.Position
+    local stuckCounter = 0
 
     while State.Running and tick() < timeout do
         RunService.Heartbeat:Wait()
 
-        -- Manejo de pausa
         while State.Running and State.Paused do
-            bodyVel.Velocity = Vector3.new(0, 0, 0)
+            bodyPos.Position = root.Position
             task.wait(0.2)
         end
 
         if not State.Running then break end
 
-        local diff = (finalDest - root.Position)
-        local dist = diff.Magnitude
-
+        local dist = (finalDest - root.Position).Magnitude
         if dist <= stopDistance then
-            bodyVel.Velocity = Vector3.new(0, 0, 0)
+            bodyPos.Position = finalDest
             return true
         end
 
-        bodyVel.Velocity = diff.Unit * speed
+        -- Lógica Anti-Trabas: Si no avanza en 1 segundo, da un micro-impulso hacia arriba
+        if (root.Position - lastPos).Magnitude < 0.2 then
+            stuckCounter = stuckCounter + 1
+            if stuckCounter >= 25 then
+                bodyPos.Position = root.Position + Vector3.new(0, 6, 0)
+                stuckCounter = 0
+            end
+        else
+            stuckCounter = 0
+            lastPos = root.Position
+        end
+
+        local stepDir = (finalDest - root.Position).Unit
+        bodyPos.Position = root.Position + (stepDir * (speed * 0.1))
     end
 
-    if bodyVel then bodyVel.Velocity = Vector3.new(0, 0, 0) end
+    if bodyPos then bodyPos.Position = finalDest end
     return false
 end
 
--- DETECCIÓN DE ENEMIGOS
+-- LECTURA SEGURA DEL COOLDOWN DE LA PUERTA (SIN LAG)
+local function getDoorCooldownRemaining(doorPos)
+    for _, gui in ipairs(workspace:GetChildren()) do
+        if gui:IsA("BillboardGui") or gui:IsA("SurfaceGui") then
+            local adornee = gui.Adornee or gui.Parent
+            if adornee and adornee:IsA("BasePart") and (adornee.Position - doorPos).Magnitude <= 20 then
+                for _, lbl in ipairs(gui:GetChildren()) do
+                    if lbl:IsA("TextLabel") and lbl.Visible then
+                        local txt = lbl.Text:lower()
+                        if txt:find("m") and txt:find("s") and not txt:find("revivir") then
+                            return txt
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- DETECCIÓN DE ENEMIGOS EN EL REACTOR
 local function getActivePhaser(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     for _, entity in ipairs(charFolder:GetChildren()) do
@@ -171,7 +244,7 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
     return count
 end
 
--- CÁLCULO DE ORIENTACIÓN Y COFRES
+-- CALIBRACIÓN
 local function recalculateReactor()
     if not Point1_Front or not Point2_Door then return end
 
@@ -179,24 +252,21 @@ local function recalculateReactor()
     local horizontalDir = Vector3.new(delta.X, 0, delta.Z)
 
     if horizontalDir.Magnitude < 0.5 then
-        Fluent:Notify({ Title = "Puntos muy juntos", Content = "Separa un poco más el Punto 1 del Punto 2.", Duration = 3 })
+        Fluent:Notify({ Title = "Puntos muy juntos", Content = "Separa un poco más los 2 puntos.", Duration = 3 })
         return
     end
 
     DoorForwardDir = horizontalDir.Unit
     local rightDir = DoorForwardDir:Cross(Vector3.new(0, 1, 0)).Unit
 
-    -- Centro a 46.6 studs adelante de la puerta
     CalculatedCenter = Point2_Door + (DoorForwardDir * 46.6)
 
-    -- Limpiar marcadores viejos de cofres
     for _, m in ipairs(ChestMarkers) do
         if m and m.Parent then m:Destroy() end
     end
     table.clear(CalculatedChests)
     table.clear(ChestMarkers)
 
-    -- Calcular y mostrar los 7 cofres
     for i, offset in ipairs(LOCAL_CHEST_OFFSETS) do
         local worldPos = Point2_Door + (rightDir * offset.X) + (DoorForwardDir * offset.Z) + Vector3.new(0, offset.Y, 0)
         table.insert(CalculatedChests, worldPos)
@@ -214,11 +284,11 @@ local function recalculateReactor()
         table.insert(ChestMarkers, marker)
     end
 
-    Fluent:Notify({ Title = "Cálculo Completo", Content = "Orientación y 7 cofres listos.", Duration = 3 })
+    Fluent:Notify({ Title = "Calibración Completa", Content = "Orientación y 7 cofres listos.", Duration = 3 })
 end
 
--- PESTAÑA 1: CONTROLES (PLAY / PAUSA / STOP)
-Tabs.Main:AddSection("Estado del Auto-Farm")
+-- PESTAÑA 1: CONTROLES
+Tabs.Main:AddSection("Operación")
 
 Tabs.Main:AddButton({
     Title = "▶ PLAY / INICIAR",
@@ -230,49 +300,40 @@ Tabs.Main:AddButton({
         end
         State.Running = true
         State.Paused = false
-        Fluent:Notify({ Title = "Reactor Iniciado", Content = "Rutina en marcha.", Duration = 2 })
+        updateStatus("Iniciado. Evaluando puerta...")
     end
 })
 
 Tabs.Main:AddButton({
     Title = "⏸ PAUSA",
-    Description = "Congela temporalmente el movimiento donde estés",
     Callback = function()
         if State.Running then
             State.Paused = not State.Paused
-            Fluent:Notify({
-                Title = State.Paused and "Pausado" or "Reanudado",
-                Content = State.Paused and "Movimiento congelado." or "Continuando rutina...",
-                Duration = 2
-            })
+            updateStatus(State.Paused and "Pausado manualmente" or "Reanudado")
         end
     end
 })
 
 Tabs.Main:AddButton({
     Title = "⏹ STOP (CANCELAR TODO)",
-    Description = "Apaga la rutina, quita el noclip y desactiva el vuelo",
     Callback = function()
         State.Running = false
         State.Paused = false
-        removeFly()
+        removePhysicsHelpers()
         restoreCollisions()
-        Fluent:Notify({ Title = "Detenido", Content = "Noclip y Vuelo desactivados por completo.", Duration = 3 })
+        updateStatus("Detenido. Físicas restauradas.")
     end
 })
 
--- PESTAÑA 2: CALIBRACIÓN DE LOS 2 PUNTOS
-Tabs.Setup:AddSection("Calibración en la Puerta")
+-- PESTAÑA 2: CALIBRACIÓN
+Tabs.Setup:AddSection("2 Puntos en la Entrada")
 
 Tabs.Setup:AddButton({
     Title = "1. Fijar Punto 1 (Frente a la Puerta)",
-    Description = "Párate a unos 3 o 5 metros frente a la puerta",
     Callback = function()
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local root = getRootPart()
         if root then
             Point1_Front = root.Position
-
             if Markers["P1"] and Markers["P1"].Parent then Markers["P1"]:Destroy() end
             local m = Instance.new("Part")
             m.Shape = Enum.PartType.Ball
@@ -285,7 +346,7 @@ Tabs.Setup:AddButton({
             m.Parent = workspace
             Markers["P1"] = m
 
-            Fluent:Notify({ Title = "Punto 1 Guardado", Content = "Ahora avanza y pégate a la puerta.", Duration = 2.5 })
+            Fluent:Notify({ Title = "Punto 1 Guardado", Content = "Pégate a la puerta para el Punto 2.", Duration = 2 })
             recalculateReactor()
         end
     end
@@ -293,13 +354,10 @@ Tabs.Setup:AddButton({
 
 Tabs.Setup:AddButton({
     Title = "2. Fijar Punto 2 (Pegado a la Puerta)",
-    Description = "Pégate a la puerta/consola del reactor",
     Callback = function()
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local root = getRootPart()
         if root then
             Point2_Door = root.Position
-
             if Markers["P2"] and Markers["P2"].Parent then Markers["P2"]:Destroy() end
             local m = Instance.new("Part")
             m.Shape = Enum.PartType.Ball
@@ -312,7 +370,7 @@ Tabs.Setup:AddButton({
             m.Parent = workspace
             Markers["P2"] = m
 
-            Fluent:Notify({ Title = "Punto 2 Guardado", Content = "Puerta fijada.", Duration = 2.5 })
+            Fluent:Notify({ Title = "Punto 2 Guardado", Content = "Puerta fijada.", Duration = 2 })
             recalculateReactor()
         end
     end
@@ -325,26 +383,43 @@ Tabs.Setup:AddButton({
         Point2_Door = nil
         CalculatedCenter = nil
         DoorForwardDir = nil
-        for _, m in pairs(Markers) do
-            if m and m.Parent then m:Destroy() end
-        end
-        for _, m in ipairs(ChestMarkers) do
-            if m and m.Parent then m:Destroy() end
-        end
+        for _, m in pairs(Markers) do if m and m.Parent then m:Destroy() end end
+        for _, m in ipairs(ChestMarkers) do if m and m.Parent then m:Destroy() end end
         table.clear(Markers)
         table.clear(CalculatedChests)
         table.clear(ChestMarkers)
-        Fluent:Notify({ Title = "Calibración Borrada", Content = "Puntos reiniciados.", Duration = 2 })
+        updateStatus("Calibración reiniciada.")
     end
 })
 
--- PESTAÑA 3: TIEMPOS Y AJUSTES
-Tabs.Settings:AddSection("Ajustes del Saqueo")
+-- PESTAÑA 3: COPIADOR DE COORDENADAS
+Tabs.Coords:AddSection("Extraer Posición Actual")
 
-Tabs.Settings:AddToggle("LootChestsToggle", {
-    Title = "Saquear 7 Cofres tras Limpiar",
-    Default = true,
-    Callback = function(Value) State.LootChests = Value end
+Tabs.Coords:AddButton({
+    Title = "Copiar Mi Posición Actual (Tecla 'C')",
+    Description = "Copia tu Vector3 exacto al portapapeles listo para usar",
+    Callback = function()
+        local root = getRootPart()
+        if root then
+            local pos = root.Position
+            local str = string.format("Vector3.new(%.1f, %.1f, %.1f)", pos.X, pos.Y, pos.Z)
+            copyToClipboard(str, "Posición Actual")
+        end
+    end
+})
+
+-- PESTAÑA 4: AJUSTES
+Tabs.Settings:AddSection("Tiempos")
+
+Tabs.Settings:AddSlider("BaseWaitSlider", {
+    Title = "Tiempo de espera en Base (Minutos)",
+    Default = 15,
+    Min = 5,
+    Max = 30,
+    Rounding = 0,
+    Callback = function(Value)
+        State.BaseNuclearWait = Value * 60
+    end
 })
 
 Tabs.Settings:AddSlider("ChestWaitSlider", {
@@ -356,16 +431,7 @@ Tabs.Settings:AddSlider("ChestWaitSlider", {
     Callback = function(Value) State.ChestWaitTime = Value end
 })
 
-Tabs.Settings:AddSlider("ResetWaitSlider", {
-    Title = "Tiempo fuera del bioma para reiniciar (Seg)",
-    Default = 10.0,
-    Min = 5.0,
-    Max = 60.0,
-    Rounding = 0,
-    Callback = function(Value) State.ResetWaitTime = Value end
-})
-
--- BOTÓN FLOTANTE CÍRCULAR (MÁS ABAJO: Y = 0.40)
+-- BOTÓN FLOTANTE CÍRCULAR (Y = 0.40)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "ReactorHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -395,21 +461,45 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- BUCLE MAESTRO: EJECUCIÓN AUTÓNOMA DEL REACTOR
+-- TECLA C PARA COPIAR COORDENADAS
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.C then
+        local root = getRootPart()
+        if root then
+            local pos = root.Position
+            local str = string.format("Vector3.new(%.1f, %.1f, %.1f)", pos.X, pos.Y, pos.Z)
+            copyToClipboard(str, "Posición Actual")
+        end
+    end
+end)
+
+-- MÁQUINA DE ESTADOS Y EJECUCIÓN AUTÓNOMA INTELIGENTE
 task.spawn(function()
     while true do
         task.wait(0.5)
 
         if State.Running and not State.Paused then
             if not Point2_Door or not CalculatedCenter or not DoorForwardDir then
-                Fluent:Notify({ Title = "Sin Calibrar", Content = "Falta fijar los puntos de la puerta.", Duration = 3 })
+                updateStatus("Error: Calibra los 2 puntos primero.")
                 State.Running = false
             else
-                -- 1. Ir a la Puerta (+10 studs suspendido)
+                -- ESTADO 1: VERIFICAR COOLDOWN DE PUERTA
+                updateStatus("[1/5] Verificando Puerta...")
                 flyMoveTo(Point2_Door, 35, 4, true)
                 task.wait(0.5)
 
-                -- Activar ProximityPrompt de la puerta
+                local cd = getDoorCooldownRemaining(Point2_Door)
+                while State.Running and not State.Paused and cd do
+                    updateStatus("Puerta Bloqueada. Esperando tiempo: " .. cd)
+                    task.wait(2)
+                    cd = getDoorCooldownRemaining(Point2_Door)
+                end
+
+                if not State.Running then break end
+
+                -- ESTADO 2: ABRIR E INGRESAR AL REACTOR
+                updateStatus("[2/5] Accediendo al reactor...")
                 for _, prompt in ipairs(workspace:GetDescendants()) do
                     if prompt:IsA("ProximityPrompt") then
                         local pPart = prompt.Parent
@@ -421,10 +511,10 @@ task.spawn(function()
                 end
                 task.wait(1.5)
 
-                -- 2. Entrar al Centro (+10 studs fijos)
                 flyMoveTo(CalculatedCenter, 40, 3, true)
 
-                -- 3. Cacería de Phasers y vigilancia
+                -- ESTADO 3: CACERÍA Y ESPERA DE PHASERS (ANTI-TRABAS)
+                updateStatus("[3/5] Vigilando Reactor / Esperando Dron...")
                 local inCombat = true
                 local clearStreak = 0
 
@@ -434,7 +524,10 @@ task.spawn(function()
 
                     if phaserModel and phaserRoot then
                         clearStreak = 0
-                        while State.Running and not State.Paused and phaserModel.Parent and phaserRoot.Parent do
+                        updateStatus("Persiguiendo Phaser para el dron...")
+                        local chaseTimeout = tick() + 15
+
+                        while State.Running and not State.Paused and phaserModel.Parent and phaserRoot.Parent and tick() < chaseTimeout do
                             local eHum = phaserModel:FindFirstChildOfClass("Humanoid")
                             if eHum and eHum.Health <= 0 then break end
                             flyMoveTo(phaserRoot.Position, 38, 5, true)
@@ -443,6 +536,7 @@ task.spawn(function()
                         flyMoveTo(CalculatedCenter, 40, 3, true)
                     else
                         local remaining = countLivingZombiesInReactor(CalculatedCenter, State.DetectionRadius)
+                        updateStatus("Limpieza en curso. Zombies restantes: " .. remaining)
                         if remaining == 0 then
                             clearStreak = clearStreak + 1
                             if clearStreak >= 3 then inCombat = false end
@@ -452,9 +546,9 @@ task.spawn(function()
                     end
                 end
 
-                -- 4. Ruta de los 7 Cofres Subterráneos
+                -- ESTADO 4: SAQUEO DE COFRES
                 if State.Running and not State.Paused and State.LootChests and #CalculatedChests > 0 then
-                    Fluent:Notify({ Title = "Reactor Despejado", Content = "Recorriendo los 7 cofres subterráneos...", Duration = 3 })
+                    updateStatus("[4/5] Saqueando los 7 cofres subterráneos...")
                     for _, cPos in ipairs(CalculatedChests) do
                         if not State.Running or State.Paused then break end
                         flyMoveTo(cPos, 38, 2.5, false)
@@ -462,21 +556,34 @@ task.spawn(function()
                     end
                 end
 
-                -- 5. Salir 420 studs en reversa para descargar el bioma
+                -- ESTADO 5: ESPERAR 15 MINUTOS EN LA BASE Y RESETEAR BIOMA
                 if State.Running and not State.Paused then
-                    Fluent:Notify({ Title = "Saqueo Completo", Content = "Alejándose 420 studs para reiniciar bioma...", Duration = 3 })
+                    flyMoveTo(CalculatedCenter, 40, 3, true)
+                    local waitStart = tick()
+
+                    while State.Running and not State.Paused and (tick() - waitStart < State.BaseNuclearWait) do
+                        local left = math.floor(State.BaseNuclearWait - (tick() - waitStart))
+                        local mins = math.floor(left / 60)
+                        local secs = left % 60
+                        updateStatus(string.format("[5/5] En base. Esperando recarga: %02dm %02ds", mins, secs))
+                        task.wait(1)
+                    end
+
+                    updateStatus("Descargando bioma (420 studs)...")
                     local resetPos = Point2_Door - (DoorForwardDir * 420) + Vector3.new(0, 15, 0)
                     flyMoveTo(resetPos, 60, 6, false)
-                    task.wait(State.ResetWaitTime)
+                    task.wait(3)
                 end
             end
+        else
+            removePhysicsHelpers()
         end
     end
 end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Menú exclusivo de Reactor cargado.",
+    Content = "Sistema Anti-Trabas y Copiador de Coords activos.",
     Duration = 4
 })
 
