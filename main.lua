@@ -24,13 +24,13 @@ local Config = {
     AtropelloEnabled = false,
     AtropelloMode = "Embestida Frontal",
     CarFlyFrictionless = false,
-    MoveSpeed = 70,
-    ChargeOvershoot = 14,
-    AntiBloaterPush = true,
+    MoveSpeed = 65,
+    ChargeOvershoot = 12,
+    AntiBloaterPush = true,        -- Empujar bloaters lejos para evitar explosiones
 
-    -- Reparación
+    -- Reparación Ultrarrápida
     FastAutoRepair = true,
-    RepairSpeed = 0.1,
+    RepairSpeed = 0.08,           -- Segundos por golpe (ultra rápido)
     RepairRange = 30,
 
     -- Teletransporte Scrap
@@ -58,7 +58,7 @@ local Config = {
     -- Utilidades
     InstantGasStation = true,
 
-    -- Reactor
+    -- Reactor Autónomo
     ReactorFarmEnabled = false,
     LootChests = true,
     ChestWaitTime = 1.3,
@@ -104,17 +104,15 @@ local function applyHighlight(obj)
     end
 end
 
--- Detección segura de vehículo
 local function getCurrentVehicle()
     local char = lp.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if hum and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
         local seat = hum.SeatPart
         local carModel = seat:FindFirstAncestorOfClass("Model")
-        local mainPart = carModel and (carModel.PrimaryPart or seat) or seat
-        return carModel, seat, mainPart
+        return carModel, seat
     end
-    return nil, nil, nil
+    return nil, nil
 end
 
 -- 1. VENTANA PRINCIPAL
@@ -141,18 +139,18 @@ local Tabs = {
 Tabs.Combat:AddSection("Físicas del Auto (Modo ZHUB)")
 
 Tabs.Combat:AddToggle("FrictionlessToggle", {
-    Title = "Modo Deslizante (Sin Colisión en Ruedas/Suelo)",
-    Description = "Asienta el chasis y permite giros y aceleración instantáneos",
+    Title = "Modo Auto Deslizante (Sin Fricción de Ruedas)",
+    Description = "Elimina la resistencia de las llantas para acelerar y girar al instante",
     Default = false,
     Callback = function(Value)
         Config.CarFlyFrictionless = Value
-        local car, seat = getCurrentVehicle()
+        local car = getCurrentVehicle()
         if car then
             for _, p in ipairs(car:GetDescendants()) do
-                if p:IsA("BasePart") and p ~= seat then
+                if p:IsA("BasePart") and (p.Name:lower():find("wheel") or p.Name:lower():find("tire") or p.Name:lower():find("rueda") or p.Name:lower():find("llanta")) then
+                    p.CanCollide = not Value
                     pcall(function()
-                        p.CanCollide = not Value
-                        p.CustomPhysicalProperties = Value and PhysicalProperties.new(0.001, 0, 0, 0, 0) or nil
+                        p.CustomPhysicalProperties = Value and PhysicalProperties.new(0.01, 0, 0, 0, 0) or nil
                     end)
                 end
             end
@@ -170,6 +168,7 @@ Tabs.Combat:AddToggle("AtropelloToggle", {
 
 Tabs.Combat:AddToggle("AntiBloaterToggle", {
     Title = "Repeler Bloaters (Anti-Explosión)",
+    Description = "Lanza a los zombies explosivos por el aire al atropellarlos para no recibir daño",
     Default = true,
     Callback = function(Value) Config.AntiBloaterPush = Value end
 })
@@ -183,9 +182,9 @@ Tabs.Combat:AddDropdown("AtropelloModeSelect", {
 
 Tabs.Combat:AddSlider("SpeedSlider", {
     Title = "Velocidad de Embestida",
-    Default = 70,
-    Min = 25,
-    Max = 160,
+    Default = 65,
+    Min = 20,
+    Max = 150,
     Rounding = 0,
     Callback = function(Value) Config.MoveSpeed = Value end
 })
@@ -194,22 +193,33 @@ Tabs.Combat:AddSlider("SpeedSlider", {
 Tabs.Repair:AddSection("Auto-Reparación con Martillo")
 
 Tabs.Repair:AddToggle("FastRepairToggle", {
-    Title = "Reparación Rápida Activa",
+    Title = "Reparación Ultrarrápida Activa",
+    Description = "Repara tu auto (incluso estando adentro) y vallas dañadas al instante",
     Default = true,
     Callback = function(Value) Config.FastAutoRepair = Value end
 })
 
 Tabs.Repair:AddSlider("RepairSpeedSlider", {
-    Title = "Frecuencia de Martillo (Segundos)",
-    Default = 0.1,
-    Min = 0.05,
+    Title = "Velocidad de Martillazo (Segundos)",
+    Description = "Menor valor = reparación mucho más rápida",
+    Default = 0.08,
+    Min = 0.03,
     Max = 0.4,
     Rounding = 2,
     Callback = function(Value) Config.RepairSpeed = Value end
 })
 
+Tabs.Repair:AddSlider("RepairRadiusSlider", {
+    Title = "Radio de Reparación (Studs)",
+    Default = 30,
+    Min = 10,
+    Max = 60,
+    Rounding = 0,
+    Callback = function(Value) Config.RepairRange = Value end
+})
+
 -- PESTAÑA 3: TELETRANSPORTE Y AUTO-GRABACIÓN
-Tabs.Items:AddSection("Auto-Grabado de Bolitas")
+Tabs.Items:AddSection("Auto-Grabado de Bolitas (Al Conducir/Caminar)")
 
 Tabs.Items:AddToggle("AutoRecordScrapToggle", {
     Title = "Auto-Colocar Bolitas al Moverse",
@@ -462,7 +472,7 @@ Tabs.Reactor:AddButton({
             applySinglePointReactor()
         end
     end
-end)
+})
 
 Tabs.Reactor:AddSection("Automatización")
 
@@ -535,7 +545,7 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- BUCLE DE REPARACIÓN AUTOMÁTICA
+-- BUCLE DE REPARACIÓN ULTRARRÁPIDA (DESDE ADENTRO DEL AUTO)
 task.spawn(function()
     while true do
         task.wait(Config.RepairSpeed)
@@ -544,22 +554,29 @@ task.spawn(function()
             local backpack = lp:FindFirstChild("Backpack")
             local hammer = (char and char:FindFirstChildWhichIsA("Tool")) or (backpack and backpack:FindFirstChildWhichIsA("Tool"))
 
+            -- Verificar si es un martillo de reparación
             if hammer and (hammer.Name:lower():find("hammer") or hammer.Name:lower():find("martillo") or hammer.Name:lower():find("repair")) then
+                -- Si está guardado en mochila, equiparlo temporalmente
                 if hammer.Parent == backpack and char then
                     local hum = char:FindFirstChildOfClass("Humanoid")
                     if hum then hum:EquipTool(hammer) end
                 end
 
-                pcall(function()
-                    hammer:Activate()
-                    -- Disparar RemoteEvents internos del martillo si existen
-                    for _, child in ipairs(hammer:GetDescendants()) do
-                        if child:IsA("RemoteEvent") then
-                            local car, seat = getCurrentVehicle()
-                            child:FireServer(car or seat or char)
-                        end
+                -- 1. Reparar auto si estamos montados
+                local car = getCurrentVehicle()
+                if car then
+                    pcall(function()
+                        hammer:Activate()
+                    end)
+                else
+                    -- 2. Si estamos a pie, buscar vallas o piezas dañadas alrededor
+                    local root = char and char:FindFirstChild("HumanoidRootPart")
+                    if root then
+                        pcall(function()
+                            hammer:Activate()
+                        end)
                     end
-                end)
+                end
             end
         end
     end
@@ -616,18 +633,18 @@ task.spawn(function()
     end
 end)
 
--- BUCLE DE ATROPELLO FRONTAL ASISTIDO (SIN PIVOT-FREEZE)
+-- BUCLE DE ATROPELLO Y ANTI-BLOATER
 local chargeState = "charge"
 local stateSwitchTime = tick()
 
 RunService.Heartbeat:Connect(function()
-    local car, seat, mainPart = getCurrentVehicle()
-    local controlledPart = mainPart or (lp.Character and lp.Character:FindFirstChild("HumanoidRootPart"))
+    local car, seat = getCurrentVehicle()
+    local controlledPart = seat or (lp.Character and lp.Character:FindFirstChild("HumanoidRootPart"))
     if not controlledPart then return end
 
     if Config.CarFlyFrictionless and car then
         for _, p in ipairs(car:GetDescendants()) do
-            if p:IsA("BasePart") and p ~= seat then
+            if p:IsA("BasePart") and (p.Name:lower():find("wheel") or p.Name:lower():find("tire") or p.Name:lower():find("rueda") or p.Name:lower():find("llanta")) then
                 p.CanCollide = false
             end
         end
@@ -640,21 +657,22 @@ RunService.Heartbeat:Connect(function()
 
     local targetPos = targetPart.Position
     local myPos = controlledPart.Position
-    local toZombie = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
-    local dist = toZombie.Magnitude
-
-    -- Anti-Bloater push
     local targetName = (CurrentTarget.Name):lower()
     local isBloater = targetName:find("bloater") or targetName:find("boom") or targetName:find("explo")
-    if dist < 6 and isBloater and Config.AntiBloaterPush then
-        targetPart.AssemblyLinearVelocity = Vector3.new(toZombie.Unit.X * 40, 75, toZombie.Unit.Z * 40)
-    end
 
     if Config.AtropelloMode == "Embestida Frontal" then
-        if chargeState == "charge" and dist < 5.0 then
+        local toZombie = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
+        local dist = toZombie.Magnitude
+
+        -- Si es un bloater y chocamos, repelerlo por el aire lejos del auto
+        if dist < 6 and isBloater and Config.AntiBloaterPush then
+            targetPart.AssemblyLinearVelocity = Vector3.new(toZombie.Unit.X * 40, 75, toZombie.Unit.Z * 40)
+        end
+
+        if chargeState == "charge" and dist < 4.0 then
             chargeState = "reverse"
             stateSwitchTime = tick()
-        elseif chargeState == "reverse" and (tick() - stateSwitchTime >= 0.9 or dist >= Config.ChargeOvershoot) then
+        elseif chargeState == "reverse" and (tick() - stateSwitchTime >= 0.8 or dist >= Config.ChargeOvershoot) then
             chargeState = "charge"
         end
 
@@ -663,12 +681,10 @@ RunService.Heartbeat:Connect(function()
             moveDir = -moveDir
         end
 
-        -- Forzar aceleración en el asiento si estamos montados
-        if seat then
-            seat.Throttle = (chargeState == "charge") and 1 or -1
+        if car then
+            car:PivotTo(CFrame.new(myPos, Vector3.new(targetPos.X, myPos.Y, targetPos.Z)))
         end
 
-        -- Aplicar empuje horizontal directo sin hacer PivotTo (cero congelamiento físico)
         local vel = moveDir * Config.MoveSpeed
         controlledPart.AssemblyLinearVelocity = Vector3.new(vel.X, controlledPart.AssemblyLinearVelocity.Y, vel.Z)
     else
@@ -1053,7 +1069,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Embestida asistida y deslizador restaurados.",
+    Content = "Reparación ultrarrápida y Anti-Bloater agregados.",
     Duration = 4
 })
 
