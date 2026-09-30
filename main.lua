@@ -27,7 +27,7 @@ local Config = {
     ChargeDistance = 25,          -- Distancia de embestida más amplia
     AntiBloaterPush = true,
 
-    -- Reparación por RemoteEvent nativo + Equip (Mantenido exactamente igual)
+    -- Reparación por RemoteEvent nativo + Equip
     FastAutoRepair = true,
     RepairSpeed = 0.06,
     RepairRange = 35,
@@ -52,7 +52,7 @@ local Config = {
     PatrolEnabled = false,
     FlyPatrol = false,
     FlyHeight = 10,
-    WaypointWaitTime = 0,         -- Mínimo 0 segundos
+    WaypointWaitTime = 0,
 
     -- Utilidades
     InstantGasStation = true,
@@ -503,7 +503,7 @@ Tabs.Misc:AddToggle("InstantGasToggle", {
     Callback = function(Value) Config.InstantGasStation = Value end
 })
 
--- BOTÓN FLOTANTE CÍRCULAR (DRAGGABLE CON POSICIÓN BAJA)
+-- BOTÓN FLOTANTE CÍRCULAR (DRAGGABLE)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -519,7 +519,6 @@ end
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Name = "DraggableToggle"
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
--- Predeterminado más abajo (Y = 0.42)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.42, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
 FloatBtn.Image = "rbxassetid://10723415903"
@@ -529,27 +528,31 @@ local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(1, 0)
 UICorner.Parent = FloatBtn
 
--- Lógica de Arrastre Compatible con Móvil y PC
-local isDragging = false
-local dragStart = nil
-local startPos = nil
+local dragging = false
+local dragInput, dragStart, startPos
 
 FloatBtn.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        isDragging = true
+        dragging = true
         dragStart = input.Position
         startPos = FloatBtn.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
     end
 end)
 
-FloatBtn.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        isDragging = false
+FloatBtn.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+    if input == dragInput and dragging then
         local delta = input.Position - dragStart
         FloatBtn.Position = UDim2.new(
             startPos.X.Scale,
@@ -566,7 +569,7 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- BUCLE DE REPARACIÓN MULTI-OBJETIVO (TAL COMO ME LO PASASTE)
+-- BUCLE DE REPARACIÓN MULTI-OBJETIVO
 task.spawn(function()
     while true do
         task.wait(Config.RepairSpeed)
@@ -576,6 +579,7 @@ task.spawn(function()
             local hammer = (char and char:FindFirstChild("Repair Hammer")) or (backpack and backpack:FindFirstChild("Repair Hammer"))
 
             if hammer then
+                -- Asegurar que el martillo esté equipado
                 if hammer.Parent == backpack and char then
                     local hum = char:FindFirstChildOfClass("Humanoid")
                     if hum then hum:EquipTool(hammer) end
@@ -585,14 +589,17 @@ task.spawn(function()
                 local car, seat, mainPart = getCurrentVehicle()
 
                 pcall(function()
+                    -- Activar herramienta de forma nativa
                     hammer:Activate()
 
                     if repairRemote and repairRemote:IsA("RemoteEvent") then
                         if car then
+                            -- Si estamos montados, reparar todas las piezas clave del auto
                             repairRemote:FireServer(car)
                             if seat then repairRemote:FireServer(seat) end
                             if mainPart then repairRemote:FireServer(mainPart) end
                         else
+                            -- Si estamos a pie, reparar vallas y modelos cercanos
                             local root = char and char:FindFirstChild("HumanoidRootPart")
                             if root then
                                 for _, obj in ipairs(workspace:GetChildren()) do
@@ -680,6 +687,7 @@ RunService.Heartbeat:Connect(function()
     local toZombie = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
     local dist = toZombie.Magnitude
 
+    -- Anti-Bloater: repulsión física hacia el aire
     local targetName = (CurrentTarget.Name):lower()
     local isBloater = targetName:find("bloater") or targetName:find("boom") or targetName:find("explo")
     if dist < 8 and isBloater and Config.AntiBloaterPush then
@@ -687,6 +695,7 @@ RunService.Heartbeat:Connect(function()
     end
 
     if Config.AtropelloMode == "Embestida Frontal Continua" then
+        -- Acelerar constantemente hacia el objetivo atravesándolo sin detenerse
         if seat then
             seat.Throttle = 1
         end
@@ -1078,7 +1087,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Atropello continuo y widget arrastrable listos.",
+    Content = "Atropello continuo a máxima velocidad y reparación multi-objetivo activados.",
     Duration = 4
 })
 
