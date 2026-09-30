@@ -28,10 +28,10 @@ local Config = {
     ChargeOvershoot = 14,
     AntiBloaterPush = true,
 
-    -- Reparación por RemoteEvent nativo
+    -- Reparación
     FastAutoRepair = true,
-    RepairSpeed = 0.08,
-    RepairRange = 35,
+    RepairSpeed = 0.1,
+    RepairRange = 30,
 
     -- Teletransporte Scrap
     AutoSendItems = false,
@@ -53,7 +53,7 @@ local Config = {
     PatrolEnabled = false,
     FlyPatrol = false,
     FlyHeight = 10,
-    WaypointWaitTime = 0, -- Mínimo 0 segundos
+    WaypointWaitTime = 2.0,
 
     -- Utilidades
     InstantGasStation = true,
@@ -104,6 +104,7 @@ local function applyHighlight(obj)
     end
 end
 
+-- Detección segura de vehículo
 local function getCurrentVehicle()
     local char = lp.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -140,7 +141,8 @@ local Tabs = {
 Tabs.Combat:AddSection("Físicas del Auto (Modo ZHUB)")
 
 Tabs.Combat:AddToggle("FrictionlessToggle", {
-    Title = "Modo Deslizante (Sin Fricción de Ruedas)",
+    Title = "Modo Deslizante (Sin Colisión en Ruedas/Suelo)",
+    Description = "Asienta el chasis y permite giros y aceleración instantáneos",
     Default = false,
     Callback = function(Value)
         Config.CarFlyFrictionless = Value
@@ -188,32 +190,22 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     Callback = function(Value) Config.MoveSpeed = Value end
 })
 
--- PESTAÑA 2: REPARACIÓN RÁPIDA (CONEXIÓN DEX: Repair Hammer -> Repair)
+-- PESTAÑA 2: REPARACIÓN RÁPIDA
 Tabs.Repair:AddSection("Auto-Reparación con Martillo")
 
 Tabs.Repair:AddToggle("FastRepairToggle", {
-    Title = "Reparación Instantánea por Remote",
-    Description = "Dispara el evento interno 'Repair' del Repair Hammer continuamente",
+    Title = "Reparación Rápida Activa",
     Default = true,
     Callback = function(Value) Config.FastAutoRepair = Value end
 })
 
 Tabs.Repair:AddSlider("RepairSpeedSlider", {
-    Title = "Frecuencia de Disparo (Segundos)",
-    Default = 0.08,
-    Min = 0.03,
-    Max = 0.3,
+    Title = "Frecuencia de Martillo (Segundos)",
+    Default = 0.1,
+    Min = 0.05,
+    Max = 0.4,
     Rounding = 2,
     Callback = function(Value) Config.RepairSpeed = Value end
-})
-
-Tabs.Repair:AddSlider("RepairRadiusSlider", {
-    Title = "Radio de Reparación Externa (Studs)",
-    Default = 35,
-    Min = 15,
-    Max = 70,
-    Rounding = 0,
-    Callback = function(Value) Config.RepairRange = Value end
 })
 
 -- PESTAÑA 3: TELETRANSPORTE Y AUTO-GRABACIÓN
@@ -307,7 +299,7 @@ Tabs.Items:AddSlider("BaseRadiusSlider", {
     Callback = function(Value) Config.GeneratorSafeRadius = Value end
 })
 
--- PESTAÑA 4: RUTA Y MAPA (CON DETENCIÓN MÍNIMA 0)
+-- PESTAÑA 4: RUTA Y MAPA
 Tabs.Patrol:AddSection("Auto-Grabado de Ruta Amarilla")
 
 Tabs.Patrol:AddToggle("AutoRecordYellowToggle", {
@@ -344,9 +336,8 @@ Tabs.Patrol:AddToggle("FlyPatrolToggle", {
 
 Tabs.Patrol:AddSlider("WaitTimeSlider", {
     Title = "Tiempo de espera en cada punto (Segundos)",
-    Description = "Configurable desde 0 (cero esperas)",
-    Default = 0,
-    Min = 0,
+    Default = 2.0,
+    Min = 0.5,
     Max = 15.0,
     Rounding = 1,
     Callback = function(Value) Config.WaypointWaitTime = Value end
@@ -471,7 +462,7 @@ Tabs.Reactor:AddButton({
             applySinglePointReactor()
         end
     end
-})
+end)
 
 Tabs.Reactor:AddSection("Automatización")
 
@@ -514,7 +505,7 @@ Tabs.Misc:AddToggle("InstantGasToggle", {
     Callback = function(Value) Config.InstantGasStation = Value end
 })
 
--- 2. BOTÓN FLOTANTE CÍRCULAR (DRAGGABLE / WIDGET MOVIBLE)
+-- BOTÓN FLOTANTE CÍRCULAR
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -528,10 +519,8 @@ else
 end
 
 local FloatBtn = Instance.new("ImageButton")
-FloatBtn.Name = "DraggableToggle"
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
--- Ubicación predeterminada más abajo en la pantalla (eje Y = 0.42)
-FloatBtn.Position = UDim2.new(0.04, 0, 0.42, 0)
+FloatBtn.Position = UDim2.new(0.04, 0, 0.22, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
 FloatBtn.Image = "rbxassetid://10723415903"
 FloatBtn.Parent = ScreenGui
@@ -540,87 +529,37 @@ local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(1, 0)
 UICorner.Parent = FloatBtn
 
--- Lógica de arrastre libre (Mouse y Táctil)
-local dragging = false
-local dragInput, dragStart, startPos
-
-FloatBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = FloatBtn.Position
-
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
-
-FloatBtn.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
-        local delta = input.Position - dragStart
-        FloatBtn.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
-        )
-    end
-end)
-
 local isWindowOpen = true
 FloatBtn.MouseButton1Click:Connect(function()
     isWindowOpen = not isWindowOpen
     Window.Root.Visible = isWindowOpen
 end)
 
--- BUCLE DE REPARACIÓN EXACTA CON "REPAIR HAMMER"
+-- BUCLE DE REPARACIÓN AUTOMÁTICA
 task.spawn(function()
     while true do
         task.wait(Config.RepairSpeed)
         if Config.FastAutoRepair then
             local char = lp.Character
             local backpack = lp:FindFirstChild("Backpack")
-            local hammer = (char and char:FindFirstChild("Repair Hammer")) or (backpack and backpack:FindFirstChild("Repair Hammer"))
+            local hammer = (char and char:FindFirstChildWhichIsA("Tool")) or (backpack and backpack:FindFirstChildWhichIsA("Tool"))
 
-            if hammer then
-                -- Obtener el RemoteEvent 'Repair' identificado en Dex
-                local repairRemote = hammer:FindFirstChild("Repair")
+            if hammer and (hammer.Name:lower():find("hammer") or hammer.Name:lower():find("martillo") or hammer.Name:lower():find("repair")) then
+                if hammer.Parent == backpack and char then
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum then hum:EquipTool(hammer) end
+                end
 
-                if repairRemote and repairRemote:IsA("RemoteEvent") then
-                    local car, seat = getCurrentVehicle()
-
-                    if car then
-                        -- Reparar vehículo completo si estamos dentro
-                        pcall(function()
-                            repairRemote:FireServer(car)
-                            repairRemote:FireServer(seat)
-                        end)
-                    else
-                        -- Si estamos a pie, reparar vallas u objetos dañados cercanos
-                        local root = char and char:FindFirstChild("HumanoidRootPart")
-                        if root then
-                            for _, obj in ipairs(workspace:GetChildren()) do
-                                if obj:IsA("Model") and obj ~= char and obj ~= car then
-                                    local part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-                                    if part and (part.Position - root.Position).Magnitude <= Config.RepairRange then
-                                        pcall(function()
-                                            repairRemote:FireServer(obj)
-                                        end)
-                                    end
-                                end
-                            end
+                pcall(function()
+                    hammer:Activate()
+                    -- Disparar RemoteEvents internos del martillo si existen
+                    for _, child in ipairs(hammer:GetDescendants()) do
+                        if child:IsA("RemoteEvent") then
+                            local car, seat = getCurrentVehicle()
+                            child:FireServer(car or seat or char)
                         end
                     end
-                end
+                end)
             end
         end
     end
@@ -704,6 +643,7 @@ RunService.Heartbeat:Connect(function()
     local toZombie = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
     local dist = toZombie.Magnitude
 
+    -- Anti-Bloater push
     local targetName = (CurrentTarget.Name):lower()
     local isBloater = targetName:find("bloater") or targetName:find("boom") or targetName:find("explo")
     if dist < 6 and isBloater and Config.AntiBloaterPush then
@@ -723,10 +663,12 @@ RunService.Heartbeat:Connect(function()
             moveDir = -moveDir
         end
 
+        -- Forzar aceleración en el asiento si estamos montados
         if seat then
             seat.Throttle = (chargeState == "charge") and 1 or -1
         end
 
+        -- Aplicar empuje horizontal directo sin hacer PivotTo (cero congelamiento físico)
         local vel = moveDir * Config.MoveSpeed
         controlledPart.AssemblyLinearVelocity = Vector3.new(vel.X, controlledPart.AssemblyLinearVelocity.Y, vel.Z)
     else
@@ -1007,7 +949,7 @@ task.spawn(function()
     end
 end)
 
--- BUCLE PATRULLAJE (DETENCIÓN MÍNIMA 0)
+-- BUCLE PATRULLAJE
 task.spawn(function()
     while true do
         task.wait(0.2)
@@ -1043,10 +985,7 @@ task.spawn(function()
 
                     if Config.PatrolEnabled and not Config.ReactorFarmEnabled then
                         if Config.FlyPatrol then root.AssemblyLinearVelocity = Vector3.new(0, 0, 0) end
-                        -- Si el tiempo es 0, no hace wait y sigue de inmediato
-                        if Config.WaypointWaitTime > 0 then
-                            task.wait(Config.WaypointWaitTime)
-                        end
+                        task.wait(Config.WaypointWaitTime)
                     end
                 end
             end
@@ -1114,7 +1053,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Reparación por RemoteEvent y Widget movible listos.",
+    Content = "Embestida asistida y deslizador restaurados.",
     Duration = 4
 })
 
