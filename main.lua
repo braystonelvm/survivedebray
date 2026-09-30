@@ -23,7 +23,7 @@ local State = {
     CurrentStatus = "Inactivo",
     LootChests = true,
     ChestWaitTime = 1.3,
-    BaseNuclearWait = 900, -- 15 minutos en segundos
+    BaseNuclearWait = 900,
     DetectionRadius = 130
 }
 
@@ -54,7 +54,6 @@ local Tabs = {
     Settings = Window:AddTab({ Title = "Ajustes", Icon = "settings" })
 }
 
--- Párrafo de Estado
 local StatusParagraph = Tabs.Main:AddParagraph({
     Title = "Estado del Bot",
     Content = "Inactivo. Presiona PLAY para iniciar."
@@ -65,24 +64,41 @@ local function updateStatus(text)
     StatusParagraph:SetDesc(text)
 end
 
-local function copyToClipboard(text, label)
-    if setclipboard then
-        setclipboard(text)
-    end
-    print("\n[COORDS] " .. label .. ":\n" .. text .. "\n")
-    Fluent:Notify({
-        Title = "Copiado al Portapapeles",
-        Content = label .. " listo para usar.",
-        Duration = 3
-    })
-end
-
--- CONTROL DE FÍSICA Y FLOTACIÓN ANCLADA
 local function getRootPart()
     local char = lp.Character
     return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
 end
 
+-- FUNCIÓN PARA COPIAR COORDENADAS CON RESPALDO
+local function copyCurrentCoords()
+    local root = getRootPart()
+    if root then
+        local p = root.Position
+        local str = string.format("Vector3.new(%.1f, %.1f, %.1f)", p.X, p.Y, p.Z)
+        
+        if setclipboard then
+            setclipboard(str)
+        elseif toclipboard then
+            toclipboard(str)
+        end
+        
+        print("\n[REACTOR COORDS COPIADAS]: " .. str .. "\n")
+        
+        Fluent:Notify({
+            Title = "¡Coordenada Copiada!",
+            Content = str,
+            Duration = 4
+        })
+    else
+        Fluent:Notify({
+            Title = "Error",
+            Content = "No se detectó el personaje.",
+            Duration = 2
+        })
+    end
+end
+
+-- CONTROL DE FÍSICA Y FLOTACIÓN ANCLADA
 local function removePhysicsHelpers()
     local root = getRootPart()
     if root then
@@ -105,7 +121,7 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP CONSTANTE ACTIVO
+-- NOCLIP CONSTANTE
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused then
         local char = lp.Character
@@ -127,7 +143,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
 
     local fixedHeight = applyElevation and 10 or 0
     local finalDest = targetPos + Vector3.new(0, fixedHeight, 0)
-    local timeout = tick() + 20 -- 20 segundos máximo para evitar atascos permanentes
+    local timeout = tick() + 20
 
     local bodyPos = root:FindFirstChild("ReactorFloatBP")
     if not bodyPos then
@@ -167,7 +183,6 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
             return true
         end
 
-        -- Lógica Anti-Trabas: Si no avanza en 1 segundo, da un micro-impulso hacia arriba
         if (root.Position - lastPos).Magnitude < 0.2 then
             stuckCounter = stuckCounter + 1
             if stuckCounter >= 25 then
@@ -187,7 +202,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
     return false
 end
 
--- LECTURA SEGURA DEL COOLDOWN DE LA PUERTA (SIN LAG)
+-- LECTURA DEL COOLDOWN DE LA PUERTA (SIN LAG)
 local function getDoorCooldownRemaining(doorPos)
     for _, gui in ipairs(workspace:GetChildren()) do
         if gui:IsA("BillboardGui") or gui:IsA("SurfaceGui") then
@@ -393,18 +408,30 @@ Tabs.Setup:AddButton({
 })
 
 -- PESTAÑA 3: COPIADOR DE COORDENADAS
-Tabs.Coords:AddSection("Extraer Posición Actual")
+Tabs.Coords:AddSection("Extraer Coordenadas")
 
-Tabs.Coords:AddButton({
-    Title = "Copiar Mi Posición Actual (Tecla 'C')",
-    Description = "Copia tu Vector3 exacto al portapapeles listo para usar",
-    Callback = function()
+local LiveCoordsParagraph = Tabs.Coords:AddParagraph({
+    Title = "Posición en Vivo",
+    Content = "X: 0, Y: 0, Z: 0"
+})
+
+-- Actualización en vivo del párrafo de coordenadas
+task.spawn(function()
+    while true do
+        task.wait(0.3)
         local root = getRootPart()
         if root then
-            local pos = root.Position
-            local str = string.format("Vector3.new(%.1f, %.1f, %.1f)", pos.X, pos.Y, pos.Z)
-            copyToClipboard(str, "Posición Actual")
+            local p = root.Position
+            LiveCoordsParagraph:SetDesc(string.format("X: %.1f | Y: %.1f | Z: %.1f", p.X, p.Y, p.Z))
         end
+    end
+end)
+
+Tabs.Coords:AddButton({
+    Title = "📋 Copiar Mi Posición Actual",
+    Description = "Guarda tu Vector3 exacto en el portapapeles",
+    Callback = function()
+        copyCurrentCoords()
     end
 })
 
@@ -461,16 +488,10 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- TECLA C PARA COPIAR COORDENADAS
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
+-- TECLA C DIRECTA (SIN FILTRO DE GAMEPROCESSED PARA QUE SIEMPRE REACCIONE)
+UserInputService.InputBegan:Connect(function(input)
     if input.KeyCode == Enum.KeyCode.C then
-        local root = getRootPart()
-        if root then
-            local pos = root.Position
-            local str = string.format("Vector3.new(%.1f, %.1f, %.1f)", pos.X, pos.Y, pos.Z)
-            copyToClipboard(str, "Posición Actual")
-        end
+        copyCurrentCoords()
     end
 end)
 
@@ -583,7 +604,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Sistema Anti-Trabas y Copiador de Coords activos.",
+    Content = "Copiador de Coords activo en pestaña y con tecla 'C'.",
     Duration = 4
 })
 
