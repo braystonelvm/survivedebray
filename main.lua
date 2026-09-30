@@ -2,7 +2,25 @@
 -- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE
 -- ==============================================================================
 
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+-- 1. LIMPIEZA DE INTERFACES ANTERIORES PARA EVITAR CRASH
+if gethui then
+    local old = gethui():FindFirstChild("CustomHubFloatingBtn")
+    if old then old:Destroy() end
+elseif game:GetService("CoreGui"):FindFirstChild("CustomHubFloatingBtn") then
+    game:GetService("CoreGui").CustomHubFloatingBtn:Destroy()
+end
+
+-- 2. CARGA ULTRA SEGURA DE FLUENT UI
+local Fluent = nil
+local success, res = pcall(function()
+    return loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+end)
+
+if not success or not res then
+    Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/main.lua"))()
+else
+    Fluent = res
+end
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -115,13 +133,13 @@ local function getCurrentVehicle()
     return nil, nil, nil
 end
 
--- 1. VENTANA PRINCIPAL
+-- 3. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
     Title = "ZOMBIE HUB | CUSTOM",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(610, 530),
-    Acrylic = true,
+    Acrylic = false, -- Desactivado para evitar cierres en ejecutores móviles
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
@@ -501,7 +519,7 @@ Tabs.Misc:AddToggle("InstantGasToggle", {
     Callback = function(Value) Config.InstantGasStation = Value end
 })
 
--- BOTÓN FLOTANTE CÍRCULAR (DRAGGABLE SEGURO)
+-- 4. BOTÓN FLOTANTE CÍRCULAR (DRAGGABLE CON PROTECCIÓN)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -562,7 +580,7 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- BUCLE DE REPARACIÓN DIRECTA POR REMOTE (SIN ERROR DE EQUIPTOOL)
+-- BUCLE DE REPARACIÓN DIRECTA POR REMOTE
 task.spawn(function()
     while true do
         task.wait(Config.RepairSpeed)
@@ -1067,7 +1085,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Cargador reparado y funciones sincronizadas.",
+    Content = "Interfaz cargada con éxito.",
     Duration = 4
 })
 
