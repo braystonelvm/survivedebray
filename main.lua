@@ -28,11 +28,11 @@ local State = {
     Running = false,
     Paused = false,
     CurrentStatus = "Inactivo",
-    LootChests = true,
+    LootChests = false, -- DESACTIVADO POR DEFECTO PARA NO BAJAR NUNCA
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,
     GasCycleInterval = 180,
-    DetectionRadius = 270
+    DetectionRadius = 300 -- AMPLIADO A 300 STUDS
 }
 
 local Point1_Front = nil
@@ -92,59 +92,19 @@ local function copyCurrentCoords()
     end
 end
 
--- FÍSICAS Y FLOTACIÓN ANCLADA PERMANENTE
-local function removePhysicsHelpers()
+-- ANCLAJE DE VUELO INDESTRUCTIBLE (NUNCA SE BORRA NI DEJA CAER AL MUÑECO)
+local function ensureFlightPhysics()
     local root = getRootPart()
-    if root then
-        local bp = root:FindFirstChild("ReactorFloatBP")
-        if bp then bp:Destroy() end
-        local bg = root:FindFirstChild("ReactorFloatBG")
-        if bg then bg:Destroy() end
-        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-    end
-end
-
-local function restoreCollisions()
-    local char = lp.Character
-    if char then
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = true end
-        end
-    end
-end
-
-RunService.Stepped:Connect(function()
-    if State.Running and not State.Paused then
-        local char = lp.Character
-        if char then
-            for _, p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") then p.CanCollide = false end
-            end
-        end
-    end
-end)
-
--- VUELO CON ALTITUD FIJA INAMOVIBLE
-local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
-    stopDistance = stopDistance or 3.5
-    local root = getRootPart()
-    if not root then return false end
-
-    local targetY = targetPos.Y
-    if lockAltitudeToDoor and Point2_Door then
-        targetY = Point2_Door.Y + 10
-    end
-
-    local finalDest = Vector3.new(targetPos.X, targetY, targetPos.Z)
-    local timeout = tick() + 20
+    if not root then return nil, nil end
 
     local bodyPos = root:FindFirstChild("ReactorFloatBP")
     if not bodyPos then
         bodyPos = Instance.new("BodyPosition")
         bodyPos.Name = "ReactorFloatBP"
         bodyPos.MaxForce = Vector3.new(1e6, math.huge, 1e6)
-        bodyPos.P = 20000
+        bodyPos.P = 25000
         bodyPos.D = 800
+        bodyPos.Position = Vector3.new(root.Position.X, Point2_Door.Y + 10, root.Position.Z)
         bodyPos.Parent = root
     end
 
@@ -156,6 +116,46 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
         bodyGyro.CFrame = root.CFrame
         bodyGyro.Parent = root
     end
+
+    return bodyPos, bodyGyro
+end
+
+-- MANTENER FLOTACIÓN ACTIVA SIEMPRE EN EL AIRE (SIN IMPORTAR EL ESTADO)
+RunService.Heartbeat:Connect(function()
+    local root = getRootPart()
+    if root then
+        ensureFlightPhysics()
+    end
+end)
+
+-- NOCLIP CONSTANTE
+RunService.Stepped:Connect(function()
+    local char = lp.Character
+    if char then
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.CanCollide = false
+            end
+        end
+    end
+end)
+
+-- VUELO CON ALTITUD FIJA INAMOVIBLE (+10 STUDS)
+local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
+    stopDistance = stopDistance or 3.5
+    local root = getRootPart()
+    if not root then return false end
+
+    local targetY = targetPos.Y
+    if lockAltitudeToDoor and Point2_Door then
+        targetY = Point2_Door.Y + 10
+    end
+
+    local finalDest = Vector3.new(targetPos.X, targetY, targetPos.Z)
+    local timeout = tick() + 25
+
+    local bodyPos, bodyGyro = ensureFlightPhysics()
+    if not bodyPos then return false end
 
     local lastPos = root.Position
     local stuckCounter = 0
@@ -196,7 +196,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     return false
 end
 
--- ATAQUE CIRCULAR SUAVE Y CONTROLADO (ÓRBITA MÁS LENTA Y CON MAYOR DURACIÓN)
+-- ATAQUE CIRCULAR (ÓRBITA ALREDEDOR DEL ZOMBIE)
 local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
@@ -205,13 +205,12 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     local endTime = tick() + duration
     local angle = 0
 
-    local bodyPos = root:FindFirstChild("ReactorFloatBP")
+    local bodyPos = ensureFlightPhysics()
     if not bodyPos then return end
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
         RunService.Heartbeat:Wait()
-        -- Velocidad angular más despacio y fluida
-        angle = angle + (speed * 0.025)
+        angle = angle + (speed * 0.05)
         local tPos = targetRoot.Position
         local orbitDest = Vector3.new(
             tPos.X + math.cos(angle) * radius,
@@ -395,19 +394,22 @@ Tabs.Main:AddButton({
 })
 
 Tabs.Main:AddButton({
-    Title = "⏹ STOP (CANCELAR TODO)",
+    Title = "⏹ STOP (DETENER RUTA)",
     Callback = function()
         State.Running = false
         State.Paused = false
-        removePhysicsHelpers()
-        restoreCollisions()
-        updateStatus("Detenido. Físicas restauradas.")
+        local root = getRootPart()
+        if root then
+            local bp = root:FindFirstChild("ReactorFloatBP")
+            if bp then bp.Position = Vector3.new(root.Position.X, Point2_Door.Y + 10, root.Position.Z) end
+        end
+        updateStatus("Ruta detenida. Posición suspendida en el aire.")
     end
 })
 
 Tabs.Main:AddToggle("LootChestsQuickToggle", {
     Title = "Saquear Cofres tras Limpiar",
-    Default = true,
+    Default = false, -- DESACTIVADO POR DEFECTO
     Callback = function(Value) State.LootChests = Value end
 })
 
@@ -536,7 +538,7 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
--- MÁQUINA DE ESTADOS Y LIMPIEZA CON ALTITUD FIJA
+-- MÁQUINA DE ESTADOS Y LIMPIEZA CON ALTITUD BLINDADA
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -580,8 +582,8 @@ task.spawn(function()
                 -- ENTRAR AL CENTRO (Mantiene altura constante)
                 flyMoveTo(CalculatedCenter, 40, 3, true)
 
-                -- ESTADO 3: CACERÍA Y BARRIDO EN EL AIRE CON ÓRBITAS SUAVES Y PROLONGADAS
-                updateStatus("[3/5] Barriendo reactor y orbitando zombies...")
+                -- ESTADO 3: CACERÍA TOTAL (RADIO 300 STUDS - TIEMPO EXTENDIDO EN ZOMBIE)
+                updateStatus("[3/5] Limpiando reactor (Radio 300 studs)...")
                 local inCombat = true
                 local clearStreak = 0
 
@@ -594,28 +596,21 @@ task.spawn(function()
                         local name = targetModel.Name
                         updateStatus("Rodeando a " .. name .. " para el dron...")
 
-                        -- Vuela hacia el zombie a altura segura
-                        flyMoveTo(targetRoot.Position, 38, 5, true)
+                        -- Vuela hacia el zombie a altura segura (+10 studs)
+                        flyMoveTo(targetRoot.Position, 42, 6, true)
 
-                        -- 1. Órbita cerrada (radio 7 studs) más despacio durante 3.5 segundos
-                        orbitTarget(targetRoot, 7, 3.5, 2.5)
+                        -- Órbita cerrada (25 segundos)
+                        orbitTarget(targetRoot, 7, 25.0, 3)
 
-                        -- 2. Órbita más amplia (radio 14 studs) durante 4.5 segundos
+                        -- Órbita más amplia (32 segundos)
                         if targetModel.Parent and targetRoot.Parent then
-                            orbitTarget(targetRoot, 14, 4.5, 2.0)
-                        end
-
-                        -- 3. Quedarse siguiéndolo unos 2 segundos más de cerca si aún sigue vivo
-                        local followTimeout = tick() + 2.0
-                        while State.Running and not State.Paused and targetModel.Parent and targetRoot.Parent and tick() < followTimeout do
-                            flyMoveTo(targetRoot.Position, 35, 4, true)
-                            task.wait(0.2)
+                            orbitTarget(targetRoot, 14, 32.0, 2.5)
                         end
 
                         flyMoveTo(CalculatedCenter, 40, 3, true)
                     else
                         local remaining = countLivingZombiesInReactor(CalculatedCenter, State.DetectionRadius)
-                        updateStatus("Verificando sala... Restantes: " .. remaining)
+                        updateStatus("Verificando sala (300 studs)... Restantes: " .. remaining)
                         if remaining == 0 then
                             clearStreak = clearStreak + 1
                             if clearStreak >= 3 then inCombat = false end
@@ -625,30 +620,21 @@ task.spawn(function()
                     end
                 end
 
-                -- ESTADO 4: SOLO AHORA DESCIENDE A LOS COFRES (RÁPIDO, SUBIDA INMEDIATA Y RETORNO POR RUTA)
+                -- ESTADO 4: COFRES (DESACTIVADOS POR DEFECTO PARA NO BAJAR)
                 if State.Running and not State.Paused and State.LootChests and #CalculatedChests > 0 then
-                    updateStatus("[4/5] Todos muertos. Saqueando los 5 cofres rápidamente...")
-                    
-                    -- Recorrido de ida rápido
+                    updateStatus("[4/5] Saqueando cofres...")
                     for _, cPos in ipairs(CalculatedChests) do
                         if not State.Running or State.Paused then break end
-                        -- 1. Viaja por el aire justo encima del cofre (+10 studs)
                         flyMoveTo(cPos, 45, 3, true)
                         task.wait(0.1)
-                        -- 2. Toca rápidamente la coordenada del cofre
                         flyMoveTo(cPos, 40, 2.5, false)
                         task.wait(State.ChestWaitTime)
-                        -- 3. Sube inmediatamente a la altura segura antes de avanzar
                         flyMoveTo(cPos, 45, 2.5, true)
                     end
-
-                    -- Retorno seguro por la misma ruta inversa
                     for i = #CalculatedChests, 1, -1 do
                         if not State.Running or State.Paused then break end
                         flyMoveTo(CalculatedChests[i], 50, 3, true)
                     end
-
-                    -- Vuelve al centro del reactor sobre el suelo
                     flyMoveTo(CalculatedCenter, 40, 3, true)
                 end
 
@@ -692,15 +678,13 @@ task.spawn(function()
                     task.wait(1)
                 end
             end
-        else
-            removePhysicsHelpers()
         end
     end
 end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Órbitas más lentas y seguimiento extendido configurados.",
+    Content = "Vuelo permanente blindado, radio 300 y cofres desactivados.",
     Duration = 4
 })
 
