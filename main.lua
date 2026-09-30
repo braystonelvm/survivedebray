@@ -24,12 +24,12 @@ local Config = {
     AtropelloEnabled = false,
     AtropelloMode = "Embestida Frontal Continua",
     MoveSpeed = 160,              -- Máximo por defecto
-    ChargeDistance = 25,          -- Más amplia por defecto
+    ChargeDistance = 25,          -- Distancia de embestida más amplia
     AntiBloaterPush = true,
 
     -- Reparación por RemoteEvent nativo + Equip
     FastAutoRepair = true,
-    RepairSpeed = 0.05,
+    RepairSpeed = 0.06,
     RepairRange = 35,
 
     -- Teletransporte Scrap
@@ -160,7 +160,7 @@ Tabs.Combat:AddDropdown("AtropelloModeSelect", {
 
 Tabs.Combat:AddSlider("ChargeDistSlider", {
     Title = "Distancia de Persecución (Studs)",
-    Description = "Radio de embestida continua hacia el zombie",
+    Description = "Radio de ataque hacia el zombie",
     Default = 25,
     Min = 10,
     Max = 60,
@@ -177,7 +177,7 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     Callback = function(Value) Config.MoveSpeed = Value end
 })
 
--- PESTAÑA 2: REPARACIÓN RÁPIDA (CONEXIÓN DEX: Repair Hammer -> Repair)
+-- PESTAÑA 2: REPARACIÓN RÁPIDA (Dex: Repair Hammer -> Repair)
 Tabs.Repair:AddSection("Auto-Reparación con Martillo")
 
 Tabs.Repair:AddToggle("FastRepairToggle", {
@@ -189,7 +189,7 @@ Tabs.Repair:AddToggle("FastRepairToggle", {
 
 Tabs.Repair:AddSlider("RepairSpeedSlider", {
     Title = "Frecuencia de Disparo (Segundos)",
-    Default = 0.05,
+    Default = 0.06,
     Min = 0.02,
     Max = 0.3,
     Rounding = 2,
@@ -569,7 +569,7 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- BUCLE DE REPARACIÓN MULTI-OBJETIVO (Dex: Repair Hammer -> Repair)
+-- BUCLE DE REPARACIÓN MULTI-OBJETIVO
 task.spawn(function()
     while true do
         task.wait(Config.RepairSpeed)
@@ -589,15 +589,17 @@ task.spawn(function()
                 local car, seat, mainPart = getCurrentVehicle()
 
                 pcall(function()
+                    -- Activar herramienta de forma nativa
                     hammer:Activate()
 
                     if repairRemote and repairRemote:IsA("RemoteEvent") then
                         if car then
+                            -- Si estamos montados, reparar todas las piezas clave del auto
                             repairRemote:FireServer(car)
                             if seat then repairRemote:FireServer(seat) end
                             if mainPart then repairRemote:FireServer(mainPart) end
-                            repairRemote:FireServer()
                         else
+                            -- Si estamos a pie, reparar vallas y modelos cercanos
                             local root = char and char:FindFirstChild("HumanoidRootPart")
                             if root then
                                 for _, obj in ipairs(workspace:GetChildren()) do
@@ -606,7 +608,6 @@ task.spawn(function()
                                         if part and (part.Position - root.Position).Magnitude <= Config.RepairRange then
                                             repairRemote:FireServer(obj)
                                             repairRemote:FireServer(part)
-                                            repairRemote:FireServer()
                                         end
                                     end
                                 end
@@ -694,6 +695,7 @@ RunService.Heartbeat:Connect(function()
     end
 
     if Config.AtropelloMode == "Embestida Frontal Continua" then
+        -- Acelerar constantemente hacia el objetivo atravesándolo sin detenerse
         if seat then
             seat.Throttle = 1
         end
