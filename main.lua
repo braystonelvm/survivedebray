@@ -7,81 +7,25 @@ local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local ProximityPromptService = game:GetService("ProximityPromptService")
 local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
-local LOCAL_CHEST_OFFSETS = {
-    Vector3.new(57.3, -18.9, 43.1),
-    Vector3.new(60.3, -19.0, 67.2),
-    Vector3.new(60.3, -19.0, 67.2),
-    Vector3.new(-34.0, -38.7, 115.2),
-    Vector3.new(-36.2, -38.7, 107.6)
-}
-
+-- Variables de configuración
 local Config = {
-    -- Combate / Atropello Constante
-    AtropelloEnabled = false,
-    AtropelloMode = "Embestida Frontal Continua",
-    MoveSpeed = 160,              -- Máximo por defecto
-    ChargeDistance = 25,          -- Distancia de embestida más amplia
-    AntiBloaterPush = true,
-
-    -- Reparación por RemoteEvent nativo + Equip
-    FastAutoRepair = true,
-    RepairSpeed = 0.06,
-    RepairRange = 35,
-
-    -- Teletransporte Scrap
+    ZigZagEnabled = false,
+    SwitchInterval = 1.2,
+    LateralDist = 14,
+    MoveSpeed = 45,
     AutoSendItems = false,
-    CollectRadius = 22,
-    OnlyScrap = true,
-    ChainTeleport = true,
-    SingleTeleportLimit = false,
-    BasePrevent = true,
-    GeneratorSafeRadius = 160,
-    SpreadRadius = 4,
-
-    -- Auto-Grabado
-    AutoRecordScrap = false,
-    ScrapStepDist = 35,
-    AutoRecordYellow = false,
-    YellowStepDist = 40,          -- Más lejana por defecto (40 studs)
-
-    -- Ruta
-    PatrolEnabled = false,
-    FlyPatrol = false,
-    FlyHeight = 10,
-    WaypointWaitTime = 0,
-
-    -- Utilidades
-    InstantGasStation = true,
-
-    -- Reactor
-    ReactorFarmEnabled = false,
-    LootChests = true,
-    ChestWaitTime = 1.3,
-    ReactorResetWaitTime = 10.0,
-    ReactorDetectionRadius = 130
+    CollectRadius = 25,
+    BasePrevent = true,       -- Evita mover cosas que ya estén en la base
+    BaseRadius = 45,          -- Radio considerado "dentro de la base"
+    SpreadRadius = 4          -- Dispersión para que no se amontonen en un punto
 }
 
 local CurrentTarget = nil
 local TargetHighlight = nil
-local DeliveryPoints = {}
-local Waypoints = {}
-local WaypointMarkers = {}
-local TeleportedTracker = {}
-
-local LastScrapRecordPos = nil
-local LastYellowRecordPos = nil
-
-local ReactorAnchorCF = nil
-local NuclearMarker = nil
-local CalculatedCenter = nil
-local CalculatedChests = {}
-local ChestMarkers = {}
-
-local CachedGeneratorPos = nil
+local DropPointMarker = nil
 
 local function clearHighlight()
     if TargetHighlight then
@@ -103,24 +47,12 @@ local function applyHighlight(obj)
     end
 end
 
-local function getCurrentVehicle()
-    local char = lp.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
-        local seat = hum.SeatPart
-        local carModel = seat:FindFirstAncestorOfClass("Model")
-        local mainPart = carModel and (carModel.PrimaryPart or seat) or seat
-        return carModel, seat, mainPart
-    end
-    return nil, nil, nil
-end
-
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
     Title = "ZOMBIE HUB | CUSTOM",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(610, 530),
+    Size = UDim2.fromOffset(580, 460),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
@@ -128,382 +60,136 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" }),
-    Repair = Window:AddTab({ Title = "Reparación", Icon = "hammer" }),
-    Items = Window:AddTab({ Title = "Teletransporte", Icon = "box" }),
-    Patrol = Window:AddTab({ Title = "Ruta y Mapa", Icon = "map-pin" }),
-    Reactor = Window:AddTab({ Title = "Reactor Nuclear", Icon = "flame" }),
-    Misc = Window:AddTab({ Title = "Utilidades", Icon = "wrench" })
+    Items = Window:AddTab({ Title = "Teletransporte", Icon = "box" })
 }
 
--- PESTAÑA 1: COMBATE Y ATROPELLO CONSTANTE
-Tabs.Combat:AddSection("Atropello Constante")
+-- PESTAÑA 1: COMBATE Y AUTO
+Tabs.Combat:AddSection("Controles de Zigzag / Atropello")
 
-Tabs.Combat:AddToggle("AtropelloToggle", {
-    Title = "Activar Ataque de Atropello Constante",
-    Description = "Acelera sin detenerse contra el zombie fijado",
-    Default = false,
-    Callback = function(Value) Config.AtropelloEnabled = Value end
-})
-
-Tabs.Combat:AddToggle("AntiBloaterToggle", {
-    Title = "Repeler Bloaters (Anti-Explosión)",
-    Default = true,
-    Callback = function(Value) Config.AntiBloaterPush = Value end
-})
-
-Tabs.Combat:AddDropdown("AtropelloModeSelect", {
-    Title = "Patrón de Ataque",
-    Values = {"Embestida Frontal Continua", "Zigzag Lateral"},
-    Default = "Embestida Frontal Continua",
-    Callback = function(Value) Config.AtropelloMode = Value end
-})
-
-Tabs.Combat:AddSlider("ChargeDistSlider", {
-    Title = "Distancia de Persecución (Studs)",
-    Description = "Radio de ataque hacia el zombie",
-    Default = 25,
-    Min = 10,
-    Max = 60,
-    Rounding = 0,
-    Callback = function(Value) Config.ChargeDistance = Value end
-})
-
-Tabs.Combat:AddSlider("SpeedSlider", {
-    Title = "Velocidad de Embestida",
-    Default = 160,
-    Min = 25,
-    Max = 160,
-    Rounding = 0,
-    Callback = function(Value) Config.MoveSpeed = Value end
-})
-
--- PESTAÑA 2: REPARACIÓN RÁPIDA (Dex: Repair Hammer -> Repair)
-Tabs.Repair:AddSection("Auto-Reparación con Martillo")
-
-Tabs.Repair:AddToggle("FastRepairToggle", {
-    Title = "Reparación Instantánea Continua",
-    Description = "Repara tu auto y estructuras dañadas en ráfaga",
-    Default = true,
-    Callback = function(Value) Config.FastAutoRepair = Value end
-})
-
-Tabs.Repair:AddSlider("RepairSpeedSlider", {
-    Title = "Frecuencia de Disparo (Segundos)",
-    Default = 0.06,
-    Min = 0.02,
-    Max = 0.3,
-    Rounding = 2,
-    Callback = function(Value) Config.RepairSpeed = Value end
-})
-
-Tabs.Repair:AddSlider("RepairRadiusSlider", {
-    Title = "Radio de Reparación (Studs)",
-    Default = 35,
-    Min = 15,
-    Max = 70,
-    Rounding = 0,
-    Callback = function(Value) Config.RepairRange = Value end
-})
-
--- PESTAÑA 3: TELETRANSPORTE Y AUTO-GRABACIÓN
-Tabs.Items:AddSection("Auto-Grabado de Bolitas")
-
-Tabs.Items:AddToggle("AutoRecordScrapToggle", {
-    Title = "Auto-Colocar Bolitas al Moverse",
+Tabs.Combat:AddToggle("ZigZagToggle", {
+    Title = "Activar Movimiento / Atropello Automático",
     Default = false,
     Callback = function(Value)
-        Config.AutoRecordScrap = Value
-        LastScrapRecordPos = nil
+        Config.ZigZagEnabled = Value
     end
 })
 
-Tabs.Items:AddSlider("ScrapStepSlider", {
-    Title = "Distancia entre Bolitas (Studs)",
-    Default = 35,
-    Min = 15,
-    Max = 70,
-    Rounding = 0,
-    Callback = function(Value) Config.ScrapStepDist = Value end
+Tabs.Combat:AddParagraph({
+    Title = "Teclas de Selector",
+    Content = "• Presiona 'T' apuntando a un Zombie o Zona para fijarlo.\n• Presiona 'Y' para desmarcar el objetivo."
 })
 
-Tabs.Items:AddSection("Gestión Manual")
+Tabs.Combat:AddSlider("IntervalSlider", {
+    Title = "Frecuencia de oscilación (Segundos)",
+    Default = 1.2,
+    Min = 0.3,
+    Max = 3.0,
+    Rounding = 1,
+    Callback = function(Value)
+        Config.SwitchInterval = Value
+    end
+})
+
+Tabs.Combat:AddSlider("DistSlider", {
+    Title = "Ancho de Atropello (Studs)",
+    Default = 14,
+    Min = 4,
+    Max = 35,
+    Rounding = 0,
+    Callback = function(Value)
+        Config.LateralDist = Value
+    end
+})
+
+Tabs.Combat:AddSlider("SpeedSlider", {
+    Title = "Velocidad de Movimiento / Auto",
+    Default = 45,
+    Min = 16,
+    Max = 120,
+    Rounding = 0,
+    Callback = function(Value)
+        Config.MoveSpeed = Value
+    end
+})
+
+-- PESTAÑA 2: TELETRANSPORTE Y BASE PREVENT
+Tabs.Items:AddSection("Punto de Entrega (Trituradora / Base)")
 
 Tabs.Items:AddButton({
-    Title = "+ Agregar Bolita Aquí Manualmente",
+    Title = "Poner Bolita de Destino Aquí",
+    Description = "Coloca el marcador en la posición exacta donde estás parado",
     Callback = function()
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if not root then return end
 
-        local marker = Instance.new("Part")
-        marker.Name = "CustomDropPoint"
-        marker.Shape = Enum.PartType.Ball
-        marker.Size = Vector3.new(2.5, 2.5, 2.5)
-        marker.Material = Enum.Material.Neon
-        marker.Color = Color3.fromRGB(0, 255, 170)
-        marker.Anchored = true
-        marker.CanCollide = false
-        marker.CFrame = root.CFrame - Vector3.new(0, 1.5, 0)
-        marker.Parent = workspace
-
-        table.insert(DeliveryPoints, marker)
-        table.clear(TeleportedTracker)
-        Fluent:Notify({ Title = "Punto Agregado", Content = "Bolitas activas: " .. #DeliveryPoints, Duration = 2 })
-    end
-})
-
-Tabs.Items:AddButton({
-    Title = "Borrar Todas las Bolitas",
-    Callback = function()
-        for _, p in ipairs(DeliveryPoints) do
-            if p and p.Parent then p:Destroy() end
+        if DropPointMarker then
+            DropPointMarker:Destroy()
         end
-        table.clear(DeliveryPoints)
-        table.clear(TeleportedTracker)
-        Fluent:Notify({ Title = "Red Reiniciada", Content = "Bolitas eliminadas.", Duration = 2 })
-    end
-})
 
-Tabs.Items:AddToggle("AutoSendToggle", {
-    Title = "Activar Teletransporte de Ítems",
-    Default = false,
-    Callback = function(Value)
-        Config.AutoSendItems = Value
-        if not Value then table.clear(TeleportedTracker) end
-    end
-})
-
-Tabs.Items:AddToggle("OnlyScrapToggle", {
-    Title = "Solo Teletransportar Chatarra (Scrap)",
-    Default = true,
-    Callback = function(Value) Config.OnlyScrap = Value end
-})
-
-Tabs.Items:AddSection("Protección del Generador")
-
-Tabs.Items:AddToggle("BasePreventToggle", {
-    Title = "Activar Generator Prevent",
-    Default = true,
-    Callback = function(Value) Config.BasePrevent = Value end
-})
-
-Tabs.Items:AddSlider("BaseRadiusSlider", {
-    Title = "Radio Seguro del Generador (Studs)",
-    Default = 160,
-    Min = 50,
-    Max = 300,
-    Rounding = 0,
-    Callback = function(Value) Config.GeneratorSafeRadius = Value end
-})
-
--- PESTAÑA 4: RUTA Y MAPA
-Tabs.Patrol:AddSection("Auto-Grabado de Ruta Amarilla")
-
-Tabs.Patrol:AddToggle("AutoRecordYellowToggle", {
-    Title = "Auto-Grabar Ruta al Caminar",
-    Default = false,
-    Callback = function(Value)
-        Config.AutoRecordYellow = Value
-        LastYellowRecordPos = nil
-    end
-})
-
-Tabs.Patrol:AddSlider("YellowStepSlider", {
-    Title = "Distancia entre Puntos Amarillos (Studs)",
-    Description = "Distancia de separación más amplia por defecto",
-    Default = 40,
-    Min = 15,
-    Max = 80,
-    Rounding = 0,
-    Callback = function(Value) Config.YellowStepDist = Value end
-})
-
-Tabs.Patrol:AddSection("Patrullaje")
-
-Tabs.Patrol:AddToggle("PatrolToggle", {
-    Title = "Iniciar Patrullaje en Bucle",
-    Default = false,
-    Callback = function(Value) Config.PatrolEnabled = Value end
-})
-
-Tabs.Patrol:AddToggle("FlyPatrolToggle", {
-    Title = "Volar sobre la Ruta (+10 studs)",
-    Default = false,
-    Callback = function(Value) Config.FlyPatrol = Value end
-})
-
-Tabs.Patrol:AddSlider("WaitTimeSlider", {
-    Title = "Tiempo de espera en cada punto (Segundos)",
-    Default = 0,
-    Min = 0,
-    Max = 15.0,
-    Rounding = 1,
-    Callback = function(Value) Config.WaypointWaitTime = Value end
-})
-
-Tabs.Patrol:AddButton({
-    Title = "Importar Pings del Mapa como Ruta",
-    Callback = function()
-        local count = 0
-        for _, obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("BillboardGui") or obj.Name:find("Ping") or obj.Name:find("Waypoint") then
-                local part = obj.Adornee or obj.Parent
-                if part and part:IsA("BasePart") and not part:IsDescendantOf(lp.Character) then
-                    table.insert(Waypoints, part.Position)
-                    count = count + 1
-
-                    local marker = Instance.new("Part")
-                    marker.Name = "MapPingMarker_" .. #Waypoints
-                    marker.Shape = Enum.PartType.Ball
-                    marker.Size = Vector3.new(2, 2, 2)
-                    marker.Material = Enum.Material.Neon
-                    marker.Color = Color3.fromRGB(255, 230, 0)
-                    marker.Anchored = true
-                    marker.CanCollide = false
-                    marker.Position = part.Position
-                    marker.Parent = workspace
-                    table.insert(WaypointMarkers, marker)
-                end
-            end
-        end
+        DropPointMarker = Instance.new("Part")
+        DropPointMarker.Name = "CustomDropPoint"
+        DropPointMarker.Shape = Enum.PartType.Ball
+        DropPointMarker.Size = Vector3.new(3, 3, 3)
+        DropPointMarker.Material = Enum.Material.Neon
+        DropPointMarker.Color = Color3.fromRGB(0, 255, 170)
+        DropPointMarker.Anchored = true
+        DropPointMarker.CanCollide = false
+        DropPointMarker.CFrame = root.CFrame - Vector3.new(0, 2, 0)
+        DropPointMarker.Parent = workspace
 
         Fluent:Notify({
-            Title = "Pings Importados",
-            Content = count > 0 and ("Se agregaron " .. count .. " puntos del mapa.") or "No se encontraron pings activos.",
+            Title = "Destino Guardado",
+            Content = "Punto de entrega fijado con la esfera verde.",
             Duration = 3
         })
     end
 })
 
-Tabs.Patrol:AddButton({
-    Title = "Borrar Todos los Puntos Amarillos",
-    Callback = function()
-        for _, m in ipairs(WaypointMarkers) do
-            if m and m.Parent then m:Destroy() end
-        end
-        table.clear(Waypoints)
-        table.clear(WaypointMarkers)
-        Fluent:Notify({ Title = "Ruta Borrada", Content = "Puntos amarillos eliminados.", Duration = 2 })
-    end
-})
-
--- PESTAÑA 5: REACTOR NUCLEAR
-Tabs.Reactor:AddSection("Calibración del Reactor (1 Solo Paso)")
-
-local allowReactorOverride = false
-
-local function applySinglePointReactor()
-    local char = lp.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if root then
-        ReactorAnchorCF = root.CFrame
-        local doorPos = root.Position
-        local forwardDir = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z).Unit
-        local rightDir = Vector3.new(root.CFrame.RightVector.X, 0, root.CFrame.RightVector.Z).Unit
-
-        CalculatedCenter = doorPos + (forwardDir * 46.6)
-
-        if NuclearMarker and NuclearMarker.Parent then NuclearMarker:Destroy() end
-        for _, m in ipairs(ChestMarkers) do
-            if m and m.Parent then m:Destroy() end
-        end
-        table.clear(CalculatedChests)
-        table.clear(ChestMarkers)
-
-        NuclearMarker = Instance.new("Part")
-        NuclearMarker.Name = "NuclearDoorMarker"
-        NuclearMarker.Size = Vector3.new(3, 1, 3)
-        NuclearMarker.CFrame = root.CFrame
-        NuclearMarker.Material = Enum.Material.Neon
-        NuclearMarker.Color = Color3.fromRGB(255, 120, 0)
-        NuclearMarker.Anchored = true
-        NuclearMarker.CanCollide = false
-        NuclearMarker.Parent = workspace
-
-        for i, offset in ipairs(LOCAL_CHEST_OFFSETS) do
-            local worldPos = doorPos + (rightDir * offset.X) + (forwardDir * offset.Z) + Vector3.new(0, offset.Y, 0)
-            table.insert(CalculatedChests, worldPos)
-
-            local m = Instance.new("Part")
-            m.Name = "AutoChestMarker_" .. i
-            m.Shape = Enum.PartType.Ball
-            m.Size = Vector3.new(2.2, 2.2, 2.2)
-            m.Material = Enum.Material.Neon
-            m.Color = Color3.fromRGB(0, 200, 255)
-            m.Anchored = true
-            m.CanCollide = false
-            m.Position = worldPos
-            m.Parent = workspace
-            table.insert(ChestMarkers, m)
-        end
-
-        Fluent:Notify({ Title = "Reactor Calibrado", Content = "Puerta, centro y 7 cofres calculados.", Duration = 4 })
-    end
-end
-
-Tabs.Reactor:AddToggle("AllowOverrideToggle", {
-    Title = "Desbloquear Sobrescritura de Posición",
+Tabs.Items:AddToggle("AutoSendToggle", {
+    Title = "Enviar Ítems al Pasar Sobre Ellos",
     Default = false,
-    Callback = function(Value) allowReactorOverride = Value end
-})
-
-Tabs.Reactor:AddButton({
-    Title = "Fijar Frente a la Puerta (Mirando adentro)",
-    Callback = function()
-        if ReactorAnchorCF and not allowReactorOverride then
-            Fluent:Notify({
-                Title = "Punto Protegido",
-                Content = "Activa 'Desbloquear Sobrescritura' arriba para cambiarlo.",
-                Duration = 4
-            })
-        else
-            applySinglePointReactor()
-        end
+    Callback = function(Value)
+        Config.AutoSendItems = Value
     end
-end)
-
-Tabs.Reactor:AddSection("Automatización")
-
-Tabs.Reactor:AddToggle("NuclearFarmToggle", {
-    Title = "Iniciar Saqueo Automático del Reactor",
-    Default = false,
-    Callback = function(Value) Config.ReactorFarmEnabled = Value end
 })
 
-Tabs.Reactor:AddToggle("LootChestsToggle", {
-    Title = "Saquear 7 Cofres tras Limpiar",
+Tabs.Items:AddSection("Protección de Base (Base Prevent)")
+
+Tabs.Items:AddToggle("BasePreventToggle", {
+    Title = "Activar Base Prevent",
+    Description = "No mueve ningún ítem que ya se encuentre dentro del área de la base",
     Default = true,
-    Callback = function(Value) Config.LootChests = Value end
+    Callback = function(Value)
+        Config.BasePrevent = Value
+    end
 })
 
-Tabs.Reactor:AddSlider("ChestWaitSlider", {
-    Title = "Tiempo en cada cofre (Seg)",
-    Default = 1.3,
-    Min = 0.5,
-    Max = 4.0,
-    Rounding = 1,
-    Callback = function(Value) Config.ChestWaitTime = Value end
-})
-
-Tabs.Reactor:AddSlider("NuclearWaitSlider", {
-    Title = "Tiempo fuera del bioma (Seg)",
-    Default = 10.0,
-    Min = 5.0,
-    Max = 60.0,
+Tabs.Items:AddSlider("BaseRadiusSlider", {
+    Title = "Radio Seguro de la Base (Studs)",
+    Description = "Distancia protegida alrededor del centro de tu base",
+    Default = 45,
+    Min = 20,
+    Max = 100,
     Rounding = 0,
-    Callback = function(Value) Config.ReactorResetWaitTime = Value end
+    Callback = function(Value)
+        Config.BaseRadius = Value
+    end
 })
 
--- PESTAÑA 6: UTILIDADES
-Tabs.Misc:AddSection("Automatizaciones Ligeras")
-
-Tabs.Misc:AddToggle("InstantGasToggle", {
-    Title = "Surtidor Instantáneo (Cero Lag / Móvil)",
-    Default = true,
-    Callback = function(Value) Config.InstantGasStation = Value end
+Tabs.Items:AddSlider("SpreadSlider", {
+    Title = "Dispersión de Ítems al llegar (Studs)",
+    Description = "Evita que las cosas se apilen en el mismo punto y se bugeen",
+    Default = 4,
+    Min = 1,
+    Max = 10,
+    Rounding = 0,
+    Callback = function(Value)
+        Config.SpreadRadius = Value
+    end
 })
 
--- BOTÓN FLOTANTE CÍRCULAR (DRAGGABLE)
+-- 2. BOTÓN FLOTANTE
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -517,9 +203,8 @@ else
 end
 
 local FloatBtn = Instance.new("ImageButton")
-FloatBtn.Name = "DraggableToggle"
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
-FloatBtn.Position = UDim2.new(0.04, 0, 0.42, 0)
+FloatBtn.Position = UDim2.new(0.04, 0, 0.22, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
 FloatBtn.Image = "rbxassetid://10723415903"
 FloatBtn.Parent = ScreenGui
@@ -528,517 +213,13 @@ local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(1, 0)
 UICorner.Parent = FloatBtn
 
-local dragging = false
-local dragInput, dragStart, startPos
-
-FloatBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = FloatBtn.Position
-
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
-
-FloatBtn.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
-        local delta = input.Position - dragStart
-        FloatBtn.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
-        )
-    end
-end)
-
 local isWindowOpen = true
 FloatBtn.MouseButton1Click:Connect(function()
     isWindowOpen = not isWindowOpen
     Window.Root.Visible = isWindowOpen
 end)
 
--- BUCLE DE REPARACIÓN MULTI-OBJETIVO
-task.spawn(function()
-    while true do
-        task.wait(Config.RepairSpeed)
-        if Config.FastAutoRepair then
-            local char = lp.Character
-            local backpack = lp:FindFirstChild("Backpack")
-            local hammer = (char and char:FindFirstChild("Repair Hammer")) or (backpack and backpack:FindFirstChild("Repair Hammer"))
-
-            if hammer then
-                -- Asegurar que el martillo esté equipado
-                if hammer.Parent == backpack and char then
-                    local hum = char:FindFirstChildOfClass("Humanoid")
-                    if hum then hum:EquipTool(hammer) end
-                end
-
-                local repairRemote = hammer:FindFirstChild("Repair")
-                local car, seat, mainPart = getCurrentVehicle()
-
-                pcall(function()
-                    -- Activar herramienta de forma nativa
-                    hammer:Activate()
-
-                    if repairRemote and repairRemote:IsA("RemoteEvent") then
-                        if car then
-                            -- Si estamos montados, reparar todas las piezas clave del auto
-                            repairRemote:FireServer(car)
-                            if seat then repairRemote:FireServer(seat) end
-                            if mainPart then repairRemote:FireServer(mainPart) end
-                        else
-                            -- Si estamos a pie, reparar vallas y modelos cercanos
-                            local root = char and char:FindFirstChild("HumanoidRootPart")
-                            if root then
-                                for _, obj in ipairs(workspace:GetChildren()) do
-                                    if obj:IsA("Model") and obj ~= char then
-                                        local part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-                                        if part and (part.Position - root.Position).Magnitude <= Config.RepairRange then
-                                            repairRemote:FireServer(obj)
-                                            repairRemote:FireServer(part)
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end)
-            end
-        end
-    end
-end)
-
--- BUCLE DE AUTO-GRABACIÓN AL MOVERSE
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            local currentPos = root.Position
-
-            if Config.AutoRecordScrap then
-                if not LastScrapRecordPos or (currentPos - LastScrapRecordPos).Magnitude >= Config.ScrapStepDist then
-                    LastScrapRecordPos = currentPos
-
-                    local marker = Instance.new("Part")
-                    marker.Name = "CustomDropPoint"
-                    marker.Shape = Enum.PartType.Ball
-                    marker.Size = Vector3.new(2.5, 2.5, 2.5)
-                    marker.Material = Enum.Material.Neon
-                    marker.Color = Color3.fromRGB(0, 255, 170)
-                    marker.Anchored = true
-                    marker.CanCollide = false
-                    marker.CFrame = root.CFrame - Vector3.new(0, 1.5, 0)
-                    marker.Parent = workspace
-
-                    table.insert(DeliveryPoints, marker)
-                    table.clear(TeleportedTracker)
-                end
-            end
-
-            if Config.AutoRecordYellow then
-                if not LastYellowRecordPos or (currentPos - LastYellowRecordPos).Magnitude >= Config.YellowStepDist then
-                    LastYellowRecordPos = currentPos
-                    table.insert(Waypoints, currentPos)
-
-                    local marker = Instance.new("Part")
-                    marker.Name = "WaypointMarker_" .. #Waypoints
-                    marker.Shape = Enum.PartType.Ball
-                    marker.Size = Vector3.new(2, 2, 2)
-                    marker.Material = Enum.Material.Neon
-                    marker.Color = Color3.fromRGB(255, 230, 0)
-                    marker.Anchored = true
-                    marker.CanCollide = false
-                    marker.Position = currentPos - Vector3.new(0, 1.5, 0)
-                    marker.Parent = workspace
-                    table.insert(WaypointMarkers, marker)
-                end
-            end
-        end
-    end
-end)
-
--- BUCLE DE ATROPELLO FRONTAL CONSTANTE (SIN FRENOS NI PAUSAS)
-RunService.Heartbeat:Connect(function()
-    if not Config.AtropelloEnabled or not CurrentTarget or Config.ReactorFarmEnabled then return end
-
-    local car, seat, mainPart = getCurrentVehicle()
-    local controlledPart = mainPart or (lp.Character and lp.Character:FindFirstChild("HumanoidRootPart"))
-    if not controlledPart then return end
-
-    local targetPart = (CurrentTarget:IsA("BasePart") and CurrentTarget) or (CurrentTarget:IsA("Model") and (CurrentTarget:FindFirstChild("HumanoidRootPart") or CurrentTarget:FindFirstChild("Torso") or CurrentTarget.PrimaryPart or CurrentTarget:FindFirstChildWhichIsA("BasePart")))
-    if not targetPart or not targetPart.Parent then return end
-
-    local targetPos = targetPart.Position
-    local myPos = controlledPart.Position
-    local toZombie = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
-    local dist = toZombie.Magnitude
-
-    -- Anti-Bloater: repulsión física hacia el aire
-    local targetName = (CurrentTarget.Name):lower()
-    local isBloater = targetName:find("bloater") or targetName:find("boom") or targetName:find("explo")
-    if dist < 8 and isBloater and Config.AntiBloaterPush then
-        targetPart.AssemblyLinearVelocity = Vector3.new(toZombie.Unit.X * 50, 85, toZombie.Unit.Z * 50)
-    end
-
-    if Config.AtropelloMode == "Embestida Frontal Continua" then
-        -- Acelerar constantemente hacia el objetivo atravesándolo sin detenerse
-        if seat then
-            seat.Throttle = 1
-        end
-
-        local moveDir = toZombie.Unit
-        local vel = moveDir * Config.MoveSpeed
-        controlledPart.AssemblyLinearVelocity = Vector3.new(vel.X, controlledPart.AssemblyLinearVelocity.Y, vel.Z)
-    else
-        local cf = targetPart.CFrame
-        local side = (math.sin(tick() * 3) > 0) and 1 or -1
-        local destination = targetPos + (cf.RightVector * (side * 14))
-        local dir = (destination - myPos)
-        local hDir = Vector3.new(dir.X, 0, dir.Z)
-
-        if hDir.Magnitude > 1.5 then
-            local vel = hDir.Unit * Config.MoveSpeed
-            controlledPart.AssemblyLinearVelocity = Vector3.new(vel.X, controlledPart.AssemblyLinearVelocity.Y, vel.Z)
-        end
-    end
-end)
-
--- BUCLE DE TELETRANSPORTE SCRAP
-local overlapParams = OverlapParams.new()
-overlapParams.FilterType = Enum.RaycastFilterType.Exclude
-
-local function getGeneratorPosition()
-    if CachedGeneratorPos then return CachedGeneratorPos end
-    local gen = workspace:FindFirstChild("Generator") or workspace:FindFirstChild("Center")
-    if gen then
-        local p = (gen:IsA("Model") and (gen.PrimaryPart or gen:FindFirstChildWhichIsA("BasePart"))) or gen
-        if p then
-            CachedGeneratorPos = p.Position
-            return CachedGeneratorPos
-        end
-    end
-    return nil
-end
-
-local function getNextBestDropPoint(itemPos)
-    local genPos = getGeneratorPosition()
-    local bestPoint = nil
-    local currentDistToGen = genPos and (itemPos - genPos).Magnitude or math.huge
-    local shortestDistToItem = math.huge
-
-    for _, pt in ipairs(DeliveryPoints) do
-        if pt and pt.Parent then
-            local distItemToPoint = (itemPos - pt.Position).Magnitude
-            if genPos and Config.ChainTeleport then
-                local pointDistToGen = (pt.Position - genPos).Magnitude
-                if pointDistToGen < currentDistToGen and distItemToPoint > 4 then
-                    if distItemToPoint < shortestDistToItem then
-                        shortestDistToItem = distItemToPoint
-                        bestPoint = pt
-                    end
-                end
-            else
-                if distItemToPoint < shortestDistToItem and distItemToPoint > 4 then
-                    shortestDistToItem = distItemToPoint
-                    bestPoint = pt
-                end
-            end
-        end
-    end
-    return bestPoint
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.4)
-        if Config.AutoSendItems and #DeliveryPoints > 0 then
-            local char = lp.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            if root then
-                overlapParams.FilterDescendantsInstances = {char}
-                local partsNearby = workspace:GetPartBoundsInRadius(root.Position, Config.CollectRadius, overlapParams)
-                local processedCount = 0
-
-                for _, hitPart in ipairs(partsNearby) do
-                    if processedCount >= 2 then break end
-
-                    if not hitPart.Anchored and not hitPart:FindFirstAncestorOfClass("Humanoid") then
-                        local itemModel = hitPart:FindFirstAncestorOfClass("Model")
-                        local targetEntity = (itemModel and itemModel.Parent ~= workspace.Characters and itemModel) or hitPart
-                        local rootPart = (targetEntity:IsA("Model") and (targetEntity.PrimaryPart or targetEntity:FindFirstChildWhichIsA("BasePart"))) or targetEntity
-
-                        if rootPart then
-                            local nameLower = (targetEntity.Name):lower()
-                            local isScrap = nameLower:find("scrap") or nameLower:find("chatarra") or nameLower:find("metal") or nameLower:find("barrel")
-
-                            if not Config.OnlyScrap or isScrap then
-                                local genPos = getGeneratorPosition()
-                                local insideBase = false
-                                if Config.BasePrevent and genPos then
-                                    if (rootPart.Position - genPos).Magnitude <= Config.GeneratorSafeRadius then
-                                        insideBase = true
-                                    end
-                                end
-
-                                local canTeleport = not insideBase
-                                if Config.SingleTeleportLimit and TeleportedTracker[targetEntity] then
-                                    canTeleport = false
-                                end
-
-                                if canTeleport then
-                                    local nextPoint = getNextBestDropPoint(rootPart.Position)
-
-                                    if nextPoint then
-                                        processedCount = processedCount + 1
-                                        TeleportedTracker[targetEntity] = true
-
-                                        if firetouchinterest then
-                                            pcall(function()
-                                                firetouchinterest(root, rootPart, 0)
-                                                firetouchinterest(root, rootPart, 1)
-                                            end)
-                                        end
-
-                                        local angle = math.random() * math.pi * 2
-                                        local dist = math.random() * Config.SpreadRadius
-                                        local destPos = nextPoint.Position + Vector3.new(math.cos(angle) * dist, 1.5, math.sin(angle) * dist)
-
-                                        if targetEntity:IsA("Model") then
-                                            targetEntity:PivotTo(CFrame.new(destPos))
-                                        else
-                                            targetEntity.CFrame = CFrame.new(destPos)
-                                        end
-
-                                        rootPart.AssemblyLinearVelocity = Vector3.new(0, -2, 0)
-                                        rootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
-
--- BUCLE REACTOR NUCLEAR
-RunService.Stepped:Connect(function()
-    if Config.ReactorFarmEnabled then
-        local char = lp.Character
-        if char then
-            for _, p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") then p.CanCollide = false end
-            end
-        end
-    end
-end)
-
-local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
-    stopDistance = stopDistance or 3.5
-    local char = lp.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-    if not root then return false end
-
-    local finalDest = applyElevation and (targetPos + Vector3.new(0, 5, 0)) or targetPos
-    local timeout = tick() + 25
-
-    while Config.ReactorFarmEnabled and tick() < timeout do
-        RunService.Heartbeat:Wait()
-        local dist = (finalDest - root.Position).Magnitude
-        if dist <= stopDistance then
-            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-            return true
-        end
-        local dir = (finalDest - root.Position).Unit
-        root.AssemblyLinearVelocity = dir * speed
-    end
-    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-    return false
-end
-
-local function getActivePhaser(centerPos, maxDist)
-    local charFolder = workspace:FindFirstChild("Characters") or workspace
-    for _, entity in ipairs(charFolder:GetChildren()) do
-        if entity:IsA("Model") and entity ~= lp.Character then
-            local name = entity.Name:lower()
-            if name:find("phaser") or name:find("ghost") or name:find("fantasma") then
-                local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso")
-                local eHum = entity:FindFirstChildOfClass("Humanoid")
-                if eRoot and (not eHum or eHum.Health > 0) then
-                    local d = (eRoot.Position - centerPos).Magnitude
-                    if d <= maxDist then return entity, eRoot end
-                end
-            end
-        end
-    end
-    return nil, nil
-end
-
-local function countLivingZombiesInReactor(centerPos, maxDist)
-    local charFolder = workspace:FindFirstChild("Characters") or workspace
-    local count = 0
-    for _, entity in ipairs(charFolder:GetChildren()) do
-        if entity:IsA("Model") and entity ~= lp.Character then
-            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso")
-            local eHum = entity:FindFirstChildOfClass("Humanoid")
-            if eRoot and (not eHum or eHum.Health > 0) then
-                if (eRoot.Position - centerPos).Magnitude <= maxDist then
-                    count = count + 1
-                end
-            end
-        end
-    end
-    return count
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-
-        if Config.ReactorFarmEnabled then
-            if not ReactorAnchorCF or not CalculatedCenter then
-                Fluent:Notify({ Title = "Sin Calibrar", Content = "Fija el punto frente a la puerta primero.", Duration = 3 })
-                Config.ReactorFarmEnabled = false
-            else
-                local doorPos = ReactorAnchorCF.Position
-                local forwardDir = Vector3.new(ReactorAnchorCF.LookVector.X, 0, ReactorAnchorCF.LookVector.Z).Unit
-
-                flyMoveTo(doorPos, 35, 4, true)
-                task.wait(0.5)
-
-                for _, prompt in ipairs(workspace:GetDescendants()) do
-                    if prompt:IsA("ProximityPrompt") then
-                        local pPart = prompt.Parent
-                        if pPart and pPart:IsA("BasePart") and (pPart.Position - doorPos).Magnitude <= 15 then
-                            prompt.HoldDuration = 0
-                            fireproximityprompt(prompt)
-                        end
-                    end
-                end
-                task.wait(1.5)
-
-                flyMoveTo(CalculatedCenter, 40, 3, true)
-
-                local inCombat = true
-                local clearStreak = 0
-
-                while Config.ReactorFarmEnabled and inCombat do
-                    task.wait(0.3)
-                    local phaserModel, phaserRoot = getActivePhaser(CalculatedCenter, Config.ReactorDetectionRadius)
-
-                    if phaserModel and phaserRoot then
-                        clearStreak = 0
-                        while Config.ReactorFarmEnabled and phaserModel.Parent and phaserRoot.Parent do
-                            local eHum = phaserModel:FindFirstChildOfClass("Humanoid")
-                            if eHum and eHum.Health <= 0 then break end
-                            flyMoveTo(phaserRoot.Position, 38, 5, true)
-                            task.wait(0.15)
-                        end
-                        flyMoveTo(CalculatedCenter, 40, 3, true)
-                    else
-                        local remaining = countLivingZombiesInReactor(CalculatedCenter, Config.ReactorDetectionRadius)
-                        if remaining == 0 then
-                            clearStreak = clearStreak + 1
-                            if clearStreak >= 3 then inCombat = false end
-                        else
-                            clearStreak = 0
-                        end
-                    end
-                end
-
-                if Config.ReactorFarmEnabled and Config.LootChests and #CalculatedChests > 0 then
-                    Fluent:Notify({ Title = "Reactor Despejado", Content = "Recorriendo los 7 cofres subterráneos...", Duration = 3 })
-                    for _, cPos in ipairs(CalculatedChests) do
-                        if not Config.ReactorFarmEnabled then break end
-                        flyMoveTo(cPos, 38, 2.5, false)
-                        task.wait(Config.ChestWaitTime)
-                    end
-                end
-
-                if Config.ReactorFarmEnabled then
-                    Fluent:Notify({ Title = "Saqueo Completo", Content = "Alejándose 420 studs para descargar bioma...", Duration = 3 })
-                    local resetPos = doorPos - (forwardDir * 420) + Vector3.new(0, 15, 0)
-                    flyMoveTo(resetPos, 60, 6, false)
-                    task.wait(Config.ReactorResetWaitTime)
-                end
-            end
-        end
-    end
-end)
-
--- BUCLE PATRULLAJE
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-        if Config.PatrolEnabled and #Waypoints > 0 and not Config.ReactorFarmEnabled then
-            local char = lp.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-
-            if hum and root and hum.Health > 0 then
-                for _, targetPos in ipairs(Waypoints) do
-                    if not Config.PatrolEnabled or Config.ReactorFarmEnabled then break end
-
-                    local finalDestination = Config.FlyPatrol and (targetPos + Vector3.new(0, Config.FlyHeight, 0)) or targetPos
-                    local reached = false
-                    local timeout = tick() + 20
-
-                    while Config.PatrolEnabled and not reached and tick() < timeout and not Config.ReactorFarmEnabled do
-                        task.wait(0.05)
-
-                        if Config.FlyPatrol then
-                            local dir = (finalDestination - root.Position)
-                            if dir.Magnitude <= 3.5 then
-                                reached = true
-                                root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                            else
-                                root.AssemblyLinearVelocity = dir.Unit * Config.MoveSpeed
-                            end
-                        else
-                            hum:MoveTo(targetPos)
-                            if (root.Position - targetPos).Magnitude <= 4 then reached = true end
-                        end
-                    end
-
-                    if Config.PatrolEnabled and not Config.ReactorFarmEnabled then
-                        if Config.FlyPatrol then root.AssemblyLinearVelocity = Vector3.new(0, 0, 0) end
-                        if Config.WaypointWaitTime > 0 then
-                            task.wait(Config.WaypointWaitTime)
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
-
--- SURTIDOR INSTANTÁNEO
-ProximityPromptService.PromptShown:Connect(function(prompt)
-    if not Config.InstantGasStation then return end
-
-    local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
-    if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") then
-        prompt.HoldDuration = 0
-        fireproximityprompt(prompt)
-    end
-end)
-
--- SELECCIÓN CON TECLAS
+-- 3. SELECCIÓN CON TECLA 'T' Y CANCELACIÓN CON 'Y'
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
 
@@ -1046,11 +227,30 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         local target = mouse.Target
         if target then
             local model = target:FindFirstAncestorOfClass("Model")
-            local chosen = (model and model ~= lp.Character and model ~= workspace and model) or target
+            local chosen = nil
+
+            if model and model ~= lp.Character and model ~= workspace then
+                chosen = model
+            else
+                chosen = target
+            end
+
             if chosen then
                 CurrentTarget = chosen
                 applyHighlight(chosen)
-                Fluent:Notify({ Title = "Objetivo Fijado", Content = "Fijado: " .. chosen.Name, Duration = 2 })
+
+                local displayName = chosen.Name
+                if displayName == "Mesh" or displayName == "MeshPart" then
+                    if chosen.Parent and chosen.Parent ~= workspace then
+                        displayName = chosen.Parent.Name
+                    end
+                end
+
+                Fluent:Notify({
+                    Title = "Objetivo Seleccionado",
+                    Content = "Fijado: " .. displayName,
+                    Duration = 3
+                })
             end
         end
     end
@@ -1058,36 +258,132 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if input.KeyCode == Enum.KeyCode.Y then
         CurrentTarget = nil
         clearHighlight()
-        Fluent:Notify({ Title = "Objetivo Cancelado", Content = "Se desmarcó el objetivo.", Duration = 2 })
+        Fluent:Notify({
+            Title = "Objetivo Cancelado",
+            Content = "Se desmarcó el objetivo.",
+            Duration = 2
+        })
+    end
+end)
+
+-- 4. BUCLE DE MOVIMIENTO (COMBATE / ATROPELLO)
+local side = 1
+local lastSwitch = tick()
+
+RunService.Heartbeat:Connect(function()
+    if not Config.ZigZagEnabled or not CurrentTarget then return end
+
+    local char = lp.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum or hum.Health <= 0 then return end
+
+    local targetPart = nil
+    if CurrentTarget:IsA("BasePart") then
+        targetPart = CurrentTarget
+    elseif CurrentTarget:IsA("Model") then
+        targetPart = CurrentTarget:FindFirstChild("HumanoidRootPart") or CurrentTarget:FindFirstChild("Torso") or CurrentTarget.PrimaryPart or CurrentTarget:FindFirstChildWhichIsA("BasePart")
     end
 
-    if input.KeyCode == Enum.KeyCode.K then
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            local wpPos = root.Position
-            table.insert(Waypoints, wpPos)
+    if targetPart and targetPart.Parent then
+        if tick() - lastSwitch >= Config.SwitchInterval then
+            side = -side
+            lastSwitch = tick()
+        end
 
-            local marker = Instance.new("Part")
-            marker.Name = "WaypointMarker_" .. #Waypoints
-            marker.Shape = Enum.PartType.Ball
-            marker.Size = Vector3.new(2, 2, 2)
-            marker.Material = Enum.Material.Neon
-            marker.Color = Color3.fromRGB(255, 230, 0)
-            marker.Anchored = true
-            marker.CanCollide = false
-            marker.Position = wpPos - Vector3.new(0, 1.5, 0)
-            marker.Parent = workspace
+        local cf = targetPart.CFrame
+        local lateralOffset = cf.RightVector * (side * Config.LateralDist)
+        local destination = targetPart.Position + lateralOffset
 
-            table.insert(WaypointMarkers, marker)
-            Fluent:Notify({ Title = "Punto Creado", Content = "Punto #" .. #Waypoints .. " guardado.", Duration = 1.5 })
+        local direction = (destination - root.Position)
+        local horizontalDir = Vector3.new(direction.X, 0, direction.Z)
+
+        if horizontalDir.Magnitude > 1.5 then
+            local targetVelocity = horizontalDir.Unit * Config.MoveSpeed
+            root.AssemblyLinearVelocity = Vector3.new(targetVelocity.X, root.AssemblyLinearVelocity.Y, targetVelocity.Z)
+        end
+    end
+end)
+
+-- 5. BUCLE DE TELETRANSPORTE CON BASE PREVENT Y DISPERSIÓN ANTI-BUG
+local overlapParams = OverlapParams.new()
+overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+
+-- Función auxiliar para verificar si un ítem está dentro de la base (Center)
+local function isInsideBase(itemPos)
+    local centerModel = workspace:FindFirstChild("Center")
+    if centerModel then
+        local centerPart = centerModel:FindFirstChildWhichIsA("BasePart") or centerModel.PrimaryPart
+        if centerPart then
+            local dist = (itemPos - centerPart.Position).Magnitude
+            if dist <= Config.BaseRadius then
+                return true
+            end
+        end
+    end
+    -- Respaldo con la posición de la bolita si no encuentra la pieza Center
+    if DropPointMarker and DropPointMarker.Parent then
+        local distToMarker = (itemPos - DropPointMarker.Position).Magnitude
+        if distToMarker <= (Config.BaseRadius * 0.4) then
+            return true
+        end
+    end
+    return false
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        if Config.AutoSendItems and DropPointMarker and DropPointMarker.Parent then
+            local char = lp.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            if root then
+                overlapParams.FilterDescendantsInstances = {char}
+
+                local partsNearby = workspace:GetPartBoundsInRadius(root.Position, Config.CollectRadius, overlapParams)
+
+                for _, item in ipairs(partsNearby) do
+                    if not item.Anchored and not item:FindFirstAncestorOfClass("Humanoid") then
+                        -- Comprobar si Base Prevent está activo y si el ítem ya está en la base
+                        local skipItem = false
+                        if Config.BasePrevent and isInsideBase(item.Position) then
+                            skipItem = true
+                        end
+
+                        if not skipItem then
+                            -- 1. Calcular offset aleatorio en un círculo para que no choquen entre sí
+                            local angle = math.random() * math.pi * 2
+                            local distance = math.random() * Config.SpreadRadius
+                            local offsetX = math.cos(angle) * distance
+                            local offsetZ = math.sin(angle) * distance
+
+                            local destinationPos = DropPointMarker.Position + Vector3.new(offsetX, 1.5, offsetZ)
+
+                            -- 2. Limpieza de velocidades acumuladas (evita que rebote o salga disparado)
+                            item.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                            item.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+
+                            -- 3. Asignar nueva posición sin colisión brusca
+                            item.CFrame = CFrame.new(destinationPos)
+
+                            -- Apagar colisiones brevemente para evitar efecto explosión
+                            item.CanCollide = false
+                            task.delay(0.15, function()
+                                if item and item.Parent then
+                                    item.CanCollide = true
+                                end
+                            end)
+                        end
+                    end
+                end
+            end
         end
     end
 end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Atropello continuo a máxima velocidad y reparación multi-objetivo activados.",
+    Content = "Base Prevent y Dispersión Anti-Bug integradas.",
     Duration = 4
 })
 
