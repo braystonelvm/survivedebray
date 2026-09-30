@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - ALTURA BLOQUEADA CONSTANTE (+10 STUDS)
+-- REACTOR NUCLEAR HUB - ÓRBITAS TÁCTICAS (270 STUDS) Y ALTITUD BLOQUEADA
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -28,7 +28,7 @@ local State = {
     ChestWaitTime = 1.3,
     BaseNuclearWait = 900,
     GasCycleInterval = 180,
-    DetectionRadius = 220
+    DetectionRadius = 270 -- Margen ampliado a 270 studs a la redonda
 }
 
 local Point1_Front = nil
@@ -84,7 +84,7 @@ local function copyCurrentCoords()
     end
 end
 
--- FÍSICAS Y FLOTACIÓN ANCLADA PERMANENTE
+-- FÍSICAS Y FLOTACIÓN ANCLADA
 local function removePhysicsHelpers()
     local root = getRootPart()
     if root then
@@ -122,7 +122,6 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     local root = getRootPart()
     if not root then return false end
 
-    -- Si se solicita altura fija de puerta, bloquea Y estrictamente a Point2_Door.Y + 10 studs
     local targetY = targetPos.Y
     if lockAltitudeToDoor and Point2_Door then
         targetY = Point2_Door.Y + 10
@@ -187,6 +186,31 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
 
     if bodyPos then bodyPos.Position = finalDest end
     return false
+end
+
+-- MANIOBRA DE ÓRBITA EN 360 GRADOS ALREDEDOR DEL ZOMBIE (ÁNGULO LIBRE PARA EL DRON)
+local function orbitTarget(targetRoot, radius, duration, speed)
+    local root = getRootPart()
+    if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
+
+    local targetY = Point2_Door.Y + 10
+    local endTime = tick() + duration
+    local angle = 0
+
+    local bodyPos = root:FindFirstChild("ReactorFloatBP")
+    if not bodyPos then return end
+
+    while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
+        RunService.Heartbeat:Wait()
+        angle = angle + (speed * 0.05)
+        local tPos = targetRoot.Position
+        local orbitDest = Vector3.new(
+            tPos.X + math.cos(angle) * radius,
+            targetY,
+            tPos.Z + math.sin(angle) * radius
+        )
+        bodyPos.Position = orbitDest
+    end
 end
 
 local function interactWithGasPump(stationPos)
@@ -499,7 +523,7 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
--- MÁQUINA DE ESTADOS Y LIMPIEZA CON ALTITUD FIJA
+-- MÁQUINA DE ESTADOS Y LIMPIEZA CON ÓRBITAS
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -511,7 +535,7 @@ task.spawn(function()
             else
                 local root = getRootPart()
                 local distToCenter = root and (root.Position - CalculatedCenter).Magnitude or 999
-                local alreadyInside = distToCenter < 120
+                local alreadyInside = distToCenter < 140
 
                 if not alreadyInside then
                     updateStatus("[1/5] Verificando Puerta...")
@@ -540,11 +564,11 @@ task.spawn(function()
                     task.wait(1.5)
                 end
 
-                -- ENTRAR AL CENTRO (Mantiene altura constante)
+                -- ENTRAR AL CENTRO
                 flyMoveTo(CalculatedCenter, 40, 3, true)
 
-                -- ESTADO 3: CACERÍA TOTAL DE ZOMBIES (SIN BAJAR DE ALTURA)
-                updateStatus("[3/5] Barriendo reactor y cazando zombies...")
+                -- ESTADO 3: CACERÍA Y BARRIDO CON ÓRBITAS (270 STUDS)
+                updateStatus("[3/5] Barriendo reactor (270 studs) con órbitas...")
                 local inCombat = true
                 local clearStreak = 0
 
@@ -555,20 +579,24 @@ task.spawn(function()
                     if targetModel and targetRoot then
                         clearStreak = 0
                         local name = targetModel.Name
-                        updateStatus("Cazando: " .. name .. "...")
-                        local chaseTimeout = tick() + 12
+                        updateStatus("Rodeando a " .. name .. " para el dron...")
 
-                        while State.Running and not State.Paused and targetModel.Parent and targetRoot.Parent and tick() < chaseTimeout do
-                            local eHum = targetModel:FindFirstChildOfClass("Humanoid")
-                            if eHum and eHum.Health <= 0 then break end
-                            -- Se pasa true para bloquear la coordenada Y a la altura de la puerta y no hundirse
-                            flyMoveTo(targetRoot.Position, 42, 4, true)
-                            task.wait(0.15)
+                        -- 1. Acercarse a la posición horizontal del zombie manteniendo altitud fija
+                        flyMoveTo(targetRoot.Position, 42, 6, true)
+
+                        -- 2. Vuelta pequeña cerrada (radio 7 studs) para centrar el tiro
+                        orbitTarget(targetRoot, 7, 1.8, 4)
+
+                        -- 3. Vuelta más amplia (radio 15 studs) para evitar columnas y paredes
+                        if targetModel.Parent and targetRoot.Parent then
+                            orbitTarget(targetRoot, 15, 2.2, 3)
                         end
+
+                        -- 4. Regreso táctico al centro para reorientar al dron y buscar nuevos blancos
                         flyMoveTo(CalculatedCenter, 40, 3, true)
                     else
                         local remaining = countLivingZombiesInReactor(CalculatedCenter, State.DetectionRadius)
-                        updateStatus("Verificando sala... Restantes: " .. remaining)
+                        updateStatus("Verificando sala (270 studs)... Restantes: " .. remaining)
                         if remaining == 0 then
                             clearStreak = clearStreak + 1
                             if clearStreak >= 3 then inCombat = false end
@@ -578,7 +606,7 @@ task.spawn(function()
                     end
                 end
 
-                -- ESTADO 4: SAQUEO DE COFRES (Cofres con su cota real)
+                -- ESTADO 4: SAQUEO DE COFRES
                 if State.Running and not State.Paused and State.LootChests and #CalculatedChests > 0 then
                     updateStatus("[4/5] Saqueando los 7 cofres subterráneos...")
                     for _, cPos in ipairs(CalculatedChests) do
@@ -636,7 +664,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Altitud constante bloqueada. Cero hundimientos.",
+    Content = "Órbitas en 360° y margen de 270 studs activos.",
     Duration = 4
 })
 
