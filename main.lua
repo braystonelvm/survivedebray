@@ -29,7 +29,7 @@ local State = {
     Paused = false,
     CurrentStatus = "Inactivo",
     LootChests = true,
-    ChestWaitTime = 0.8, -- Pasada rápida por cofres
+    ChestWaitTime = 0.8,
     BaseNuclearWait = 900,
     GasCycleInterval = 180,
     DetectionRadius = 270
@@ -196,7 +196,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     return false
 end
 
--- ATAQUE CIRCULAR (ÓRBITA ALREDEDOR DEL ZOMBIE)
+-- ATAQUE CIRCULAR SUAVE Y CONTROLADO (ÓRBITA MÁS LENTA Y CON MAYOR DURACIÓN)
 local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
@@ -210,7 +210,8 @@ local function orbitTarget(targetRoot, radius, duration, speed)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
         RunService.Heartbeat:Wait()
-        angle = angle + (speed * 0.05)
+        -- Velocidad angular más despacio y fluida
+        angle = angle + (speed * 0.025)
         local tPos = targetRoot.Position
         local orbitDest = Vector3.new(
             tPos.X + math.cos(angle) * radius,
@@ -579,7 +580,7 @@ task.spawn(function()
                 -- ENTRAR AL CENTRO (Mantiene altura constante)
                 flyMoveTo(CalculatedCenter, 40, 3, true)
 
-                -- ESTADO 3: CACERÍA Y BARRIDO EN EL AIRE CON ÓRBITAS (ALTURA SEGURA)
+                -- ESTADO 3: CACERÍA Y BARRIDO EN EL AIRE CON ÓRBITAS SUAVES Y PROLONGADAS
                 updateStatus("[3/5] Barriendo reactor y orbitando zombies...")
                 local inCombat = true
                 local clearStreak = 0
@@ -594,14 +595,21 @@ task.spawn(function()
                         updateStatus("Rodeando a " .. name .. " para el dron...")
 
                         -- Vuela hacia el zombie a altura segura
-                        flyMoveTo(targetRoot.Position, 42, 6, true)
+                        flyMoveTo(targetRoot.Position, 38, 5, true)
 
-                        -- Órbita cerrada (radio 7 studs)
-                        orbitTarget(targetRoot, 7, 1.6, 4)
+                        -- 1. Órbita cerrada (radio 7 studs) más despacio durante 3.5 segundos
+                        orbitTarget(targetRoot, 7, 3.5, 2.5)
 
-                        -- Órbita más amplia (radio 14 studs)
+                        -- 2. Órbita más amplia (radio 14 studs) durante 4.5 segundos
                         if targetModel.Parent and targetRoot.Parent then
-                            orbitTarget(targetRoot, 14, 2.0, 3)
+                            orbitTarget(targetRoot, 14, 4.5, 2.0)
+                        end
+
+                        -- 3. Quedarse siguiéndolo unos 2 segundos más de cerca si aún sigue vivo
+                        local followTimeout = tick() + 2.0
+                        while State.Running and not State.Paused and targetModel.Parent and targetRoot.Parent and tick() < followTimeout do
+                            flyMoveTo(targetRoot.Position, 35, 4, true)
+                            task.wait(0.2)
                         end
 
                         flyMoveTo(CalculatedCenter, 40, 3, true)
@@ -692,7 +700,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Órbitas, coordenadas predefinidas y cofres rápidos activos.",
+    Content = "Órbitas más lentas y seguimiento extendido configurados.",
     Duration = 4
 })
 
