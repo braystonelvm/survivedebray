@@ -11,25 +11,22 @@ local ProximityPromptService = game:GetService("ProximityPromptService")
 local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
--- ==============================================================================
--- OFFSETS LOCALES RELATIVOS A LA ORIENTACIÓN (Adelante, Derecha, Vertical)
--- ==============================================================================
--- Vector3.new(Derecha, Altura_Y, Adelante)
+-- Offsets relativos locales respecto a la puerta (Derecha, Altura_Y, Adelante)
 local LOCAL_CHEST_OFFSETS = {
-    Vector3.new(57.3, -18.9, -3.5),   -- Cofre 1
-    Vector3.new(60.3, -19.0, 20.6),   -- Cofres 2 y 3
-    Vector3.new(60.3, -19.0, 20.6),   -- Cofres 4 y 5
-    Vector3.new(-34.0, -38.7, 68.6),  -- Cofre 6
-    Vector3.new(-36.2, -38.7, 61.0)   -- Cofre 7
+    Vector3.new(57.3, -18.9, 43.1),   -- Cofre 1
+    Vector3.new(60.3, -19.0, 67.2),   -- Cofres 2 y 3
+    Vector3.new(60.3, -19.0, 67.2),   -- Cofres 4 y 5
+    Vector3.new(-34.0, -38.7, 115.2), -- Cofre 6
+    Vector3.new(-36.2, -38.7, 107.6)  -- Cofre 7
 }
 
--- Variables de configuración
 local Config = {
-    -- Combate / Zigzag
-    ZigZagEnabled = false,
-    SwitchInterval = 1.2,
-    LateralDist = 14,
-    MoveSpeed = 45,
+    -- Combate / Atropello Constante
+    AtropelloEnabled = false,
+    AtropelloMode = "Embestida Frontal Continua",
+    MoveSpeed = 160,              -- Máximo por defecto
+    ChargeDistance = 25,          -- Radio de ataque amplio por defecto
+    AntiBloaterPush = true,
 
     -- Teletransporte de Ítems
     AutoSendItems = false,
@@ -45,12 +42,12 @@ local Config = {
     PatrolEnabled = false,
     FlyPatrol = false,
     FlyHeight = 10,
-    WaypointWaitTime = 2.0,
+    WaypointWaitTime = 0,         -- Mínimo 0 segundos
 
     -- Utilidades
     InstantGasStation = true,
 
-    -- Reactor Nuclear
+    -- Reactor Nuclear (Con Vuelo Estable +10 studs)
     ReactorFarmEnabled = false,
     LootChests = true,
     ChestWaitTime = 1.3,
@@ -65,12 +62,10 @@ local Waypoints = {}
 local WaypointMarkers = {}
 local TeleportedTracker = {}
 
--- Puntos del Reactor (Valores iniciales guardados)
-local NuclearPoints = {
-    Door = Vector3.new(310.4, 5.5, 1201.0),
-    Center = Vector3.new(353.8, 5.2, 1183.9),
-    Outside = nil
-}
+-- Variables de calibración del reactor
+local ReactorDoorPos = nil
+local ReactorCenterPos = nil
+local ReactorForwardDir = nil
 local NuclearMarkers = {}
 local CalculatedChests = {}
 local ChestMarkers = {}
@@ -97,51 +92,16 @@ local function applyHighlight(obj)
     end
 end
 
--- Cálculo de rotación real usando Puerta y Centro
-local function recalculateRotatedChests()
-    if not NuclearPoints.Door or not NuclearPoints.Center then return end
-
-    for _, m in ipairs(ChestMarkers) do
-        if m and m.Parent then m:Destroy() end
+local function getCurrentVehicle()
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
+        local seat = hum.SeatPart
+        local carModel = seat:FindFirstAncestorOfClass("Model")
+        local mainPart = carModel and (carModel.PrimaryPart or seat) or seat
+        return carModel, seat, mainPart
     end
-    table.clear(CalculatedChests)
-    table.clear(ChestMarkers)
-
-    local door = NuclearPoints.Door
-    local center = NuclearPoints.Center
-
-    -- Vector hacia adelante en el plano horizontal
-    local forwardDir = Vector3.new(center.X - door.X, 0, center.Z - door.Z).Unit
-    local upDir = Vector3.new(0, 1, 0)
-    -- Vector hacia la derecha relativo al edificio
-    local rightDir = forwardDir:Cross(upDir).Unit
-
-    for i, offset in ipairs(LOCAL_CHEST_OFFSETS) do
-        local rightDist = offset.X
-        local heightDist = offset.Y
-        local forwardDist = offset.Z
-
-        -- Sumar los vectores según la rotación exacta del reactor
-        local worldPos = center + (rightDir * rightDist) + (forwardDir * forwardDist) + Vector3.new(0, heightDist, 0)
-        table.insert(CalculatedChests, worldPos)
-
-        local marker = Instance.new("Part")
-        marker.Name = "RotatedChestMarker_" .. i
-        marker.Shape = Enum.PartType.Ball
-        marker.Size = Vector3.new(2.2, 2.2, 2.2)
-        marker.Material = Enum.Material.Neon
-        marker.Color = Color3.fromRGB(0, 200, 255)
-        marker.Anchored = true
-        marker.CanCollide = false
-        marker.Position = worldPos
-        marker.Parent = workspace
-        table.insert(ChestMarkers, marker)
-    end
-end
-
--- Generar cofres si los puntos iniciales están definidos
-if NuclearPoints.Door and NuclearPoints.Center then
-    recalculateRotatedChests()
+    return nil, nil, nil
 end
 
 -- 1. VENTANA PRINCIPAL
@@ -163,38 +123,43 @@ local Tabs = {
     Misc = Window:AddTab({ Title = "Utilidades", Icon = "wrench" })
 }
 
--- PESTAÑA 1: COMBATE
-Tabs.Combat:AddSection("Controles de Zigzag / Atropello")
+-- PESTAÑA 1: COMBATE Y ATROPELLO CONSTANTE
+Tabs.Combat:AddSection("Atropello Constante")
 
-Tabs.Combat:AddToggle("ZigZagToggle", {
-    Title = "Activar Movimiento / Atropello Automático",
+Tabs.Combat:AddToggle("AtropelloToggle", {
+    Title = "Activar Atropello Constante",
+    Description = "Acelera sin detenerse contra el zombie fijado",
     Default = false,
-    Callback = function(Value) Config.ZigZagEnabled = Value end
+    Callback = function(Value) Config.AtropelloEnabled = Value end
 })
 
-Tabs.Combat:AddSlider("IntervalSlider", {
-    Title = "Frecuencia de oscilación (Segundos)",
-    Default = 1.2,
-    Min = 0.3,
-    Max = 3.0,
-    Rounding = 1,
-    Callback = function(Value) Config.SwitchInterval = Value end
+Tabs.Combat:AddToggle("AntiBloaterToggle", {
+    Title = "Repeler Bloaters (Anti-Explosión)",
+    Default = true,
+    Callback = function(Value) Config.AntiBloaterPush = Value end
 })
 
-Tabs.Combat:AddSlider("DistSlider", {
-    Title = "Ancho de Atropello (Studs)",
-    Default = 14,
-    Min = 4,
-    Max = 35,
+Tabs.Combat:AddDropdown("AtropelloModeSelect", {
+    Title = "Patrón de Ataque",
+    Values = {"Embestida Frontal Continua", "Zigzag Lateral"},
+    Default = "Embestida Frontal Continua",
+    Callback = function(Value) Config.AtropelloMode = Value end
+})
+
+Tabs.Combat:AddSlider("ChargeDistSlider", {
+    Title = "Distancia de Persecución (Studs)",
+    Default = 25,
+    Min = 10,
+    Max = 60,
     Rounding = 0,
-    Callback = function(Value) Config.LateralDist = Value end
+    Callback = function(Value) Config.ChargeDistance = Value end
 })
 
 Tabs.Combat:AddSlider("SpeedSlider", {
-    Title = "Velocidad de Movimiento",
-    Default = 45,
-    Min = 16,
-    Max = 120,
+    Title = "Velocidad de Embestida",
+    Default = 160,
+    Min = 25,
+    Max = 160,
     Rounding = 0,
     Callback = function(Value) Config.MoveSpeed = Value end
 })
@@ -294,8 +259,8 @@ Tabs.Patrol:AddToggle("FlyPatrolToggle", {
 
 Tabs.Patrol:AddSlider("WaitTimeSlider", {
     Title = "Tiempo de espera en cada punto (Segundos)",
-    Default = 2.0,
-    Min = 0.5,
+    Default = 0,
+    Min = 0,
     Max = 15.0,
     Rounding = 1,
     Callback = function(Value) Config.WaypointWaitTime = Value end
@@ -339,68 +304,110 @@ Tabs.Patrol:AddButton({
     end
 })
 
--- PESTAÑA 4: REACTOR NUCLEAR
-Tabs.Reactor:AddSection("Fijar Puntos y Orientación")
-
-local function spawnOrangeMarker(pos, name)
-    if NuclearMarkers[name] and NuclearMarkers[name].Parent then
-        NuclearMarkers[name]:Destroy()
-    end
-    local marker = Instance.new("Part")
-    marker.Name = "NuclearMarker_" .. name
-    marker.Shape = Enum.PartType.Ball
-    marker.Size = Vector3.new(2.8, 2.8, 2.8)
-    marker.Material = Enum.Material.Neon
-    marker.Color = Color3.fromRGB(255, 120, 0)
-    marker.Anchored = true
-    marker.CanCollide = false
-    marker.Position = pos
-    marker.Parent = workspace
-    NuclearMarkers[name] = marker
-end
+-- PESTAÑA 4: REACTOR NUCLEAR (CALIBRACIÓN POR TRAZO DE 2 SEGUNDOS)
+Tabs.Reactor:AddSection("Calibración por Trazo (Muerto/Vivo)")
 
 Tabs.Reactor:AddButton({
-    Title = "1. Fijar Punto Puerta (Punto A)",
-    Description = "Establece el inicio del vector de dirección",
+    Title = "Grabar Trazo hacia la Puerta (2 seg)",
+    Description = "Párate cerca, presiona el botón y avanza 2 seg hacia la puerta",
     Callback = function()
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            NuclearPoints.Door = root.Position
-            spawnOrangeMarker(root.Position, "Door")
-            recalculateRotatedChests()
-            Fluent:Notify({ Title = "Puerta Fijada", Content = "Punto 1 guardado.", Duration = 2 })
-        end
-    end
-})
+        if not root then return end
 
-Tabs.Reactor:AddButton({
-    Title = "2. Fijar Punto Centro (Punto B)",
-    Description = "Orienta el reactor y calcula los 7 cofres rotados",
-    Callback = function()
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            NuclearPoints.Center = root.Position
-            spawnOrangeMarker(root.Position, "Center")
-            recalculateRotatedChests()
-            Fluent:Notify({ Title = "Centro Fijado", Content = "Cofres recalculados con orientación real.", Duration = 3 })
-        end
-    end
-})
+        local pStart = root.Position
+        Fluent:Notify({
+            Title = "Grabando Dirección...",
+            Content = "¡Avanza hacia la puerta ahora mismo! (2 segundos)",
+            Duration = 2
+        })
 
-Tabs.Reactor:AddButton({
-    Title = "3. Fijar Punto Lejos (Reset Bioma)",
-    Callback = function()
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            NuclearPoints.Outside = root.Position
-            spawnOrangeMarker(root.Position, "Outside")
-            Fluent:Notify({ Title = "Salida Fijada", Content = "Punto 3 exterior fijado.", Duration = 2 })
-        end
+        task.delay(2.0, function()
+            local cNow = lp.Character
+            local rNow = cNow and cNow:FindFirstChild("HumanoidRootPart")
+            if not rNow then return end
+
+            local pEnd = rNow.Position
+            local delta = (pEnd - pStart)
+            local horizontalDir = Vector3.new(delta.X, 0, delta.Z)
+
+            if horizontalDir.Magnitude < 0.5 then
+                Fluent:Notify({
+                    Title = "Movimiento insuficiente",
+                    Content = "Debes moverte hacia la puerta para fijar la dirección.",
+                    Duration = 3
+                })
+                return
+            end
+
+            ReactorForwardDir = horizontalDir.Unit
+            local rightDir = ReactorForwardDir:Cross(Vector3.new(0, 1, 0)).Unit
+            ReactorDoorPos = pEnd
+            ReactorCenterPos = pEnd + (ReactorForwardDir * 46.6)
+
+            -- Limpiar marcadores viejos
+            for _, m in pairs(NuclearMarkers) do
+                if m and m.Parent then m:Destroy() end
+            end
+            for _, m in ipairs(ChestMarkers) do
+                if m and m.Parent then m:Destroy() end
+            end
+            table.clear(NuclearMarkers)
+            table.clear(CalculatedChests)
+            table.clear(ChestMarkers)
+
+            -- Marcador en la puerta
+            local dMarker = Instance.new("Part")
+            dMarker.Name = "NuclearDoorMarker"
+            dMarker.Shape = Enum.PartType.Ball
+            dMarker.Size = Vector3.new(3, 3, 3)
+            dMarker.Material = Enum.Material.Neon
+            dMarker.Color = Color3.fromRGB(255, 120, 0)
+            dMarker.Anchored = true
+            dMarker.CanCollide = false
+            dMarker.Position = ReactorDoorPos
+            dMarker.Parent = workspace
+            NuclearMarkers["Door"] = dMarker
+
+            -- Marcador en el centro
+            local cMarker = Instance.new("Part")
+            cMarker.Name = "NuclearCenterMarker"
+            cMarker.Shape = Enum.PartType.Ball
+            cMarker.Size = Vector3.new(3, 3, 3)
+            cMarker.Material = Enum.Material.Neon
+            cMarker.Color = Color3.fromRGB(255, 80, 0)
+            cMarker.Anchored = true
+            cMarker.CanCollide = false
+            cMarker.Position = ReactorCenterPos
+            cMarker.Parent = workspace
+            NuclearMarkers["Center"] = cMarker
+
+            -- Calcular los 7 cofres subterráneos
+            for i, offset in ipairs(LOCAL_CHEST_OFFSETS) do
+                local worldPos = ReactorDoorPos + (rightDir * offset.X) + (ReactorForwardDir * offset.Z) + Vector3.new(0, offset.Y, 0)
+                table.insert(CalculatedChests, worldPos)
+
+                local marker = Instance.new("Part")
+                marker.Name = "RotatedChestMarker_" .. i
+                marker.Shape = Enum.PartType.Ball
+                marker.Size = Vector3.new(2.2, 2.2, 2.2)
+                marker.Material = Enum.Material.Neon
+                marker.Color = Color3.fromRGB(0, 200, 255)
+                marker.Anchored = true
+                marker.CanCollide = false
+                marker.Position = worldPos
+                marker.Parent = workspace
+                table.insert(ChestMarkers, marker)
+            end
+
+            Fluent:Notify({
+                Title = "Reactor Calibrado",
+                Content = "Trazo completado. Puerta, centro y 7 cofres fijados.",
+                Duration = 4
+            })
+        end)
     end
-})
+end)
 
 Tabs.Reactor:AddSection("Automatización")
 
@@ -443,7 +450,7 @@ Tabs.Misc:AddToggle("InstantGasToggle", {
     Callback = function(Value) Config.InstantGasStation = Value end
 })
 
--- 2. BOTÓN FLOTANTE CÍRCULAR
+-- 2. BOTÓN FLOTANTE CÍRCULAR (DRAGGABLE CON POSICIÓN BAJA)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -457,8 +464,10 @@ else
 end
 
 local FloatBtn = Instance.new("ImageButton")
+FloatBtn.Name = "DraggableToggle"
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
-FloatBtn.Position = UDim2.new(0.04, 0, 0.22, 0)
+-- Ubicación predeterminada más abajo (Y = 0.40)
+FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
 FloatBtn.Image = "rbxassetid://10723415903"
 FloatBtn.Parent = ScreenGui
@@ -466,6 +475,36 @@ FloatBtn.Parent = ScreenGui
 local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(1, 0)
 UICorner.Parent = FloatBtn
+
+local isDragging = false
+local dragStart = nil
+local startPos = nil
+
+FloatBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        isDragging = true
+        dragStart = input.Position
+        startPos = FloatBtn.Position
+    end
+end)
+
+FloatBtn.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        isDragging = false
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        FloatBtn.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
 
 local isWindowOpen = true
 FloatBtn.MouseButton1Click:Connect(function()
@@ -485,27 +524,53 @@ RunService.Stepped:Connect(function()
     end
 end)
 
+-- Vuelo reforzado anti-caídas (+10 studs fijos)
 local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
     stopDistance = stopDistance or 3.5
     local char = lp.Character
     local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
     if not root then return false end
 
-    local finalDest = applyElevation and (targetPos + Vector3.new(0, 5, 0)) or targetPos
+    -- Asegurar altura flotante constante
+    local elevatedHeight = applyElevation and 10 or 0
+    local finalDest = targetPos + Vector3.new(0, elevatedHeight, 0)
     local timeout = tick() + 25
+
+    -- Ancla de fuerza física para eliminar la gravedad
+    local bodyVel = root:FindFirstChild("HubFlyVelocity")
+    if not bodyVel then
+        bodyVel = Instance.new("BodyVelocity")
+        bodyVel.Name = "HubFlyVelocity"
+        bodyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+        bodyVel.Parent = root
+    end
 
     while Config.ReactorFarmEnabled and tick() < timeout do
         RunService.Heartbeat:Wait()
-        local dist = (finalDest - root.Position).Magnitude
+        local currentPos = root.Position
+        local diff = (finalDest - currentPos)
+        local dist = diff.Magnitude
+
         if dist <= stopDistance then
-            root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            bodyVel.Velocity = Vector3.new(0, 0, 0)
             return true
         end
-        local dir = (finalDest - root.Position).Unit
-        root.AssemblyLinearVelocity = dir * speed
+
+        local dir = diff.Unit
+        bodyVel.Velocity = dir * speed
     end
-    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+
+    if bodyVel then bodyVel.Velocity = Vector3.new(0, 0, 0) end
     return false
+end
+
+local function cleanupFlyVelocity()
+    local char = lp.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    if root then
+        local bodyVel = root:FindFirstChild("HubFlyVelocity")
+        if bodyVel then bodyVel:Destroy() end
+    end
 end
 
 local function getActivePhaser(centerPos, maxDist)
@@ -543,24 +608,24 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
     return count
 end
 
--- 4. BUCLE MAESTRO: REACTOR Y COFRES
+-- 4. BUCLE MAESTRO: REACTOR Y RESET DE 420 STUDS
 task.spawn(function()
     while true do
         task.wait(0.5)
 
         if Config.ReactorFarmEnabled then
-            if not NuclearPoints.Door or not NuclearPoints.Center or not NuclearPoints.Outside then
-                Fluent:Notify({ Title = "Puntos Incompletos", Content = "Fija los 3 puntos del reactor primero.", Duration = 3 })
+            if not ReactorDoorPos or not ReactorCenterPos or not ReactorForwardDir then
+                Fluent:Notify({ Title = "Sin Calibrar", Content = "Presiona 'Grabar Trazo hacia la Puerta' primero.", Duration = 3 })
                 Config.ReactorFarmEnabled = false
             else
-                -- 1. Puerta
-                flyMoveTo(NuclearPoints.Door, 35, 4, true)
+                -- 1. Puerta (a 10 studs de altura)
+                flyMoveTo(ReactorDoorPos, 35, 4, true)
                 task.wait(0.5)
 
                 for _, prompt in ipairs(workspace:GetDescendants()) do
                     if prompt:IsA("ProximityPrompt") then
                         local pPart = prompt.Parent
-                        if pPart and pPart:IsA("BasePart") and (pPart.Position - NuclearPoints.Door).Magnitude <= 15 then
+                        if pPart and pPart:IsA("BasePart") and (pPart.Position - ReactorDoorPos).Magnitude <= 15 then
                             prompt.HoldDuration = 0
                             fireproximityprompt(prompt)
                         end
@@ -568,8 +633,8 @@ task.spawn(function()
                 end
                 task.wait(1.5)
 
-                -- 2. Centro
-                flyMoveTo(NuclearPoints.Center, 40, 3, true)
+                -- 2. Centro (+10 studs suspendido)
+                flyMoveTo(ReactorCenterPos, 40, 3, true)
 
                 -- 3. Cacería de Phasers
                 local inCombat = true
@@ -577,7 +642,7 @@ task.spawn(function()
 
                 while Config.ReactorFarmEnabled and inCombat do
                     task.wait(0.3)
-                    local phaserModel, phaserRoot = getActivePhaser(NuclearPoints.Center, Config.ReactorDetectionRadius)
+                    local phaserModel, phaserRoot = getActivePhaser(ReactorCenterPos, Config.ReactorDetectionRadius)
 
                     if phaserModel and phaserRoot then
                         clearStreak = 0
@@ -587,9 +652,9 @@ task.spawn(function()
                             flyMoveTo(phaserRoot.Position, 38, 5, true)
                             task.wait(0.15)
                         end
-                        flyMoveTo(NuclearPoints.Center, 40, 3, true)
+                        flyMoveTo(ReactorCenterPos, 40, 3, true)
                     else
-                        local remaining = countLivingZombiesInReactor(NuclearPoints.Center, Config.ReactorDetectionRadius)
+                        local remaining = countLivingZombiesInReactor(ReactorCenterPos, Config.ReactorDetectionRadius)
                         if remaining == 0 then
                             clearStreak = clearStreak + 1
                             if clearStreak >= 3 then inCombat = false end
@@ -599,7 +664,7 @@ task.spawn(function()
                     end
                 end
 
-                -- 4. Ruta de Cofres Rotados
+                -- 4. Ruta de los 7 Cofres Subterráneos
                 if Config.ReactorFarmEnabled and Config.LootChests and #CalculatedChests > 0 then
                     Fluent:Notify({ Title = "Reactor Despejado", Content = "Recorriendo los 7 cofres subterráneos...", Duration = 3 })
                     for _, cPos in ipairs(CalculatedChests) do
@@ -609,47 +674,60 @@ task.spawn(function()
                     end
                 end
 
-                -- 5. Salir al exterior para reiniciar bioma
+                -- 5. Salir 420 studs hacia afuera del bioma para reiniciar
                 if Config.ReactorFarmEnabled then
-                    Fluent:Notify({ Title = "Saqueo Completo", Content = "Saliendo a descargar el bioma...", Duration = 3 })
-                    flyMoveTo(NuclearPoints.Outside, 55, 5, true)
+                    Fluent:Notify({ Title = "Saqueo Completo", Content = "Alejándose 420 studs para descargar bioma...", Duration = 3 })
+                    local resetPos = ReactorDoorPos - (ReactorForwardDir * 420) + Vector3.new(0, 15, 0)
+                    flyMoveTo(resetPos, 60, 6, false)
                     task.wait(Config.ReactorResetWaitTime)
                 end
             end
+        else
+            cleanupFlyVelocity()
         end
     end
 end)
 
--- 5. BUCLE DE MOVIMIENTO EN ZIGZAG
-local side = 1
-local lastSwitch = tick()
-
+-- 5. BUCLE DE ATROPELLO FRONTAL CONSTANTE (SIN FRENOS)
 RunService.Heartbeat:Connect(function()
-    if not Config.ZigZagEnabled or not CurrentTarget or Config.ReactorFarmEnabled then return end
+    if not Config.AtropelloEnabled or not CurrentTarget or Config.ReactorFarmEnabled then return end
 
-    local char = lp.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if not root or not hum or hum.Health <= 0 then return end
+    local car, seat, mainPart = getCurrentVehicle()
+    local controlledPart = mainPart or (lp.Character and lp.Character:FindFirstChild("HumanoidRootPart"))
+    if not controlledPart then return end
 
     local targetPart = (CurrentTarget:IsA("BasePart") and CurrentTarget) or (CurrentTarget:IsA("Model") and (CurrentTarget:FindFirstChild("HumanoidRootPart") or CurrentTarget:FindFirstChild("Torso") or CurrentTarget.PrimaryPart or CurrentTarget:FindFirstChildWhichIsA("BasePart")))
+    if not targetPart or not targetPart.Parent then return end
 
-    if targetPart and targetPart.Parent then
-        if tick() - lastSwitch >= Config.SwitchInterval then
-            side = -side
-            lastSwitch = tick()
+    local targetPos = targetPart.Position
+    local myPos = controlledPart.Position
+    local toZombie = Vector3.new(targetPos.X - myPos.X, 0, targetPos.Z - myPos.Z)
+    local dist = toZombie.Magnitude
+
+    local targetName = (CurrentTarget.Name):lower()
+    local isBloater = targetName:find("bloater") or targetName:find("boom") or targetName:find("explo")
+    if dist < 8 and isBloater and Config.AntiBloaterPush then
+        targetPart.AssemblyLinearVelocity = Vector3.new(toZombie.Unit.X * 50, 85, toZombie.Unit.Z * 50)
+    end
+
+    if Config.AtropelloMode == "Embestida Frontal Continua" then
+        if seat then
+            seat.Throttle = 1
         end
 
+        local moveDir = toZombie.Unit
+        local vel = moveDir * Config.MoveSpeed
+        controlledPart.AssemblyLinearVelocity = Vector3.new(vel.X, controlledPart.AssemblyLinearVelocity.Y, vel.Z)
+    else
         local cf = targetPart.CFrame
-        local lateralOffset = cf.RightVector * (side * Config.LateralDist)
-        local destination = targetPart.Position + lateralOffset
+        local side = (math.sin(tick() * 3) > 0) and 1 or -1
+        local destination = targetPos + (cf.RightVector * (side * 14))
+        local dir = (destination - myPos)
+        local hDir = Vector3.new(dir.X, 0, dir.Z)
 
-        local direction = (destination - root.Position)
-        local horizontalDir = Vector3.new(direction.X, 0, direction.Z)
-
-        if horizontalDir.Magnitude > 1.5 then
-            local targetVelocity = horizontalDir.Unit * Config.MoveSpeed
-            root.AssemblyLinearVelocity = Vector3.new(targetVelocity.X, root.AssemblyLinearVelocity.Y, targetVelocity.Z)
+        if hDir.Magnitude > 1.5 then
+            local vel = hDir.Unit * Config.MoveSpeed
+            controlledPart.AssemblyLinearVelocity = Vector3.new(vel.X, controlledPart.AssemblyLinearVelocity.Y, vel.Z)
         end
     end
 end)
@@ -817,7 +895,9 @@ task.spawn(function()
 
                     if Config.PatrolEnabled and not Config.ReactorFarmEnabled then
                         if Config.FlyPatrol then root.AssemblyLinearVelocity = Vector3.new(0, 0, 0) end
-                        task.wait(Config.WaypointWaitTime)
+                        if Config.WaypointWaitTime > 0 then
+                            task.wait(Config.WaypointWaitTime)
+                        end
                     end
                 end
             end
@@ -885,7 +965,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Cofres recalculados con orientación 2D.",
+    Content = "Calibración por trazo de 2 seg y vuelo reforzado listos.",
     Duration = 4
 })
 
