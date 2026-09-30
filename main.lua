@@ -11,23 +11,27 @@ local ProximityPromptService = game:GetService("ProximityPromptService")
 local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
--- Offsets relativos locales respecto a la puerta (Derecha, Altura_Y, Adelante)
+-- ==============================================================================
+-- OFFSETS LOCALES RELATIVOS A LA ORIENTACIÓN (Adelante, Derecha, Vertical)
+-- ==============================================================================
+-- Vector3.new(Derecha, Altura_Y, Adelante)
 local LOCAL_CHEST_OFFSETS = {
-    Vector3.new(57.3, -18.9, 43.1),   -- Cofre 1
-    Vector3.new(60.3, -19.0, 67.2),   -- Cofres 2 y 3
-    Vector3.new(60.3, -19.0, 67.2),   -- Cofres 4 y 5
-    Vector3.new(-34.0, -38.7, 115.2), -- Cofre 6
-    Vector3.new(-36.2, -38.7, 107.6)  -- Cofre 7
+    Vector3.new(57.3, -18.9, -3.5),   -- Cofre 1
+    Vector3.new(60.3, -19.0, 20.6),   -- Cofres 2 y 3
+    Vector3.new(60.3, -19.0, 20.6),   -- Cofres 4 y 5
+    Vector3.new(-34.0, -38.7, 68.6),  -- Cofre 6
+    Vector3.new(-36.2, -38.7, 61.0)   -- Cofre 7
 }
 
+-- Variables de configuración
 local Config = {
-    -- Combate
+    -- Combate / Zigzag
     ZigZagEnabled = false,
     SwitchInterval = 1.2,
     LateralDist = 14,
     MoveSpeed = 45,
 
-    -- Teletransporte Scrap
+    -- Teletransporte de Ítems
     AutoSendItems = false,
     CollectRadius = 22,
     OnlyScrap = true,
@@ -37,7 +41,7 @@ local Config = {
     GeneratorSafeRadius = 160,
     SpreadRadius = 4,
 
-    -- Ruta
+    -- Ruta Amarilla / Vuelo
     PatrolEnabled = false,
     FlyPatrol = false,
     FlyHeight = 10,
@@ -46,7 +50,7 @@ local Config = {
     -- Utilidades
     InstantGasStation = true,
 
-    -- Reactor Autónomo (1 Punto)
+    -- Reactor Nuclear
     ReactorFarmEnabled = false,
     LootChests = true,
     ChestWaitTime = 1.3,
@@ -61,10 +65,13 @@ local Waypoints = {}
 local WaypointMarkers = {}
 local TeleportedTracker = {}
 
--- Reactor (1 Punto de entrada con CFrame)
-local ReactorAnchorCF = nil
-local NuclearMarker = nil
-local CalculatedCenter = nil
+-- Puntos del Reactor (Valores iniciales guardados)
+local NuclearPoints = {
+    Door = Vector3.new(310.4, 5.5, 1201.0),
+    Center = Vector3.new(353.8, 5.2, 1183.9),
+    Outside = nil
+}
+local NuclearMarkers = {}
 local CalculatedChests = {}
 local ChestMarkers = {}
 
@@ -90,52 +97,51 @@ local function applyHighlight(obj)
     end
 end
 
--- Cálculo de todo el reactor a partir de 1 solo punto con orientación
-local function setReactorFromSinglePoint(cf)
-    ReactorAnchorCF = cf
-    local doorPos = cf.Position
-    local forwardDir = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z).Unit
-    local rightDir = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z).Unit
+-- Cálculo de rotación real usando Puerta y Centro
+local function recalculateRotatedChests()
+    if not NuclearPoints.Door or not NuclearPoints.Center then return end
 
-    -- Centro a 46.6 studs al frente de la puerta
-    CalculatedCenter = doorPos + (forwardDir * 46.6)
-
-    -- Limpiar marcadores viejos
-    if NuclearMarker and NuclearMarker.Parent then NuclearMarker:Destroy() end
     for _, m in ipairs(ChestMarkers) do
         if m and m.Parent then m:Destroy() end
     end
     table.clear(CalculatedChests)
     table.clear(ChestMarkers)
 
-    -- Flecha / Marcador en la puerta
-    NuclearMarker = Instance.new("Part")
-    NuclearMarker.Name = "NuclearDoorMarker"
-    NuclearMarker.Size = Vector3.new(3, 1, 3)
-    NuclearMarker.CFrame = cf
-    NuclearMarker.Material = Enum.Material.Neon
-    NuclearMarker.Color = Color3.fromRGB(255, 120, 0)
-    NuclearMarker.Anchored = true
-    NuclearMarker.CanCollide = false
-    NuclearMarker.Parent = workspace
+    local door = NuclearPoints.Door
+    local center = NuclearPoints.Center
 
-    -- Calcular los 7 cofres
+    -- Vector hacia adelante en el plano horizontal
+    local forwardDir = Vector3.new(center.X - door.X, 0, center.Z - door.Z).Unit
+    local upDir = Vector3.new(0, 1, 0)
+    -- Vector hacia la derecha relativo al edificio
+    local rightDir = forwardDir:Cross(upDir).Unit
+
     for i, offset in ipairs(LOCAL_CHEST_OFFSETS) do
-        local worldPos = doorPos + (rightDir * offset.X) + (forwardDir * offset.Z) + Vector3.new(0, offset.Y, 0)
+        local rightDist = offset.X
+        local heightDist = offset.Y
+        local forwardDist = offset.Z
+
+        -- Sumar los vectores según la rotación exacta del reactor
+        local worldPos = center + (rightDir * rightDist) + (forwardDir * forwardDist) + Vector3.new(0, heightDist, 0)
         table.insert(CalculatedChests, worldPos)
 
-        local m = Instance.new("Part")
-        m.Name = "AutoChestMarker_" .. i
-        m.Shape = Enum.PartType.Ball
-        m.Size = Vector3.new(2.2, 2.2, 2.2)
-        m.Material = Enum.Material.Neon
-        m.Color = Color3.fromRGB(0, 200, 255)
-        m.Anchored = true
-        m.CanCollide = false
-        m.Position = worldPos
-        m.Parent = workspace
-        table.insert(ChestMarkers, m)
+        local marker = Instance.new("Part")
+        marker.Name = "RotatedChestMarker_" .. i
+        marker.Shape = Enum.PartType.Ball
+        marker.Size = Vector3.new(2.2, 2.2, 2.2)
+        marker.Material = Enum.Material.Neon
+        marker.Color = Color3.fromRGB(0, 200, 255)
+        marker.Anchored = true
+        marker.CanCollide = false
+        marker.Position = worldPos
+        marker.Parent = workspace
+        table.insert(ChestMarkers, marker)
     end
+end
+
+-- Generar cofres si los puntos iniciales están definidos
+if NuclearPoints.Door and NuclearPoints.Center then
+    recalculateRotatedChests()
 end
 
 -- 1. VENTANA PRINCIPAL
@@ -152,7 +158,7 @@ local Window = Fluent:CreateWindow({
 local Tabs = {
     Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" }),
     Items = Window:AddTab({ Title = "Teletransporte", Icon = "box" }),
-    Patrol = Window:AddTab({ Title = "Ruta y Mapa", Icon = "map-pin" }),
+    Patrol = Window:AddTab({ Title = "Ruta Amarilla", Icon = "map-pin" }),
     Reactor = Window:AddTab({ Title = "Reactor Nuclear", Icon = "flame" }),
     Misc = Window:AddTab({ Title = "Utilidades", Icon = "wrench" })
 }
@@ -193,8 +199,8 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     Callback = function(Value) Config.MoveSpeed = Value end
 })
 
--- PESTAÑA 2: TELETRANSPORTE SCRAP (ANTI-BUG)
-Tabs.Items:AddSection("Red de Puntos de Entrega")
+-- PESTAÑA 2: TELETRANSPORTE
+Tabs.Items:AddSection("Red de Puntos de Entrega (Bolitas)")
 
 Tabs.Items:AddButton({
     Title = "+ Agregar Bolita Aquí",
@@ -248,6 +254,12 @@ Tabs.Items:AddToggle("OnlyScrapToggle", {
     Callback = function(Value) Config.OnlyScrap = Value end
 })
 
+Tabs.Items:AddToggle("ChainTeleportToggle", {
+    Title = "Permitir Teletransporte Continuo",
+    Default = true,
+    Callback = function(Value) Config.ChainTeleport = Value end
+})
+
 Tabs.Items:AddSection("Protección del Generador")
 
 Tabs.Items:AddToggle("BasePreventToggle", {
@@ -265,8 +277,8 @@ Tabs.Items:AddSlider("BaseRadiusSlider", {
     Callback = function(Value) Config.GeneratorSafeRadius = Value end
 })
 
--- PESTAÑA 3: RUTA Y MAPA
-Tabs.Patrol:AddSection("Patrullaje")
+-- PESTAÑA 3: RUTA AMARILLA
+Tabs.Patrol:AddSection("Patrullaje y Vuelo (+10 studs)")
 
 Tabs.Patrol:AddToggle("PatrolToggle", {
     Title = "Iniciar Patrullaje en Bucle",
@@ -287,43 +299,6 @@ Tabs.Patrol:AddSlider("WaitTimeSlider", {
     Max = 15.0,
     Rounding = 1,
     Callback = function(Value) Config.WaypointWaitTime = Value end
-})
-
-Tabs.Patrol:AddSection("Puntos del Mapa / Amigos")
-
-Tabs.Patrol:AddButton({
-    Title = "Importar Pings del Mapa como Ruta",
-    Description = "Convierte automáticamente las flechas de ping del mapa en puntos de patrulla",
-    Callback = function()
-        local count = 0
-        for _, obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("BillboardGui") or obj.Name:find("Ping") or obj.Name:find("Waypoint") then
-                local part = obj.Adornee or obj.Parent
-                if part and part:IsA("BasePart") and not part:IsDescendantOf(lp.Character) then
-                    table.insert(Waypoints, part.Position)
-                    count = count + 1
-
-                    local marker = Instance.new("Part")
-                    marker.Name = "MapPingMarker_" .. #Waypoints
-                    marker.Shape = Enum.PartType.Ball
-                    marker.Size = Vector3.new(2, 2, 2)
-                    marker.Material = Enum.Material.Neon
-                    marker.Color = Color3.fromRGB(255, 230, 0)
-                    marker.Anchored = true
-                    marker.CanCollide = false
-                    marker.Position = part.Position
-                    marker.Parent = workspace
-                    table.insert(WaypointMarkers, marker)
-                end
-            end
-        end
-
-        Fluent:Notify({
-            Title = "Pings Importados",
-            Content = count > 0 and ("Se agregaron " .. count .. " puntos del mapa.") or "No se encontraron pings activos.",
-            Duration = 3
-        })
-    end
 })
 
 Tabs.Patrol:AddButton({
@@ -364,51 +339,68 @@ Tabs.Patrol:AddButton({
     end
 })
 
--- PESTAÑA 4: REACTOR NUCLEAR (1 SOLO PUNTO CON CONFIRMACIÓN)
-Tabs.Reactor:AddSection("Calibración del Reactor (1 Solo Paso)")
+-- PESTAÑA 4: REACTOR NUCLEAR
+Tabs.Reactor:AddSection("Fijar Puntos y Orientación")
 
-local function applySinglePointReactor()
-    local char = lp.Character
-    local root = char and char:FindFirstChild("HumanoidRootPart")
-    if root then
-        setReactorFromSinglePoint(root.CFrame)
-        Fluent:Notify({
-            Title = "Reactor Calibrado",
-            Content = "Puerta, centro y los 7 cofres calculados según tu vista.",
-            Duration = 4
-        })
+local function spawnOrangeMarker(pos, name)
+    if NuclearMarkers[name] and NuclearMarkers[name].Parent then
+        NuclearMarkers[name]:Destroy()
     end
+    local marker = Instance.new("Part")
+    marker.Name = "NuclearMarker_" .. name
+    marker.Shape = Enum.PartType.Ball
+    marker.Size = Vector3.new(2.8, 2.8, 2.8)
+    marker.Material = Enum.Material.Neon
+    marker.Color = Color3.fromRGB(255, 120, 0)
+    marker.Anchored = true
+    marker.CanCollide = false
+    marker.Position = pos
+    marker.Parent = workspace
+    NuclearMarkers[name] = marker
 end
 
 Tabs.Reactor:AddButton({
-    Title = "Fijar Frente a la Puerta (Mirando adentro)",
-    Description = "Párate mirando hacia la puerta y presiona aquí. Calcula todo automáticamente.",
+    Title = "1. Fijar Punto Puerta (Punto A)",
+    Description = "Establece el inicio del vector de dirección",
     Callback = function()
-        if ReactorAnchorCF then
-            -- Cuadro de diálogo de confirmación de seguridad
-            Window:Dialog({
-                Title = "Confirmar Cambio de Posición",
-                Content = "¿Estás seguro de que deseas sobrescribir el punto de referencia del Reactor?",
-                Buttons = {
-                    {
-                        Title = "Confirmar",
-                        Callback = function()
-                            applySinglePointReactor()
-                        end
-                    },
-                    {
-                        Title = "Cancelar",
-                        Callback = function()
-                            Fluent:Notify({ Title = "Cancelado", Content = "Se conservó la referencia anterior.", Duration = 2 })
-                        end
-                    }
-                }
-            })
-        else
-            applySinglePointReactor()
+        local char = lp.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            NuclearPoints.Door = root.Position
+            spawnOrangeMarker(root.Position, "Door")
+            recalculateRotatedChests()
+            Fluent:Notify({ Title = "Puerta Fijada", Content = "Punto 1 guardado.", Duration = 2 })
         end
     end
-end)
+})
+
+Tabs.Reactor:AddButton({
+    Title = "2. Fijar Punto Centro (Punto B)",
+    Description = "Orienta el reactor y calcula los 7 cofres rotados",
+    Callback = function()
+        local char = lp.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            NuclearPoints.Center = root.Position
+            spawnOrangeMarker(root.Position, "Center")
+            recalculateRotatedChests()
+            Fluent:Notify({ Title = "Centro Fijado", Content = "Cofres recalculados con orientación real.", Duration = 3 })
+        end
+    end
+})
+
+Tabs.Reactor:AddButton({
+    Title = "3. Fijar Punto Lejos (Reset Bioma)",
+    Callback = function()
+        local char = lp.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            NuclearPoints.Outside = root.Position
+            spawnOrangeMarker(root.Position, "Outside")
+            Fluent:Notify({ Title = "Salida Fijada", Content = "Punto 3 exterior fijado.", Duration = 2 })
+        end
+    end
+})
 
 Tabs.Reactor:AddSection("Automatización")
 
@@ -551,27 +543,24 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
     return count
 end
 
--- 4. BUCLE MAESTRO: REACTOR Y 400 STUDS DE RESET
+-- 4. BUCLE MAESTRO: REACTOR Y COFRES
 task.spawn(function()
     while true do
         task.wait(0.5)
 
         if Config.ReactorFarmEnabled then
-            if not ReactorAnchorCF or not CalculatedCenter then
-                Fluent:Notify({ Title = "Sin Calibrar", Content = "Fija el punto frente a la puerta primero.", Duration = 3 })
+            if not NuclearPoints.Door or not NuclearPoints.Center or not NuclearPoints.Outside then
+                Fluent:Notify({ Title = "Puntos Incompletos", Content = "Fija los 3 puntos del reactor primero.", Duration = 3 })
                 Config.ReactorFarmEnabled = false
             else
-                local doorPos = ReactorAnchorCF.Position
-                local forwardDir = Vector3.new(ReactorAnchorCF.LookVector.X, 0, ReactorAnchorCF.LookVector.Z).Unit
-
                 -- 1. Puerta
-                flyMoveTo(doorPos, 35, 4, true)
+                flyMoveTo(NuclearPoints.Door, 35, 4, true)
                 task.wait(0.5)
 
                 for _, prompt in ipairs(workspace:GetDescendants()) do
                     if prompt:IsA("ProximityPrompt") then
                         local pPart = prompt.Parent
-                        if pPart and pPart:IsA("BasePart") and (pPart.Position - doorPos).Magnitude <= 15 then
+                        if pPart and pPart:IsA("BasePart") and (pPart.Position - NuclearPoints.Door).Magnitude <= 15 then
                             prompt.HoldDuration = 0
                             fireproximityprompt(prompt)
                         end
@@ -579,8 +568,8 @@ task.spawn(function()
                 end
                 task.wait(1.5)
 
-                -- 2. Entrar al Centro
-                flyMoveTo(CalculatedCenter, 40, 3, true)
+                -- 2. Centro
+                flyMoveTo(NuclearPoints.Center, 40, 3, true)
 
                 -- 3. Cacería de Phasers
                 local inCombat = true
@@ -588,7 +577,7 @@ task.spawn(function()
 
                 while Config.ReactorFarmEnabled and inCombat do
                     task.wait(0.3)
-                    local phaserModel, phaserRoot = getActivePhaser(CalculatedCenter, Config.ReactorDetectionRadius)
+                    local phaserModel, phaserRoot = getActivePhaser(NuclearPoints.Center, Config.ReactorDetectionRadius)
 
                     if phaserModel and phaserRoot then
                         clearStreak = 0
@@ -598,9 +587,9 @@ task.spawn(function()
                             flyMoveTo(phaserRoot.Position, 38, 5, true)
                             task.wait(0.15)
                         end
-                        flyMoveTo(CalculatedCenter, 40, 3, true)
+                        flyMoveTo(NuclearPoints.Center, 40, 3, true)
                     else
-                        local remaining = countLivingZombiesInReactor(CalculatedCenter, Config.ReactorDetectionRadius)
+                        local remaining = countLivingZombiesInReactor(NuclearPoints.Center, Config.ReactorDetectionRadius)
                         if remaining == 0 then
                             clearStreak = clearStreak + 1
                             if clearStreak >= 3 then inCombat = false end
@@ -610,7 +599,7 @@ task.spawn(function()
                     end
                 end
 
-                -- 4. Ruta de los 7 Cofres
+                -- 4. Ruta de Cofres Rotados
                 if Config.ReactorFarmEnabled and Config.LootChests and #CalculatedChests > 0 then
                     Fluent:Notify({ Title = "Reactor Despejado", Content = "Recorriendo los 7 cofres subterráneos...", Duration = 3 })
                     for _, cPos in ipairs(CalculatedChests) do
@@ -620,11 +609,10 @@ task.spawn(function()
                     end
                 end
 
-                -- 5. Salir 420 studs hacia afuera del bioma para reiniciar
+                -- 5. Salir al exterior para reiniciar bioma
                 if Config.ReactorFarmEnabled then
-                    Fluent:Notify({ Title = "Saqueo Completo", Content = "Alejándose 420 studs para descargar bioma...", Duration = 3 })
-                    local resetPos = doorPos - (forwardDir * 420) + Vector3.new(0, 15, 0)
-                    flyMoveTo(resetPos, 60, 6, false)
+                    Fluent:Notify({ Title = "Saqueo Completo", Content = "Saliendo a descargar el bioma...", Duration = 3 })
+                    flyMoveTo(NuclearPoints.Outside, 55, 5, true)
                     task.wait(Config.ReactorResetWaitTime)
                 end
             end
@@ -666,7 +654,7 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- 6. BUCLE DE TELETRANSPORTE SCRAP (ANTI-BUG FISICO)
+-- 6. BUCLE DE TELETRANSPORTE OPTIMIZADO (CERO LAG)
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
@@ -765,8 +753,7 @@ task.spawn(function()
 
                                     local angle = math.random() * math.pi * 2
                                     local dist = math.random() * Config.SpreadRadius
-                                    -- Elevar a 2.5 studs sobre el piso para evitar atasco
-                                    local destPos = nextPoint.Position + Vector3.new(math.cos(angle) * dist, 2.5, math.sin(angle) * dist)
+                                    local destPos = nextPoint.Position + Vector3.new(math.cos(angle) * dist, 1.2, math.sin(angle) * dist)
 
                                     if targetEntity:IsA("Model") then
                                         targetEntity:PivotTo(CFrame.new(destPos))
@@ -774,24 +761,15 @@ task.spawn(function()
                                         targetEntity.CFrame = CFrame.new(destPos)
                                     end
 
-                                    -- Impulso de caída limpio y desactivación temporal de colisión
                                     for _, p in ipairs(targetEntity:GetDescendants()) do
                                         if p:IsA("BasePart") then
-                                            p.CanCollide = false
-                                            p.AssemblyLinearVelocity = Vector3.new(0, -10, 0)
+                                            p.AssemblyLinearVelocity = Vector3.new(0, -3, 0)
                                             p.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-                                            task.delay(0.25, function()
-                                                if p and p.Parent then p.CanCollide = true end
-                                            end)
                                         end
                                     end
                                     if targetEntity:IsA("BasePart") then
-                                        targetEntity.CanCollide = false
-                                        targetEntity.AssemblyLinearVelocity = Vector3.new(0, -10, 0)
+                                        targetEntity.AssemblyLinearVelocity = Vector3.new(0, -3, 0)
                                         targetEntity.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-                                        task.delay(0.25, function()
-                                            if targetEntity and targetEntity.Parent then targetEntity.CanCollide = true end
-                                        end)
                                     end
                                 end
                             end
@@ -907,7 +885,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Calibración por 1 Punto y Diálogo de Seguridad listos.",
+    Content = "Cofres recalculados con orientación 2D.",
     Duration = 4
 })
 
