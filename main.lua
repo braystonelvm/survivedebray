@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - LIMPIEZA TOTAL Y DETECCIÓN INTELIGENTE
+-- REACTOR NUCLEAR HUB - ALTURA BLOQUEADA CONSTANTE (+10 STUDS)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -28,7 +28,7 @@ local State = {
     ChestWaitTime = 1.3,
     BaseNuclearWait = 900,
     GasCycleInterval = 180,
-    DetectionRadius = 220 -- Margen amplio para cubrir esquinas y lados
+    DetectionRadius = 220
 }
 
 local Point1_Front = nil
@@ -84,7 +84,7 @@ local function copyCurrentCoords()
     end
 end
 
--- FÍSICAS Y FLOTACIÓN ANCLADA (+10 studs)
+-- FÍSICAS Y FLOTACIÓN ANCLADA PERMANENTE
 local function removePhysicsHelpers()
     local root = getRootPart()
     if root then
@@ -116,13 +116,19 @@ RunService.Stepped:Connect(function()
     end
 end)
 
-local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
+-- VUELO CON ALTITUD FIJA INAMOVIBLE
+local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     stopDistance = stopDistance or 3.5
     local root = getRootPart()
     if not root then return false end
 
-    local fixedHeight = applyElevation and 10 or 0
-    local finalDest = targetPos + Vector3.new(0, fixedHeight, 0)
+    -- Si se solicita altura fija de puerta, bloquea Y estrictamente a Point2_Door.Y + 10 studs
+    local targetY = targetPos.Y
+    if lockAltitudeToDoor and Point2_Door then
+        targetY = Point2_Door.Y + 10
+    end
+
+    local finalDest = Vector3.new(targetPos.X, targetY, targetPos.Z)
     local timeout = tick() + 20
 
     local bodyPos = root:FindFirstChild("ReactorFloatBP")
@@ -130,7 +136,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
         bodyPos = Instance.new("BodyPosition")
         bodyPos.Name = "ReactorFloatBP"
         bodyPos.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-        bodyPos.P = 15000
+        bodyPos.P = 20000
         bodyPos.D = 800
         bodyPos.Parent = root
     end
@@ -151,7 +157,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
         RunService.Heartbeat:Wait()
 
         while State.Running and State.Paused do
-            bodyPos.Position = root.Position
+            bodyPos.Position = Vector3.new(root.Position.X, targetY, root.Position.Z)
             task.wait(0.2)
         end
 
@@ -166,7 +172,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
         if (root.Position - lastPos).Magnitude < 0.2 then
             stuckCounter = stuckCounter + 1
             if stuckCounter >= 25 then
-                bodyPos.Position = root.Position + Vector3.new(0, 6, 0)
+                bodyPos.Position = Vector3.new(root.Position.X, targetY + 3, root.Position.Z)
                 stuckCounter = 0
             end
         else
@@ -175,7 +181,8 @@ local function flyMoveTo(targetPos, speed, stopDistance, applyElevation)
         end
 
         local stepDir = (finalDest - root.Position).Unit
-        bodyPos.Position = root.Position + (stepDir * (speed * 0.1))
+        local nextStep = root.Position + (stepDir * (speed * 0.1))
+        bodyPos.Position = Vector3.new(nextStep.X, targetY, nextStep.Z)
     end
 
     if bodyPos then bodyPos.Position = finalDest end
@@ -213,7 +220,6 @@ local function getDoorCooldownRemaining(doorPos)
     return nil
 end
 
--- OBTENER CUALQUIER ZOMBIE CERCANO (AMPLIO RANGO, PRIORIZA PHASERS Y LUEGO CUALQUIER ENEMIGO)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local bestTarget = nil
@@ -493,7 +499,7 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
--- MÁQUINA DE ESTADOS Y LIMPIEZA TOTAL
+-- MÁQUINA DE ESTADOS Y LIMPIEZA CON ALTITUD FIJA
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -507,7 +513,6 @@ task.spawn(function()
                 local distToCenter = root and (root.Position - CalculatedCenter).Magnitude or 999
                 local alreadyInside = distToCenter < 120
 
-                -- Solo va a la puerta si NO está ya adentro del reactor
                 if not alreadyInside then
                     updateStatus("[1/5] Verificando Puerta...")
                     flyMoveTo(Point2_Door, 35, 4, true)
@@ -535,10 +540,10 @@ task.spawn(function()
                     task.wait(1.5)
                 end
 
-                -- ENTRAR AL CENTRO
+                -- ENTRAR AL CENTRO (Mantiene altura constante)
                 flyMoveTo(CalculatedCenter, 40, 3, true)
 
-                -- ESTADO 3: CACERÍA TOTAL DE ZOMBIES (IZQUIERDA, DERECHA Y CENTRO)
+                -- ESTADO 3: CACERÍA TOTAL DE ZOMBIES (SIN BAJAR DE ALTURA)
                 updateStatus("[3/5] Barriendo reactor y cazando zombies...")
                 local inCombat = true
                 local clearStreak = 0
@@ -550,17 +555,16 @@ task.spawn(function()
                     if targetModel and targetRoot then
                         clearStreak = 0
                         local name = targetModel.Name
-                        updateStatus("Cazando: " .. name .. " (acercando dron)...")
+                        updateStatus("Cazando: " .. name .. "...")
                         local chaseTimeout = tick() + 12
 
                         while State.Running and not State.Paused and targetModel.Parent and targetRoot.Parent and tick() < chaseTimeout do
                             local eHum = targetModel:FindFirstChildOfClass("Humanoid")
                             if eHum and eHum.Health <= 0 then break end
-                            -- Vuela pegado al zombie a +8 studs para que el dron no falle el disparo
+                            -- Se pasa true para bloquear la coordenada Y a la altura de la puerta y no hundirse
                             flyMoveTo(targetRoot.Position, 42, 4, true)
                             task.wait(0.15)
                         end
-                        -- Regresa un instante al centro para re-evaluar la sala
                         flyMoveTo(CalculatedCenter, 40, 3, true)
                     else
                         local remaining = countLivingZombiesInReactor(CalculatedCenter, State.DetectionRadius)
@@ -574,7 +578,7 @@ task.spawn(function()
                     end
                 end
 
-                -- ESTADO 4: SAQUEO DE COFRES
+                -- ESTADO 4: SAQUEO DE COFRES (Cofres con su cota real)
                 if State.Running and not State.Paused and State.LootChests and #CalculatedChests > 0 then
                     updateStatus("[4/5] Saqueando los 7 cofres subterráneos...")
                     for _, cPos in ipairs(CalculatedChests) do
@@ -631,8 +635,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB ACTUALIZADO",
-    Content = "Caza de zombies en esquinas y detección de entrada activas.",
+    Title = "REACTOR HUB LISTO",
+    Content = "Altitud constante bloqueada. Cero hundimientos.",
     Duration = 4
 })
 
