@@ -21,7 +21,7 @@ local LOCAL_CHEST_OFFSETS = {
 }
 
 local Config = {
-    -- Combate / Zigzag
+    -- Combate
     ZigZagEnabled = false,
     SwitchInterval = 1.2,
     LateralDist = 14,
@@ -61,7 +61,7 @@ local Waypoints = {}
 local WaypointMarkers = {}
 local TeleportedTracker = {}
 
--- Variables del Reactor
+-- Reactor (1 Punto de entrada con CFrame)
 local ReactorAnchorCF = nil
 local NuclearMarker = nil
 local CalculatedCenter = nil
@@ -97,8 +97,10 @@ local function setReactorFromSinglePoint(cf)
     local forwardDir = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z).Unit
     local rightDir = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z).Unit
 
+    -- Centro a 46.6 studs al frente de la puerta
     CalculatedCenter = doorPos + (forwardDir * 46.6)
 
+    -- Limpiar marcadores viejos
     if NuclearMarker and NuclearMarker.Parent then NuclearMarker:Destroy() end
     for _, m in ipairs(ChestMarkers) do
         if m and m.Parent then m:Destroy() end
@@ -106,6 +108,7 @@ local function setReactorFromSinglePoint(cf)
     table.clear(CalculatedChests)
     table.clear(ChestMarkers)
 
+    -- Flecha / Marcador en la puerta
     NuclearMarker = Instance.new("Part")
     NuclearMarker.Name = "NuclearDoorMarker"
     NuclearMarker.Size = Vector3.new(3, 1, 3)
@@ -116,6 +119,7 @@ local function setReactorFromSinglePoint(cf)
     NuclearMarker.CanCollide = false
     NuclearMarker.Parent = workspace
 
+    -- Calcular los 7 cofres
     for i, offset in ipairs(LOCAL_CHEST_OFFSETS) do
         local worldPos = doorPos + (rightDir * offset.X) + (forwardDir * offset.Z) + Vector3.new(0, offset.Y, 0)
         table.insert(CalculatedChests, worldPos)
@@ -189,7 +193,7 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     Callback = function(Value) Config.MoveSpeed = Value end
 })
 
--- PESTAÑA 2: TELETRANSPORTE SCRAP
+-- PESTAÑA 2: TELETRANSPORTE SCRAP (ANTI-BUG)
 Tabs.Items:AddSection("Red de Puntos de Entrega")
 
 Tabs.Items:AddButton({
@@ -360,7 +364,7 @@ Tabs.Patrol:AddButton({
     end
 })
 
--- PESTAÑA 4: REACTOR NUCLEAR
+-- PESTAÑA 4: REACTOR NUCLEAR (1 SOLO PUNTO CON CONFIRMACIÓN)
 Tabs.Reactor:AddSection("Calibración del Reactor (1 Solo Paso)")
 
 local function applySinglePointReactor()
@@ -381,6 +385,7 @@ Tabs.Reactor:AddButton({
     Description = "Párate mirando hacia la puerta y presiona aquí. Calcula todo automáticamente.",
     Callback = function()
         if ReactorAnchorCF then
+            -- Cuadro de diálogo de confirmación de seguridad
             Window:Dialog({
                 Title = "Confirmar Cambio de Posición",
                 Content = "¿Estás seguro de que deseas sobrescribir el punto de referencia del Reactor?",
@@ -546,7 +551,7 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
     return count
 end
 
--- 4. BUCLE MAESTRO: REACTOR Y RESET DE 420 STUDS
+-- 4. BUCLE MAESTRO: REACTOR Y 400 STUDS DE RESET
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -661,7 +666,7 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- 6. BUCLE DE TELETRANSPORTE SCRAP (SINCRONIZACIÓN DE RED REAL / CERO DESYNC)
+-- 6. BUCLE DE TELETRANSPORTE SCRAP (ANTI-BUG FISICO)
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
@@ -703,12 +708,21 @@ local function getNextBestDropPoint(itemPos)
             end
         end
     end
+
+    if not bestPoint and #DeliveryPoints > 0 then
+        for _, pt in ipairs(DeliveryPoints) do
+            if pt and pt.Parent and (itemPos - pt.Position).Magnitude > 4 then
+                bestPoint = pt
+                break
+            end
+        end
+    end
     return bestPoint
 end
 
 task.spawn(function()
     while true do
-        task.wait(0.4)
+        task.wait(0.35)
         if Config.AutoSendItems and #DeliveryPoints > 0 then
             local char = lp.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -718,55 +732,66 @@ task.spawn(function()
                 local processedCount = 0
 
                 for _, hitPart in ipairs(partsNearby) do
-                    if processedCount >= 2 then break end
+                    if processedCount >= 4 then break end
 
                     if not hitPart.Anchored and not hitPart:FindFirstAncestorOfClass("Humanoid") then
                         local itemModel = hitPart:FindFirstAncestorOfClass("Model")
                         local targetEntity = (itemModel and itemModel.Parent ~= workspace.Characters and itemModel) or hitPart
-                        local rootPart = (targetEntity:IsA("Model") and (targetEntity.PrimaryPart or targetEntity:FindFirstChildWhichIsA("BasePart"))) or targetEntity
+                        local rootPos = (targetEntity:IsA("Model") and targetEntity:GetPivot().Position) or targetEntity.Position
 
-                        if rootPart then
-                            local nameLower = (targetEntity.Name):lower()
-                            local isScrap = nameLower:find("scrap") or nameLower:find("chatarra") or nameLower:find("metal") or nameLower:find("barrel")
+                        local nameLower = (targetEntity.Name):lower()
+                        local isScrap = nameLower:find("scrap") or nameLower:find("chatarra") or nameLower:find("metal") or nameLower:find("barrel")
 
-                            if not Config.OnlyScrap or isScrap then
-                                local genPos = getGeneratorPosition()
-                                local insideBase = false
-                                if Config.BasePrevent and genPos then
-                                    if (rootPart.Position - genPos).Magnitude <= Config.GeneratorSafeRadius then
-                                        insideBase = true
+                        if not Config.OnlyScrap or isScrap then
+                            local genPos = getGeneratorPosition()
+                            local insideBase = false
+                            if Config.BasePrevent and genPos then
+                                if (rootPos - genPos).Magnitude <= Config.GeneratorSafeRadius then
+                                    insideBase = true
+                                end
+                            end
+
+                            local canTeleport = not insideBase
+                            if Config.SingleTeleportLimit and TeleportedTracker[targetEntity] then
+                                canTeleport = false
+                            end
+
+                            if canTeleport then
+                                local nextPoint = getNextBestDropPoint(rootPos)
+
+                                if nextPoint then
+                                    processedCount = processedCount + 1
+                                    TeleportedTracker[targetEntity] = true
+
+                                    local angle = math.random() * math.pi * 2
+                                    local dist = math.random() * Config.SpreadRadius
+                                    -- Elevar a 2.5 studs sobre el piso para evitar atasco
+                                    local destPos = nextPoint.Position + Vector3.new(math.cos(angle) * dist, 2.5, math.sin(angle) * dist)
+
+                                    if targetEntity:IsA("Model") then
+                                        targetEntity:PivotTo(CFrame.new(destPos))
+                                    else
+                                        targetEntity.CFrame = CFrame.new(destPos)
                                     end
-                                end
 
-                                local canTeleport = not insideBase
-                                if Config.SingleTeleportLimit and TeleportedTracker[targetEntity] then
-                                    canTeleport = false
-                                end
-
-                                if canTeleport then
-                                    local nextPoint = getNextBestDropPoint(rootPart.Position)
-
-                                    if nextPoint then
-                                        processedCount = processedCount + 1
-                                        TeleportedTracker[targetEntity] = true
-
-                                        if firetouchinterest then
-                                            firetouchinterest(root, rootPart, 0)
-                                            firetouchinterest(root, rootPart, 1)
+                                    -- Impulso de caída limpio y desactivación temporal de colisión
+                                    for _, p in ipairs(targetEntity:GetDescendants()) do
+                                        if p:IsA("BasePart") then
+                                            p.CanCollide = false
+                                            p.AssemblyLinearVelocity = Vector3.new(0, -10, 0)
+                                            p.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                                            task.delay(0.25, function()
+                                                if p and p.Parent then p.CanCollide = true end
+                                            end)
                                         end
-
-                                        local angle = math.random() * math.pi * 2
-                                        local dist = math.random() * Config.SpreadRadius
-                                        local destPos = nextPoint.Position + Vector3.new(math.cos(angle) * dist, 1.5, math.sin(angle) * dist)
-
-                                        if targetEntity:IsA("Model") then
-                                            targetEntity:PivotTo(CFrame.new(destPos))
-                                        else
-                                            targetEntity.CFrame = CFrame.new(destPos)
-                                        end
-
-                                        rootPart.AssemblyLinearVelocity = Vector3.new(0, -2, 0)
-                                        rootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                                    end
+                                    if targetEntity:IsA("BasePart") then
+                                        targetEntity.CanCollide = false
+                                        targetEntity.AssemblyLinearVelocity = Vector3.new(0, -10, 0)
+                                        targetEntity.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                                        task.delay(0.25, function()
+                                            if targetEntity and targetEntity.Parent then targetEntity.CanCollide = true end
+                                        end)
                                     end
                                 end
                             end
@@ -882,7 +907,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Script actualizado y optimizado.",
+    Content = "Calibración por 1 Punto y Diálogo de Seguridad listos.",
     Duration = 4
 })
 
