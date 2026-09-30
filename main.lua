@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - ALTURA BLOQUEADA CONSTANTE (+10 STUDS)
+-- REACTOR NUCLEAR HUB - ARRANQUE SEGURO Y RESTAURACIÓN EN STOP
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -28,11 +28,11 @@ local State = {
     Running = false,
     Paused = false,
     CurrentStatus = "Inactivo",
-    LootChests = false, -- DESACTIVADO POR DEFECTO PARA NO BAJAR NUNCA
+    LootChests = false, -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,
     GasCycleInterval = 180,
-    DetectionRadius = 300 -- AMPLIADO A 300 STUDS
+    DetectionRadius = 300 -- 300 STUDS A LA REDONDA
 }
 
 local Point1_Front = nil
@@ -92,11 +92,41 @@ local function copyCurrentCoords()
     end
 end
 
--- ANCLAJE DE VUELO INDESTRUCTIBLE (NUNCA SE BORRA NI DEJA CAER AL MUÑECO)
-local function ensureFlightPhysics()
+-- LIMPIEZA COMPLETA AL DETENER (FÍSICA NORMAL)
+local function removePhysicsHelpers()
     local root = getRootPart()
-    if not root then return nil, nil end
+    if root then
+        local bp = root:FindFirstChild("ReactorFloatBP")
+        if bp then bp:Destroy() end
+        local bg = root:FindFirstChild("ReactorFloatBG")
+        if bg then bg:Destroy() end
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    end
+end
 
+local function restoreCollisions()
+    local char = lp.Character
+    if char then
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = true end
+        end
+    end
+end
+
+-- NOCLIP (SOLO ACTIVO CUANDO RUNNING ESTÁ EN TRUE)
+RunService.Stepped:Connect(function()
+    if State.Running and not State.Paused then
+        local char = lp.Character
+        if char then
+            for _, p in ipairs(char:GetDescendants()) do
+                if p:IsA("BasePart") then p.CanCollide = false end
+            end
+        end
+    end
+end)
+
+-- CREAR / ASEGURAR FÍSICA DE VUELO
+local function getOrCreatePhysics(root, initialY)
     local bodyPos = root:FindFirstChild("ReactorFloatBP")
     if not bodyPos then
         bodyPos = Instance.new("BodyPosition")
@@ -104,7 +134,7 @@ local function ensureFlightPhysics()
         bodyPos.MaxForce = Vector3.new(1e6, math.huge, 1e6)
         bodyPos.P = 25000
         bodyPos.D = 800
-        bodyPos.Position = Vector3.new(root.Position.X, Point2_Door.Y + 10, root.Position.Z)
+        bodyPos.Position = Vector3.new(root.Position.X, initialY, root.Position.Z)
         bodyPos.Parent = root
     end
 
@@ -120,27 +150,20 @@ local function ensureFlightPhysics()
     return bodyPos, bodyGyro
 end
 
--- MANTENER FLOTACIÓN ACTIVA SIEMPRE EN EL AIRE (SIN IMPORTAR EL ESTADO)
-RunService.Heartbeat:Connect(function()
+-- ANCLAJE PREVENTIVO INMEDIATO (EVITA CAÍDA AL VOLVER A ACTIVAR)
+local function secureFlightStart()
     local root = getRootPart()
-    if root then
-        ensureFlightPhysics()
-    end
-end)
+    if not root then return false end
 
--- NOCLIP CONSTANTE
-RunService.Stepped:Connect(function()
-    local char = lp.Character
-    if char then
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then
-                p.CanCollide = false
-            end
-        end
-    end
-end)
+    local safeY = Point2_Door.Y + 10
+    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    local bodyPos = getOrCreatePhysics(root, safeY)
+    bodyPos.Position = Vector3.new(root.Position.X, safeY, root.Position.Z)
+    task.wait(0.15) -- Tiempo de captura física
+    return true
+end
 
--- VUELO CON ALTITUD FIJA INAMOVIBLE (+10 STUDS)
+-- VUELO RÍGIDO CON ALTITUD FIJA
 local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     stopDistance = stopDistance or 3.5
     local root = getRootPart()
@@ -154,8 +177,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     local finalDest = Vector3.new(targetPos.X, targetY, targetPos.Z)
     local timeout = tick() + 25
 
-    local bodyPos, bodyGyro = ensureFlightPhysics()
-    if not bodyPos then return false end
+    local bodyPos = getOrCreatePhysics(root, targetY)
 
     local lastPos = root.Position
     local stuckCounter = 0
@@ -205,8 +227,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     local endTime = tick() + duration
     local angle = 0
 
-    local bodyPos = ensureFlightPhysics()
-    if not bodyPos then return end
+    local bodyPos = getOrCreatePhysics(root, targetY)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
         RunService.Heartbeat:Wait()
@@ -377,9 +398,11 @@ Tabs.Main:AddButton({
             Fluent:Notify({ Title = "Sin Coordenadas", Content = "Falta fijar la puerta o el centro.", Duration = 3 })
             return
         end
+        -- Anclaje preventivo en el aire antes de encender el bucle
+        secureFlightStart()
         State.Running = true
         State.Paused = false
-        updateStatus("Iniciado. Evaluando situación...")
+        updateStatus("Iniciado con anclaje aéreo seguro.")
     end
 })
 
@@ -394,22 +417,20 @@ Tabs.Main:AddButton({
 })
 
 Tabs.Main:AddButton({
-    Title = "⏹ STOP (DETENER RUTA)",
+    Title = "⏹ STOP (CANCELAR TODO)",
+    Description = "Apaga el bot, devuelve colisiones y físicas normales",
     Callback = function()
         State.Running = false
         State.Paused = false
-        local root = getRootPart()
-        if root then
-            local bp = root:FindFirstChild("ReactorFloatBP")
-            if bp then bp.Position = Vector3.new(root.Position.X, Point2_Door.Y + 10, root.Position.Z) end
-        end
-        updateStatus("Ruta detenida. Posición suspendida en el aire.")
+        removePhysicsHelpers()
+        restoreCollisions()
+        updateStatus("Detenido. Físicas normales restauradas.")
     end
 })
 
 Tabs.Main:AddToggle("LootChestsQuickToggle", {
     Title = "Saquear Cofres tras Limpiar",
-    Default = false, -- DESACTIVADO POR DEFECTO
+    Default = false,
     Callback = function(Value) State.LootChests = Value end
 })
 
@@ -599,10 +620,10 @@ task.spawn(function()
                         -- Vuela hacia el zombie a altura segura (+10 studs)
                         flyMoveTo(targetRoot.Position, 42, 6, true)
 
-                        -- Órbita cerrada (25 segundos)
+                        -- 1. Órbita cerrada (25.0 segundos)
                         orbitTarget(targetRoot, 7, 25.0, 3)
 
-                        -- Órbita más amplia (32 segundos)
+                        -- 2. Órbita más amplia (32.0 segundos)
                         if targetModel.Parent and targetRoot.Parent then
                             orbitTarget(targetRoot, 14, 32.0, 2.5)
                         end
@@ -678,13 +699,15 @@ task.spawn(function()
                     task.wait(1)
                 end
             end
+        else
+            removePhysicsHelpers()
         end
     end
 end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Vuelo permanente blindado, radio 300 y cofres desactivados.",
+    Content = "Arranque seguro activo. Detención y restauración completas.",
     Duration = 4
 })
 
