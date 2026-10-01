@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - ARRANQUE SEGURO Y RESTAURACIÓN EN STOP
+-- REACTOR NUCLEAR HUB - 6 GASOLINERAS CÍCLICAS, APERTURA MEJORADA Y BUCLE INFINITO
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -10,47 +10,40 @@ local RunService = game:GetService("RunService")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local lp = Players.LocalPlayer
 
--- Coordenadas fijas por defecto
-local DEFAULT_DOOR = Vector3.new(312.1, 3.2, 1200.0)
-local DEFAULT_CENTER = Vector3.new(360.2, 2.7, 1181.3)
-local DEFAULT_CHESTS = {
-    Vector3.new(371.4, -16.2, 1242.2), -- Cofre 1
-    Vector3.new(398.4, -16.3, 1234.3), -- Cofre 2
-    Vector3.new(413.4, -16.3, 1207.3), -- Cofre 3
-    Vector3.new(413.7, -36.0, 1138.6), -- Cofre 4
-    Vector3.new(402.9, -35.5, 1133.7)  -- Cofre 5
-}
+-- NUEVAS COORDENADAS DE LA PARTIDA
+local DEFAULT_DOOR = Vector3.new(-54.2, 3.5, 1140.1)
+local DEFAULT_CENTER = Vector3.new(-1.4, 2.7, 1120.5)
 
-local GAS_STATION_1 = Vector3.new(246.3, 3.9, 235.4)
-local GAS_STATION_2 = Vector3.new(610.9, 4.1, 409.6)
+-- 6 GASOLINERAS REGISTRADAS
+local GAS_STATIONS = {
+    Vector3.new(-581.7, 2.8, 1071.8),
+    Vector3.new(-177.8, 2.3, 800.0),
+    Vector3.new(-400.0, 2.4, 415.3),
+    Vector3.new(-161.0, 2.3, 176.3),
+    Vector3.new(421.0, 2.6, 438.9),
+    Vector3.new(341.2, 2.0, 782.3)
+}
 
 local State = {
     Running = false,
     Paused = false,
     CurrentStatus = "Inactivo",
-    LootChests = false, -- DESACTIVADO POR DEFECTO
+    LootChests = false,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
-    BaseNuclearWait = 900,
-    GasCycleInterval = 180,
-    DetectionRadius = 300 -- 300 STUDS A LA REDONDA
+    BaseNuclearWait = 900,    -- 15 minutos de espera
+    GasStationStop = 3.0,     -- 3 segundos de parada por gasolinera
+    DetectionRadius = 300     -- 300 studs a la redonda
 }
 
-local Point1_Front = nil
 local Point2_Door = DEFAULT_DOOR
 local CalculatedCenter = DEFAULT_CENTER
 local DoorForwardDir = Vector3.new(DEFAULT_CENTER.X - DEFAULT_DOOR.X, 0, DEFAULT_CENTER.Z - DEFAULT_DOOR.Z).Unit
 
 local Markers = {}
-local CalculatedChests = {}
-local ChestMarkers = {}
-
-for _, cPos in ipairs(DEFAULT_CHESTS) do
-    table.insert(CalculatedChests, cPos)
-end
 
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
-    Title = "REACTOR HUB | NUCLEAR",
+    Title = "REACTOR HUB | NUCLEAR V3",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(560, 490),
@@ -68,7 +61,7 @@ local Tabs = {
 
 local StatusParagraph = Tabs.Main:AddParagraph({
     Title = "Estado del Bot",
-    Content = "Inactivo. Presiona PLAY para iniciar."
+    Content = "Inactivo. Presiona PLAY para iniciar el ciclo infinito."
 })
 
 local function updateStatus(text)
@@ -92,7 +85,7 @@ local function copyCurrentCoords()
     end
 end
 
--- LIMPIEZA COMPLETA AL DETENER (FÍSICA NORMAL)
+-- LIMPIEZA AL DETENER
 local function removePhysicsHelpers()
     local root = getRootPart()
     if root then
@@ -113,7 +106,7 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP (SOLO ACTIVO CUANDO RUNNING ESTÁ EN TRUE)
+-- NOCLIP CONSTANTE (SIEMPRE ACTIVO MIENTRAS EL BOT ESTÉ CORRIENDO)
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused then
         local char = lp.Character
@@ -125,7 +118,7 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- CREAR / ASEGURAR FÍSICA DE VUELO
+-- SISTEMA DE VUELO RÍGIDO (BODYPOSITION + BODYGYRO)
 local function getOrCreatePhysics(root, initialY)
     local bodyPos = root:FindFirstChild("ReactorFloatBP")
     if not bodyPos then
@@ -150,35 +143,34 @@ local function getOrCreatePhysics(root, initialY)
     return bodyPos, bodyGyro
 end
 
--- ANCLAJE PREVENTIVO INMEDIATO (EVITA CAÍDA AL VOLVER A ACTIVAR)
+-- ANCLAJE PREVENTIVO INMEDIATO
 local function secureFlightStart()
     local root = getRootPart()
     if not root then return false end
 
-    local safeY = Point2_Door.Y + 10
+    local safeY = Point2_Door.Y + 6
     root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     local bodyPos = getOrCreatePhysics(root, safeY)
     bodyPos.Position = Vector3.new(root.Position.X, safeY, root.Position.Z)
-    task.wait(0.15) -- Tiempo de captura física
+    task.wait(0.15)
     return true
 end
 
--- VUELO RÍGIDO CON ALTITUD FIJA
+-- VUELO HACIA UN DESTINO (VOLANDO EL 100% DEL TIEMPO)
 local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     stopDistance = stopDistance or 3.5
     local root = getRootPart()
     if not root then return false end
 
-    local targetY = targetPos.Y
+    local targetY = targetPos.Y + 5.5
     if lockAltitudeToDoor and Point2_Door then
-        targetY = Point2_Door.Y + 5
+        targetY = Point2_Door.Y + 6.0
     end
 
     local finalDest = Vector3.new(targetPos.X, targetY, targetPos.Z)
     local timeout = tick() + 25
 
     local bodyPos = getOrCreatePhysics(root, targetY)
-
     local lastPos = root.Position
     local stuckCounter = 0
 
@@ -223,7 +215,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
 
-    local targetY = Point2_Door.Y + 5
+    local targetY = Point2_Door.Y + 6.0
     local endTime = tick() + duration
     local angle = 0
 
@@ -242,13 +234,51 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     end
 end
 
--- SURTIDOR INSTANTÁNEO MANUAL Y AUTOMÁTICO
+-- OBTENER COORDENADA MUNDIAL DE CUALQUIER PROMPT
+local function getPromptWorldPos(prompt)
+    local parent = prompt.Parent
+    if not parent then return nil end
+    if parent:IsA("BasePart") then return parent.Position end
+    if parent:IsA("Attachment") then return parent.WorldPosition end
+    if parent:IsA("Model") then
+        local p = parent.PrimaryPart or parent:FindFirstChildWhichIsA("BasePart")
+        return p and p.Position
+    end
+    return nil
+end
+
+-- SISTEMA ROBUSTO PARA ABRIR LA PUERTA DEL REACTOR
+local function tryOpenNuclearDoor(doorPos)
+    local opened = false
+    local startTime = tick()
+
+    while tick() - startTime < 2.5 do
+        for _, prompt in ipairs(workspace:GetDescendants()) do
+            if prompt:IsA("ProximityPrompt") then
+                local wPos = getPromptWorldPos(prompt)
+                if wPos and (wPos - doorPos).Magnitude <= 26 then
+                    prompt.HoldDuration = 0
+                    prompt.RequiresLineOfSight = false
+                    prompt.MaxActivationDistance = 32
+                    fireproximityprompt(prompt)
+                    opened = true
+                end
+            end
+        end
+        if opened then break end
+        task.wait(0.2)
+    end
+    return opened
+end
+
+-- SURTIDOR DE GASOLINA
 local function interactWithGasPump(stationPos)
     for _, prompt in ipairs(workspace:GetDescendants()) do
         if prompt:IsA("ProximityPrompt") then
-            local pPart = prompt.Parent
-            if pPart and pPart:IsA("BasePart") and (pPart.Position - stationPos).Magnitude <= 18 then
+            local wPos = getPromptWorldPos(prompt)
+            if wPos and (wPos - stationPos).Magnitude <= 22 then
                 prompt.HoldDuration = 0
+                prompt.RequiresLineOfSight = false
                 fireproximityprompt(prompt)
             end
         end
@@ -263,16 +293,21 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
+-- DETECTOR DE BLOQUEO / TIEMPO DE PUERTA
 local function getDoorCooldownRemaining(doorPos)
-    for _, gui in ipairs(workspace:GetChildren()) do
-        if gui:IsA("BillboardGui") or gui:IsA("SurfaceGui") then
-            local adornee = gui.Adornee or gui.Parent
-            if adornee and adornee:IsA("BasePart") and (adornee.Position - doorPos).Magnitude <= 20 then
-                for _, lbl in ipairs(gui:GetChildren()) do
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("BillboardGui") or desc:IsA("SurfaceGui") then
+            local adornee = desc.Adornee or desc.Parent
+            local aPos = nil
+            if adornee and adornee:IsA("BasePart") then aPos = adornee.Position end
+            if not aPos and desc.Parent and desc.Parent:IsA("BasePart") then aPos = desc.Parent.Position end
+
+            if aPos and (aPos - doorPos).Magnitude <= 28 then
+                for _, lbl in ipairs(desc:GetDescendants()) do
                     if lbl:IsA("TextLabel") and lbl.Visible then
                         local txt = lbl.Text:lower()
-                        if txt:find("m") and txt:find("s") and not txt:find("revivir") then
-                            return txt
+                        if (txt:find("m") and txt:find("s") and not txt:find("revivir")) or txt:find("bloquead") or txt:find("locked") then
+                            return lbl.Text
                         end
                     end
                 end
@@ -282,6 +317,7 @@ local function getDoorCooldownRemaining(doorPos)
     return nil
 end
 
+-- DETECCIÓN DE ZOMBIES EN EL REACTOR
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local bestTarget = nil
@@ -339,9 +375,7 @@ end
 -- MARCADORES VISUALES
 local function refreshVisualMarkers()
     for _, m in pairs(Markers) do if m and m.Parent then m:Destroy() end end
-    for _, m in ipairs(ChestMarkers) do if m and m.Parent then m:Destroy() end end
     table.clear(Markers)
-    table.clear(ChestMarkers)
 
     if Point2_Door then
         local dMarker = Instance.new("Part")
@@ -370,35 +404,20 @@ local function refreshVisualMarkers()
         cMarker.Parent = workspace
         Markers["Center"] = cMarker
     end
-
-    for i, pos in ipairs(CalculatedChests) do
-        local marker = Instance.new("Part")
-        marker.Name = "ChestMarker_" .. i
-        marker.Shape = Enum.PartType.Ball
-        marker.Size = Vector3.new(2.2, 2.2, 2.2)
-        marker.Material = Enum.Material.Neon
-        marker.Color = Color3.fromRGB(0, 200, 255)
-        marker.Anchored = true
-        marker.CanCollide = false
-        marker.Position = pos
-        marker.Parent = workspace
-        table.insert(ChestMarkers, marker)
-    end
 end
 
 refreshVisualMarkers()
 
 -- PESTAÑA 1: CONTROLES
-Tabs.Main:AddSection("Operación")
+Tabs.Main:AddSection("Operación Infinita")
 
 Tabs.Main:AddButton({
-    Title = "▶ PLAY / INICIAR",
+    Title = "▶ PLAY / INICIAR BUCLE",
     Callback = function()
         if not Point2_Door or not CalculatedCenter then
             Fluent:Notify({ Title = "Sin Coordenadas", Content = "Falta fijar la puerta o el centro.", Duration = 3 })
             return
         end
-        -- Anclaje preventivo en el aire antes de encender el bucle
         secureFlightStart()
         State.Running = true
         State.Paused = false
@@ -434,47 +453,17 @@ Tabs.Main:AddToggle("LootChestsQuickToggle", {
     Callback = function(Value) State.LootChests = Value end
 })
 
--- PESTAÑA 2: CALIBRACIÓN Y PERSONALIZACIÓN DE COORDENADAS
-Tabs.Setup:AddSection("Coordenadas Predefinidas y Ajuste")
+-- PESTAÑA 2: CALIBRACIÓN
+Tabs.Setup:AddSection("Coordenadas Predefinidas")
 
 Tabs.Setup:AddButton({
-    Title = "Fijar Puerta en Mi Posición Actual",
-    Callback = function()
-        local root = getRootPart()
-        if root then
-            Point2_Door = root.Position
-            DoorForwardDir = Vector3.new(CalculatedCenter.X - Point2_Door.X, 0, CalculatedCenter.Z - Point2_Door.Z).Unit
-            refreshVisualMarkers()
-            Fluent:Notify({ Title = "Puerta Actualizada", Content = "Nueva coordenada guardada.", Duration = 2 })
-        end
-    end
-})
-
-Tabs.Setup:AddButton({
-    Title = "Fijar Centro en Mi Posición Actual",
-    Callback = function()
-        local root = getRootPart()
-        if root then
-            CalculatedCenter = root.Position
-            DoorForwardDir = Vector3.new(CalculatedCenter.X - Point2_Door.X, 0, CalculatedCenter.Z - Point2_Door.Z).Unit
-            refreshVisualMarkers()
-            Fluent:Notify({ Title = "Centro Actualizado", Content = "Nueva coordenada guardada.", Duration = 2 })
-        end
-    end
-})
-
-Tabs.Setup:AddButton({
-    Title = "Restaurar Coordenadas Predeterminadas",
+    Title = "Restaurar Nuevas Coordenadas",
     Callback = function()
         Point2_Door = DEFAULT_DOOR
         CalculatedCenter = DEFAULT_CENTER
         DoorForwardDir = Vector3.new(DEFAULT_CENTER.X - DEFAULT_DOOR.X, 0, DEFAULT_CENTER.Z - DEFAULT_DOOR.Z).Unit
-        table.clear(CalculatedChests)
-        for _, cPos in ipairs(DEFAULT_CHESTS) do
-            table.insert(CalculatedChests, cPos)
-        end
         refreshVisualMarkers()
-        Fluent:Notify({ Title = "Restaurado", Content = "Valores iniciales fijados.", Duration = 2 })
+        Fluent:Notify({ Title = "Restaurado", Content = "Valores de tu partida fijados.", Duration = 2 })
     end
 })
 
@@ -503,10 +492,10 @@ Tabs.Coords:AddButton({
 })
 
 -- PESTAÑA 4: AJUSTES
-Tabs.Settings:AddSection("Tiempos")
+Tabs.Settings:AddSection("Tiempos de Espera")
 
 Tabs.Settings:AddSlider("BaseWaitSlider", {
-    Title = "Tiempo de espera en Base (Minutos)",
+    Title = "Tiempo de enfriamiento en Base (Minutos)",
     Default = 15,
     Min = 5,
     Max = 30,
@@ -514,13 +503,13 @@ Tabs.Settings:AddSlider("BaseWaitSlider", {
     Callback = function(Value) State.BaseNuclearWait = Value * 60 end
 })
 
-Tabs.Settings:AddSlider("ChestWaitSlider", {
-    Title = "Tiempo de toque en cada cofre (Seg)",
-    Default = 0.8,
-    Min = 0.3,
-    Max = 3.0,
-    Rounding = 1,
-    Callback = function(Value) State.ChestWaitTime = Value end
+Tabs.Settings:AddSlider("GasStopSlider", {
+    Title = "Parada en cada gasolinera (Segundos)",
+    Default = 3,
+    Min = 1,
+    Max = 8,
+    Rounding = 0,
+    Callback = function(Value) State.GasStationStop = Value end
 })
 
 -- BOTÓN FLOTANTE CÍRCULAR (Y = 0.40)
@@ -559,144 +548,108 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
--- MÁQUINA DE ESTADOS Y LIMPIEZA CON ALTITUD BLINDADA
+-- MÁQUINA DE ESTADOS: BUCLE INFINITO DEL REACTOR
 task.spawn(function()
     while true do
         task.wait(0.5)
 
         if State.Running and not State.Paused then
-            if not Point2_Door or not CalculatedCenter or not DoorForwardDir then
-                updateStatus("Error: Coordenadas no configuradas.")
-                State.Running = false
-            else
-                local root = getRootPart()
-                local distToCenter = root and (root.Position - CalculatedCenter).Magnitude or 999
-                local alreadyInside = distToCenter < 140
+            local root = getRootPart()
+            local distToCenter = root and (root.Position - CalculatedCenter).Magnitude or 999
+            local alreadyInside = distToCenter < 130
 
-                if not alreadyInside then
-                    updateStatus("[1/5] Verificando Puerta...")
-                    flyMoveTo(Point2_Door, 35, 4, true)
-                    task.wait(0.5)
+            -- PASO 1 Y 2: VERIFICAR Y ABRIR PUERTA
+            if not alreadyInside then
+                updateStatus("[1/4] Volando hacia la Puerta del Reactor...")
+                flyMoveTo(Point2_Door, 45, 4, true)
+                task.wait(0.3)
 
-                    local cd = getDoorCooldownRemaining(Point2_Door)
-                    while State.Running and not State.Paused and cd do
-                        updateStatus("Puerta Bloqueada. Tiempo: " .. cd)
-                        task.wait(2)
-                        cd = getDoorCooldownRemaining(Point2_Door)
-                    end
-
-                    if not State.Running then break end
-
-                    updateStatus("[2/5] Accediendo al reactor...")
-                    for _, prompt in ipairs(workspace:GetDescendants()) do
-                        if prompt:IsA("ProximityPrompt") then
-                            local pPart = prompt.Parent
-                            if pPart and pPart:IsA("BasePart") and (pPart.Position - Point2_Door).Magnitude <= 15 then
-                                prompt.HoldDuration = 0
-                                fireproximityprompt(prompt)
-                            end
-                        end
-                    end
-                    task.wait(1.5)
+                local cd = getDoorCooldownRemaining(Point2_Door)
+                while State.Running and not State.Paused and cd do
+                    updateStatus("Puerta Bloqueada. Enfriamiento: " .. tostring(cd))
+                    task.wait(2)
+                    cd = getDoorCooldownRemaining(Point2_Door)
                 end
 
-                -- ENTRAR AL CENTRO (Mantiene altura constante)
-                flyMoveTo(CalculatedCenter, 40, 3, true)
+                if not State.Running then break end
 
-                -- ESTADO 3: CACERÍA TOTAL (RADIO 300 STUDS - TIEMPO EXTENDIDO EN ZOMBIE)
-                updateStatus("[3/5] Limpiando reactor (Radio 300 studs)...")
-                local inCombat = true
-                local clearStreak = 0
+                updateStatus("[2/4] Abriendo Puerta del Reactor...")
+                tryOpenNuclearDoor(Point2_Door)
+                task.wait(1.2)
+            end
 
-                while State.Running and not State.Paused and inCombat do
-                    task.wait(0.2)
-                    local targetModel, targetRoot = getAnyTargetZombie(CalculatedCenter, State.DetectionRadius)
+            -- PASO 3: ENTRAR AL CENTRO Y ELIMINAR ZOMBIES
+            flyMoveTo(CalculatedCenter, 42, 3, true)
+            updateStatus("[3/4] Limpiando Reactor Nuclear (Radio 300)...")
 
-                    if targetModel and targetRoot then
-                        clearStreak = 0
-                        local name = targetModel.Name
-                        updateStatus("Rodeando a " .. name .. " para el dron...")
+            local inCombat = true
+            local clearStreak = 0
 
-                        -- Vuela hacia el zombie a altura segura (+10 studs)
-                        flyMoveTo(targetRoot.Position, 42, 6, true)
+            while State.Running and not State.Paused and inCombat do
+                task.wait(0.2)
+                local targetModel, targetRoot = getAnyTargetZombie(CalculatedCenter, State.DetectionRadius)
 
-                        -- 1. Órbita cerrada (25.0 segundos)
-                        orbitTarget(targetRoot, 7, 25.0, 3)
+                if targetModel and targetRoot then
+                    clearStreak = 0
+                    local name = targetModel.Name
+                    updateStatus("Rodeando a " .. name .. " para el dron...")
 
-                        -- 2. Órbita más amplia (32.0 segundos)
-                        if targetModel.Parent and targetRoot.Parent then
-                            orbitTarget(targetRoot, 14, 32.0, 2.5)
+                    flyMoveTo(targetRoot.Position, 45, 6, true)
+
+                    -- 1. Órbita cerrada (25s)
+                    orbitTarget(targetRoot, 7, 25.0, 3)
+
+                    -- 2. Órbita amplia (30s)
+                    if targetModel.Parent and targetRoot.Parent then
+                        orbitTarget(targetRoot, 14, 30.0, 2.5)
+                    end
+
+                    flyMoveTo(CalculatedCenter, 42, 3, true)
+                else
+                    local remaining = countLivingZombiesInReactor(CalculatedCenter, State.DetectionRadius)
+                    updateStatus(string.format("Verificando sala... Restantes: %d", remaining))
+                    
+                    if remaining == 0 then
+                        clearStreak = clearStreak + 1
+                        if clearStreak >= 3 then
+                            inCombat = false
                         end
-
-                        flyMoveTo(CalculatedCenter, 40, 3, true)
                     else
-                        local remaining = countLivingZombiesInReactor(CalculatedCenter, State.DetectionRadius)
-                        updateStatus("Verificando sala (300 studs)... Restantes: " .. remaining)
-                        if remaining == 0 then
-                            clearStreak = clearStreak + 1
-                            if clearStreak >= 3 then inCombat = false end
-                        else
-                            clearStreak = 0
-                        end
+                        clearStreak = 0
+                    end
+                end
+            end
+
+            -- PASO 4: RECORRIDO CÍCLICO POR LAS 6 GASOLINERAS DURANTE LOS 15 MINUTOS
+            if State.Running and not State.Paused then
+                local cooldownStart = tick()
+                updateStatus("Reactor Despejado. Iniciando ciclo de 6 gasolineras...")
+
+                while State.Running and not State.Paused and (tick() - cooldownStart < State.BaseNuclearWait) do
+                    for idx, gasPos in ipairs(GAS_STATIONS) do
+                        if not State.Running or State.Paused then break end
+                        if (tick() - cooldownStart >= State.BaseNuclearWait) then break end
+
+                        local timeLeft = math.max(0, math.floor(State.BaseNuclearWait - (tick() - cooldownStart)))
+                        local mins = math.floor(timeLeft / 60)
+                        local secs = timeLeft % 60
+
+                        updateStatus(string.format("[Gas %d/6] Volando... | Cooldown: %02dm %02ds", idx, mins, secs))
+                        flyMoveTo(gasPos, 58, 4, false)
+                        task.wait(0.2)
+
+                        -- Surtir gasolina y esperar 3 segundos
+                        updateStatus(string.format("[Gas %d/6] Surtidor activo (3s)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                        interactWithGasPump(gasPos)
+                        task.wait(State.GasStationStop)
                     end
                 end
 
-                -- ESTADO 4: COFRES (DESACTIVADOS POR DEFECTO PARA NO BAJAR)
-                if State.Running and not State.Paused and State.LootChests and #CalculatedChests > 0 then
-                    updateStatus("[4/5] Saqueando cofres...")
-                    for _, cPos in ipairs(CalculatedChests) do
-                        if not State.Running or State.Paused then break end
-                        flyMoveTo(cPos, 45, 3, true)
-                        task.wait(0.1)
-                        flyMoveTo(cPos, 40, 2.5, false)
-                        task.wait(State.ChestWaitTime)
-                        flyMoveTo(cPos, 45, 2.5, true)
-                    end
-                    for i = #CalculatedChests, 1, -1 do
-                        if not State.Running or State.Paused then break end
-                        flyMoveTo(CalculatedChests[i], 50, 3, true)
-                    end
-                    flyMoveTo(CalculatedCenter, 40, 3, true)
-                end
-
-                -- ESTADO 5: RECORRIDO DE GASOLINERAS CADA 3 MINUTOS (DURANTE LOS 15 MINUTOS)
+                -- Finalizado el tiempo de espera, regresar a la puerta para reiniciar el ciclo ilimitado
                 if State.Running and not State.Paused then
-                    local cooldownStart = tick()
-
-                    while State.Running and not State.Paused and (tick() - cooldownStart < State.BaseNuclearWait) do
-                        local roundStart = tick()
-
-                        updateStatus("[5/5] Viajando a Gasolinera 1...")
-                        flyMoveTo(GAS_STATION_1, 55, 4, false)
-                        task.wait(0.5)
-                        interactWithGasPump(GAS_STATION_1)
-                        task.wait(1.5)
-
-                        if not State.Running or State.Paused then break end
-                        updateStatus("[5/5] Viajando a Gasolinera 2...")
-                        flyMoveTo(GAS_STATION_2, 55, 4, false)
-                        task.wait(0.5)
-                        interactWithGasPump(GAS_STATION_2)
-                        task.wait(1.5)
-
-                        if not State.Running or State.Paused then break end
-                        updateStatus("[5/5] En la puerta del Reactor...")
-                        flyMoveTo(Point2_Door, 55, 4, true)
-
-                        while State.Running and not State.Paused and (tick() - roundStart < State.GasCycleInterval) do
-                            local totalLeft = math.floor(State.BaseNuclearWait - (tick() - cooldownStart))
-                            if totalLeft <= 0 then break end
-
-                            local nextGas = math.floor(State.GasCycleInterval - (tick() - roundStart))
-                            local mins = math.floor(totalLeft / 60)
-                            local secs = totalLeft % 60
-                            updateStatus(string.format("Nuclear: %02dm %02ds | Próximo Gas en: %ds", mins, secs, math.max(0, nextGas)))
-                            task.wait(1)
-                        end
-                    end
-
-                    updateStatus("Cooldown terminado. Reiniciando reactor...")
-                    task.wait(1)
+                    updateStatus("15 min completados. Regresando al Reactor para nueva ronda...")
+                    flyMoveTo(Point2_Door, 60, 4, true)
+                    task.wait(1.5)
                 end
             end
         else
@@ -706,8 +659,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB LISTO",
-    Content = "Arranque seguro activo. Detención y restauración completas.",
+    Title = "REACTOR HUB V3 LISTO",
+    Content = "6 Gasolineras cíclicas con 3s de parada y apertura corregida.",
     Duration = 4
 })
 
