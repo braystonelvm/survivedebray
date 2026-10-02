@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - APERTURA PRIORITARIA, RONDAS (40s), GAS 108 Y EXPERIMENT
+-- REACTOR NUCLEAR HUB - APERTURA PRIORITARIA, RONDAS (40s), GAS 128 Y EXPERIMENT
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -32,8 +32,8 @@ local State = {
     LootChests = false,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
-    GasStationStop = 3.0,     -- 3 segundos de parada por gasolinera
-    GasFlySpeed = 108,        -- Velocidad aumentada (+20 extra)
+    GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
+    GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
     DetectionRadius = 400     -- 400 studs a la redonda
 }
@@ -339,49 +339,40 @@ local function getDoorTimerText()
     return nil
 end
 
--- ACTIVACIÓN PRECISA DE GASOLINERAS A CORTA DISTANCIA
+-- INTERACCIÓN CON GASOLINERAS (MÉTODO EFECTIVO ORIGINAL)
 local function interactWithGasPump(stationPos)
-    local root = getRootPart()
-    local myPos = root and root.Position or stationPos
-
     for _, prompt in ipairs(workspace:GetDescendants()) do
         if prompt:IsA("ProximityPrompt") then
             local pPart = prompt.Parent
             local pos = pPart and (pPart:IsA("BasePart") and pPart.Position or (pPart:IsA("Attachment") and pPart.WorldPosition))
 
-            -- Solo activa si estás realmente cerca (<= 18 studs) para no activar de lejos
-            if pos and (pos - myPos).Magnitude <= 18 then
+            if pos and (pos - stationPos).Magnitude <= 28 then
                 prompt.HoldDuration = 0
                 prompt.RequiresLineOfSight = false
+                prompt.MaxActivationDistance = 50
                 if fireproximityprompt then
                     pcall(function() fireproximityprompt(prompt) end)
+                    pcall(function() fireproximityprompt(prompt, 0) end)
                 end
             end
         end
     end
 end
 
--- DETECCIÓN AUTOMÁTICA AL ESTAR CERCA
+-- RESPALDO AUTOMÁTICO PROXIMITY PROMPT
 ProximityPromptService.PromptShown:Connect(function(prompt)
-    local root = getRootPart()
-    if not root then return end
-
-    local pPart = prompt.Parent
-    local pos = pPart and (pPart:IsA("BasePart") and pPart.Position or (pPart:IsA("Attachment") and pPart.WorldPosition))
-
-    -- Solo responde si el jugador está a corta distancia del surtidor
-    if pos and (pos - root.Position).Magnitude <= 18 then
-        local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
-        if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") then
-            prompt.HoldDuration = 0
-            if fireproximityprompt then
-                pcall(function() fireproximityprompt(prompt) end)
-            end
+    local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
+    if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") then
+        prompt.HoldDuration = 0
+        prompt.RequiresLineOfSight = false
+        if fireproximityprompt then
+            pcall(function() fireproximityprompt(prompt) end)
+            pcall(function() fireproximityprompt(prompt, 0) end)
         end
     end
 end)
 
--- FILTRO DE ASALTO A 400 STUDS (SOLO RESPLANDOR Y EXPERIMENT A MENOS DE 8 STUDS)
+-- FILTRO DE ASALTO A 400 STUDS (SOLO RESPLANDOR Y EXPERIMENT)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
@@ -405,11 +396,10 @@ local function getAnyTargetZombie(centerPos, maxDist)
                     local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
                     local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
-                    -- Es zombie válido si tiene resplandor o atributos de asalto y no está durmiendo afuera
                     local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
                     local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
                     local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma")
-                    local isExperiment = name:find("experiment") or variant:find("experiment")
+                    local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
 
                     -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO")
                     if isScreamer then
@@ -474,7 +464,7 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
                     local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
                     local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
-                    local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("phaser")
+                    local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento") or name:find("phaser")
 
                     if isGlowing or isSpecial then
                         count = count + 1
@@ -638,8 +628,8 @@ Tabs.Settings:AddSlider("BaseWaitSlider", {
 
 Tabs.Settings:AddSlider("GasStopSlider", {
     Title = "Parada en cada gasolinera (Segundos)",
-    Default = 3,
-    Min = 1,
+    Default = 4,
+    Min = 2,
     Max = 8,
     Rounding = 0,
     Callback = function(Value) State.GasStationStop = Value end
@@ -728,15 +718,44 @@ task.spawn(function()
                         local mins = math.floor(timeLeft / 60)
                         local secs = timeLeft % 60
 
-                        updateStatus(string.format("[Gas %d/6] Volando rápido (108)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                        flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
-                        task.wait(0.2)
+                        local rootBefore = getRootPart()
+                        local approachPos = rootBefore and rootBefore.Position or Point2_Door
 
-                        updateStatus(string.format("[Gas %d/6] Surtidor activo (3s)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                        local pumpStart = tick()
-                        while State.Running and not State.Paused and (tick() - pumpStart < State.GasStationStop) do
+                        -- === PARADA 1: VUELO Y ACTIVACIÓN (4 SEGUNDOS) ===
+                        updateStatus(string.format("[Gas %d/6] Parada 1/2 (Vuelo 128)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                        flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
+                        task.wait(0.15)
+
+                        updateStatus(string.format("[Gas %d/6] Surtidor Activo 1 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                        local stop1 = tick()
+                        while State.Running and not State.Paused and (tick() - stop1 < State.GasStationStop) do
                             interactWithGasPump(gasPos)
-                            task.wait(0.4)
+                            task.wait(0.6)
+                        end
+
+                        if not State.Running or State.Paused then break end
+
+                        -- === RETROCESO DE 20 STUDS ===
+                        updateStatus(string.format("[Gas %d/6] Retrocediendo 20 studs...", idx))
+                        local dirAway = (approachPos - gasPos).Unit
+                        if dirAway.Magnitude == 0 or dirAway ~= dirAway then
+                            dirAway = Vector3.new(0, 0, 1)
+                        end
+                        local retreatPos = Vector3.new(gasPos.X + dirAway.X * 20, gasPos.Y, gasPos.Z + dirAway.Z * 20)
+                        flyMoveTo(retreatPos, State.GasFlySpeed, 3.0, false)
+                        task.wait(0.3)
+
+                        if not State.Running or State.Paused then break end
+
+                        -- === PARADA 2: REINGRESO Y ACTIVACIÓN (4 SEGUNDOS) ===
+                        updateStatus(string.format("[Gas %d/6] Reingreso Parada 2/2 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                        flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
+                        task.wait(0.15)
+
+                        local stop2 = tick()
+                        while State.Running and not State.Paused and (tick() - stop2 < State.GasStationStop) do
+                            interactWithGasPump(gasPos)
+                            task.wait(0.6)
                         end
                     end
                 end
@@ -770,25 +789,37 @@ task.spawn(function()
                             orbitTarget(targetRoot, 7, 25.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                        -- CASO 4: EXPERIMENT (JEFE FINAL - SOLO ESTANCADO SI ESTÁ A MENOS DE 8 STUDS)
+                        -- CASO 4: EXPERIMENT (JEFE FINAL - ANCLADO EN EL CENTRO SI ESTÁ CERCA)
                         elseif targetType == "experiment" then
                             local distToCenter = (targetRoot.Position - CalculatedCenter).Magnitude
 
-                            if distToCenter <= 8.0 then
-                                updateStatus("👑 EXPERIMENT a menos de 8 studs: Estancado en Centro...")
+                            -- Si Experiment está a 22 studs o menos, nos anclamos 100% quietos en el centro
+                            if distToCenter <= 22.0 then
+                                updateStatus("👑 EXPERIMENT en rango: Anclado en Centro para el dron...")
                                 flyMoveTo(CalculatedCenter, 45, 1.5, true)
 
+                                local myRoot = getRootPart()
+                                local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
+                                local targetY = Point2_Door.Y + 3.0
+
                                 local holdStart = tick()
-                                while State.Running and not State.Paused and targetModel.Parent and (tick() - holdStart < 8) do
+                                while State.Running and not State.Paused and targetModel.Parent and (tick() - holdStart < 10) do
                                     local eHum = targetModel:FindFirstChildOfClass("Humanoid")
                                     if not eHum or eHum.Health <= 0 then break end
-                                    if (targetRoot.Position - CalculatedCenter).Magnitude > 8.5 then break end
+                                    local currentDist = (targetRoot.Position - CalculatedCenter).Magnitude
+                                    if currentDist > 26.0 then break end -- Solo si sale del rango
+
+                                    -- Forzar anclaje inmóvil en el centro
+                                    if bp then
+                                        bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
+                                    end
                                     task.wait(0.4)
                                 end
                             else
-                                updateStatus(string.format("👑 Buscando a EXPERIMENT (>8 studs del centro)..."))
+                                -- Si está a más de 22 studs (en pasillos lejanos), va a buscarlo
+                                updateStatus(string.format("👑 Buscando a EXPERIMENT (%d studs)...", math.floor(distToCenter)))
                                 flyMoveTo(targetRoot.Position, 45, 6, true)
-                                orbitTarget(targetRoot, 10, 18.0, 2.5)
+                                orbitTarget(targetRoot, 8, 14.0, 2.5)
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
                             end
 
@@ -842,15 +873,44 @@ task.spawn(function()
                             local mins = math.floor(timeLeft / 60)
                             local secs = timeLeft % 60
 
-                            updateStatus(string.format("[Gas %d/6] Volando rápido (108)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                            flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
-                            task.wait(0.2)
+                            local rootBefore = getRootPart()
+                            local approachPos = rootBefore and rootBefore.Position or Point2_Door
 
-                            updateStatus(string.format("[Gas %d/6] Surtidor activo (3s)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                            local pumpStart = tick()
-                            while State.Running and not State.Paused and (tick() - pumpStart < State.GasStationStop) do
+                            -- === PARADA 1: VUELO Y ACTIVACIÓN (4 SEGUNDOS) ===
+                            updateStatus(string.format("[Gas %d/6] Parada 1/2 (Vuelo 128)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                            flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
+                            task.wait(0.15)
+
+                            updateStatus(string.format("[Gas %d/6] Surtidor Activo 1 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                            local stop1 = tick()
+                            while State.Running and not State.Paused and (tick() - stop1 < State.GasStationStop) do
                                 interactWithGasPump(gasPos)
-                                task.wait(0.4)
+                                task.wait(0.6)
+                            end
+
+                            if not State.Running or State.Paused then break end
+
+                            -- === RETROCESO DE 20 STUDS ===
+                            updateStatus(string.format("[Gas %d/6] Retrocediendo 20 studs...", idx))
+                            local dirAway = (approachPos - gasPos).Unit
+                            if dirAway.Magnitude == 0 or dirAway ~= dirAway then
+                                dirAway = Vector3.new(0, 0, 1)
+                            end
+                            local retreatPos = Vector3.new(gasPos.X + dirAway.X * 20, gasPos.Y, gasPos.Z + dirAway.Z * 20)
+                            flyMoveTo(retreatPos, State.GasFlySpeed, 3.0, false)
+                            task.wait(0.3)
+
+                            if not State.Running or State.Paused then break end
+
+                            -- === PARADA 2: REINGRESO Y ACTIVACIÓN (4 SEGUNDOS) ===
+                            updateStatus(string.format("[Gas %d/6] Reingreso Parada 2/2 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                            flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
+                            task.wait(0.15)
+
+                            local stop2 = tick()
+                            while State.Running and not State.Paused and (tick() - stop2 < State.GasStationStop) do
+                                interactWithGasPump(gasPos)
+                                task.wait(0.6)
                             end
                         end
                     end
@@ -870,8 +930,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB V3 LISTO",
-    Content = "Gasolineras (108 vel), Radio 400 studs, Fly 3s antes de Noclip y Experiment <=8 studs activos.",
+    Title = "REACTOR HUB V3 PERFECCIONADO",
+    Content = "Gasolineras (doble parada + retroceso 20s, vel 128) y Experiment anclado.",
     Duration = 4
 })
 
