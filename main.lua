@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - 6 GASOLINERAS CÍCLICAS, APERTURA MEJORADA Y BUCLE INFINITO
+-- REACTOR NUCLEAR HUB - APERTURA EXACTA, TIMER REAL Y 6 GASOLINERAS CÍCLICAS
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -30,7 +30,7 @@ local State = {
     CurrentStatus = "Inactivo",
     LootChests = false,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
-    BaseNuclearWait = 900,    -- 15 minutos de espera
+    BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
     GasStationStop = 3.0,     -- 3 segundos de parada por gasolinera
     DetectionRadius = 300     -- 300 studs a la redonda
 }
@@ -106,7 +106,7 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP CONSTANTE (SIEMPRE ACTIVO MIENTRAS EL BOT ESTÉ CORRIENDO)
+-- NOCLIP CONSTANTE (100% ACTIVO)
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused then
         local char = lp.Character
@@ -148,7 +148,7 @@ local function secureFlightStart()
     local root = getRootPart()
     if not root then return false end
 
-    local safeY = Point2_Door.Y + 6
+    local safeY = Point2_Door.Y + 6.0
     root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
     local bodyPos = getOrCreatePhysics(root, safeY)
     bodyPos.Position = Vector3.new(root.Position.X, safeY, root.Position.Z)
@@ -162,7 +162,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     local root = getRootPart()
     if not root then return false end
 
-    local targetY = targetPos.Y + 5.5
+    local targetY = targetPos.Y + 6.0
     if lockAltitudeToDoor and Point2_Door then
         targetY = Point2_Door.Y + 6.0
     end
@@ -234,49 +234,88 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     end
 end
 
--- OBTENER COORDENADA MUNDIAL DE CUALQUIER PROMPT
-local function getPromptWorldPos(prompt)
-    local parent = prompt.Parent
-    if not parent then return nil end
-    if parent:IsA("BasePart") then return parent.Position end
-    if parent:IsA("Attachment") then return parent.WorldPosition end
-    if parent:IsA("Model") then
-        local p = parent.PrimaryPart or parent:FindFirstChildWhichIsA("BasePart")
-        return p and p.Position
+-- APERTURA DIRECTA Y ROBUSTA DE LA PUERTA (DATOS DEL REPORTE)
+local function openNuclearDoorDirect()
+    local opened = false
+
+    -- 1. Intento por ruta directa extraída en el reporte
+    local map = workspace:FindFirstChild("Map")
+    local tiles = map and map:FindFirstChild("Tiles")
+    local reactor = tiles and tiles:FindFirstChild("Nuclear Reactor")
+    local entrance = reactor and reactor:FindFirstChild("Entrance")
+    local directPrompt = entrance and entrance:FindFirstChildOfClass("ProximityPrompt")
+
+    if directPrompt then
+        directPrompt.HoldDuration = 0
+        directPrompt.RequiresLineOfSight = false
+        directPrompt.MaxActivationDistance = 50
+        fireproximityprompt(directPrompt)
+        opened = true
     end
-    return nil
+
+    -- 2. Barrido de respaldo para cuentas en inglés ('Open') o español ('Abrir')
+    for _, prompt in ipairs(workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") then
+            local obj = prompt.ObjectText:lower()
+            local act = prompt.ActionText:lower()
+            local pName = prompt.Parent and prompt.Parent.Name:lower()
+
+            if obj:find("nuclear") or pName == "entrance" or act == "open" or act == "abrir" then
+                prompt.HoldDuration = 0
+                prompt.RequiresLineOfSight = false
+                prompt.MaxActivationDistance = 50
+                fireproximityprompt(prompt)
+                opened = true
+            end
+        end
+    end
+
+    return opened
 end
 
--- SISTEMA ROBUSTO PARA ABRIR LA PUERTA DEL REACTOR
-local function tryOpenNuclearDoor(doorPos)
-    local opened = false
-    local startTime = tick()
+-- LECTURA DEL CONTADOR DE ENFRIAMIENTO (DATOS DEL REPORTE)
+local function getDoorTimerText()
+    -- 1. Lectura directa del TextLabel "Timer" dentro del SurfaceGui de Entrance
+    local map = workspace:FindFirstChild("Map")
+    local tiles = map and map:FindFirstChild("Tiles")
+    local reactor = tiles and tiles:FindFirstChild("Nuclear Reactor")
+    local entrance = reactor and reactor:FindFirstChild("Entrance")
 
-    while tick() - startTime < 2.5 do
-        for _, prompt in ipairs(workspace:GetDescendants()) do
-            if prompt:IsA("ProximityPrompt") then
-                local wPos = getPromptWorldPos(prompt)
-                if wPos and (wPos - doorPos).Magnitude <= 26 then
-                    prompt.HoldDuration = 0
-                    prompt.RequiresLineOfSight = false
-                    prompt.MaxActivationDistance = 32
-                    fireproximityprompt(prompt)
-                    opened = true
+    if entrance then
+        local gui = entrance:FindFirstChildOfClass("SurfaceGui")
+        local timerLbl = gui and gui:FindFirstChild("Timer")
+        if timerLbl and timerLbl:IsA("TextLabel") and timerLbl.Visible then
+            local txt = timerLbl.Text
+            if txt and txt ~= "" and (txt:find("%d") or txt:lower():find("lock")) then
+                return txt
+            end
+        end
+    end
+
+    -- 2. Búsqueda de respaldo en todos los SurfaceGui de Entrance
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("TextLabel") and desc.Name == "Timer" and desc.Visible then
+            local parentGui = desc:FindFirstAncestorOfClass("SurfaceGui")
+            local adornee = parentGui and (parentGui.Adornee or parentGui.Parent)
+            if adornee and adornee.Name == "Entrance" then
+                local txt = desc.Text
+                if txt and txt ~= "" and txt:find("%d") then
+                    return txt
                 end
             end
         end
-        if opened then break end
-        task.wait(0.2)
     end
-    return opened
+
+    return nil -- Puerta lista para abrirse
 end
 
 -- SURTIDOR DE GASOLINA
 local function interactWithGasPump(stationPos)
     for _, prompt in ipairs(workspace:GetDescendants()) do
         if prompt:IsA("ProximityPrompt") then
-            local wPos = getPromptWorldPos(prompt)
-            if wPos and (wPos - stationPos).Magnitude <= 22 then
+            local pPart = prompt.Parent
+            local pos = pPart:IsA("BasePart") and pPart.Position or (pPart:IsA("Attachment") and pPart.WorldPosition)
+            if pos and (pos - stationPos).Magnitude <= 24 then
                 prompt.HoldDuration = 0
                 prompt.RequiresLineOfSight = false
                 fireproximityprompt(prompt)
@@ -292,30 +331,6 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
         fireproximityprompt(prompt)
     end
 end)
-
--- DETECTOR DE BLOQUEO / TIEMPO DE PUERTA
-local function getDoorCooldownRemaining(doorPos)
-    for _, desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("BillboardGui") or desc:IsA("SurfaceGui") then
-            local adornee = desc.Adornee or desc.Parent
-            local aPos = nil
-            if adornee and adornee:IsA("BasePart") then aPos = adornee.Position end
-            if not aPos and desc.Parent and desc.Parent:IsA("BasePart") then aPos = desc.Parent.Position end
-
-            if aPos and (aPos - doorPos).Magnitude <= 28 then
-                for _, lbl in ipairs(desc:GetDescendants()) do
-                    if lbl:IsA("TextLabel") and lbl.Visible then
-                        local txt = lbl.Text:lower()
-                        if (txt:find("m") and txt:find("s") and not txt:find("revivir")) or txt:find("bloquead") or txt:find("locked") then
-                            return lbl.Text
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return nil
-end
 
 -- DETECCIÓN DE ZOMBIES EN EL REACTOR
 local function getAnyTargetZombie(centerPos, maxDist)
@@ -421,7 +436,7 @@ Tabs.Main:AddButton({
         secureFlightStart()
         State.Running = true
         State.Paused = false
-        updateStatus("Iniciado con anclaje aéreo seguro.")
+        updateStatus("Iniciado con vuelo seguro.")
     end
 })
 
@@ -548,7 +563,7 @@ UserInputService.InputBegan:Connect(function(input)
     end
 end)
 
--- MÁQUINA DE ESTADOS: BUCLE INFINITO DEL REACTOR
+-- MÁQUINA DE ESTADOS: BUCLE INFINITO
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -558,27 +573,32 @@ task.spawn(function()
             local distToCenter = root and (root.Position - CalculatedCenter).Magnitude or 999
             local alreadyInside = distToCenter < 130
 
-            -- PASO 1 Y 2: VERIFICAR Y ABRIR PUERTA
+            -- FASE 1 Y 2: VOLAR A LA PUERTA Y ABRIRLA
             if not alreadyInside then
-                updateStatus("[1/4] Volando hacia la Puerta del Reactor...")
+                updateStatus("[1/4] Volando a la Entrada del Reactor...")
                 flyMoveTo(Point2_Door, 45, 4, true)
                 task.wait(0.3)
 
-                local cd = getDoorCooldownRemaining(Point2_Door)
-                while State.Running and not State.Paused and cd do
-                    updateStatus("Puerta Bloqueada. Enfriamiento: " .. tostring(cd))
+                -- Verificar si el Timer en SurfaceGui muestra tiempo activo
+                local cdText = getDoorTimerText()
+                while State.Running and not State.Paused and cdText do
+                    updateStatus("Reactor en Cooldown: " .. cdText)
                     task.wait(2)
-                    cd = getDoorCooldownRemaining(Point2_Door)
+                    cdText = getDoorTimerText()
                 end
 
                 if not State.Running then break end
 
-                updateStatus("[2/4] Abriendo Puerta del Reactor...")
-                tryOpenNuclearDoor(Point2_Door)
-                task.wait(1.2)
+                -- Intentar abrir la puerta
+                updateStatus("[2/4] Abriendo Puerta (Open / Abrir)...")
+                for _ = 1, 4 do
+                    openNuclearDoorDirect()
+                    task.wait(0.3)
+                end
+                task.wait(1.0)
             end
 
-            -- PASO 3: ENTRAR AL CENTRO Y ELIMINAR ZOMBIES
+            -- FASE 3: ENTRAR AL CENTRO Y BARRER ZOMBIES
             flyMoveTo(CalculatedCenter, 42, 3, true)
             updateStatus("[3/4] Limpiando Reactor Nuclear (Radio 300)...")
 
@@ -608,7 +628,7 @@ task.spawn(function()
                 else
                     local remaining = countLivingZombiesInReactor(CalculatedCenter, State.DetectionRadius)
                     updateStatus(string.format("Verificando sala... Restantes: %d", remaining))
-                    
+
                     if remaining == 0 then
                         clearStreak = clearStreak + 1
                         if clearStreak >= 3 then
@@ -620,7 +640,7 @@ task.spawn(function()
                 end
             end
 
-            -- PASO 4: RECORRIDO CÍCLICO POR LAS 6 GASOLINERAS DURANTE LOS 15 MINUTOS
+            -- FASE 4: PATRULLA CÍCLICA POR LAS 6 GASOLINERAS DURANTE LOS 15 MINUTOS
             if State.Running and not State.Paused then
                 local cooldownStart = tick()
                 updateStatus("Reactor Despejado. Iniciando ciclo de 6 gasolineras...")
@@ -645,9 +665,9 @@ task.spawn(function()
                     end
                 end
 
-                -- Finalizado el tiempo de espera, regresar a la puerta para reiniciar el ciclo ilimitado
+                -- Concluidos los 15 minutos, regresar a la puerta e iniciar el bucle de nuevo
                 if State.Running and not State.Paused then
-                    updateStatus("15 min completados. Regresando al Reactor para nueva ronda...")
+                    updateStatus("15 min completados. Regresando a la Puerta del Reactor...")
                     flyMoveTo(Point2_Door, 60, 4, true)
                     task.wait(1.5)
                 end
@@ -659,8 +679,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB V3 LISTO",
-    Content = "6 Gasolineras cíclicas con 3s de parada y apertura corregida.",
+    Title = "REACTOR HUB LISTO",
+    Content = "Apertura exacta y ciclo de 6 gasolineras configurados.",
     Duration = 4
 })
 
