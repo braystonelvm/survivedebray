@@ -48,12 +48,10 @@ local function getGhostWeaponEvent()
         if not folder then return nil end
         for _, tool in ipairs(folder:GetChildren()) do
             if tool:IsA("Tool") then
-                -- Prioridad cuerpo a cuerpo pesado (Sledgehammer/Bat)
                 local hitTargets = tool:FindFirstChild("HitTargets")
                 if hitTargets and hitTargets:IsA("RemoteEvent") then
                     return hitTargets, "melee", tool
                 end
-                -- Armas de fuego (AK-47 / AA-12 / Rifle)
                 local projHit = tool:FindFirstChild("ProjectileHit")
                 if projHit and projHit:IsA("RemoteEvent") then
                     return projHit, "gun", tool
@@ -78,12 +76,12 @@ local function applyImpactToZombie(model)
     local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model.PrimaryPart
 
     if hum and hum.Health > 0 and root then
-        -- 1. APLASTAMIENTO HACIA ABAJO (Afecta solo al zombie, el auto no se entera)
+        -- 1. Aplastamiento al suelo
         pcall(function()
             root.AssemblyLinearVelocity = Vector3.new(0, -Config.SmashForce, 0)
         end)
 
-        -- 2. DAÑO FANTASMA DE TU ARMA
+        -- 2. Daño fantasma de arma
         if Config.GhostDamage then
             local remote, tType, tool = getGhostWeaponEvent()
             if remote then
@@ -120,24 +118,22 @@ local function clearHitboxes()
     CurrentSeat = nil
 end
 
--- CREAR HITBOX 360° TRANSPARENTE ALREDEDOR DEL AUTO
+-- CREAR HITBOX 360° TRANSPARENTE
 local function setupOmniHitbox(car, seat)
     clearHitboxes()
     CurrentCar = car
     CurrentSeat = seat
 
-    -- Crear una caja de impacto que envuelve todo el auto
     local hitbox = Instance.new("Part")
     hitbox.Name = "OmniRamHitbox"
     hitbox.Size = (car:GetExtentsSize()) + Vector3.new(Config.HitboxExpansion, 1.5, Config.HitboxExpansion)
     hitbox.CFrame = seat.CFrame
-    hitbox.Transparency = 1 -- Invisible
+    hitbox.Transparency = 1
     hitbox.CanCollide = false
     hitbox.CanTouch = true
     hitbox.Massless = true
     hitbox.Parent = car
 
-    -- Unir rígidamente al asiento para que siga cualquier rotación o derrape del ZHUB
     local weld = Instance.new("WeldConstraint")
     weld.Part0 = seat
     weld.Part1 = hitbox
@@ -145,7 +141,6 @@ local function setupOmniHitbox(car, seat)
 
     table.insert(HitboxParts, hitbox)
 
-    -- Detectar contacto en cualquier ángulo (frente, lados, reversa)
     local conn = hitbox.Touched:Connect(function(hit)
         if not hit or not hit.Parent then return end
         local model = hit:FindFirstAncestorOfClass("Model")
@@ -155,7 +150,6 @@ local function setupOmniHitbox(car, seat)
     end)
     table.insert(TouchConnections, conn)
 
-    -- También activar los bumpers nativos si existen
     for _, p in ipairs(car:GetDescendants()) do
         if p:IsA("BasePart") then
             local n = p.Name:lower()
