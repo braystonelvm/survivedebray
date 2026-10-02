@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - APERTURA PRIORITARIA, RONDAS (40s) Y EXPERIMENT
+-- REACTOR NUCLEAR HUB - APERTURA PRIORITARIA, RONDAS (40s), GAS 108 Y EXPERIMENT
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -27,14 +27,15 @@ local GAS_STATIONS = {
 local State = {
     Running = false,
     Paused = false,
+    NoclipEnabled = false,    -- Se activa 3 segundos después del Fly
     CurrentStatus = "Inactivo",
     LootChests = false,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
     GasStationStop = 3.0,     -- 3 segundos de parada por gasolinera
-    GasFlySpeed = 88,         -- Velocidad aumentada (+30)
+    GasFlySpeed = 108,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
-    DetectionRadius = 300     -- 300 studs a la redonda
+    DetectionRadius = 400     -- 400 studs a la redonda
 }
 
 local Point2_Door = DEFAULT_DOOR
@@ -108,9 +109,9 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP CONSTANTE (100% ACTIVO)
+-- NOCLIP ACTIVO SOLO CUANDO NOCLIPENABLED ESTÁ EN TRUE (3s DESPUÉS DEL FLY)
 RunService.Stepped:Connect(function()
-    if State.Running and not State.Paused then
+    if State.Running and not State.Paused and State.NoclipEnabled then
         local char = lp.Character
         if char then
             for _, p in ipairs(char:GetDescendants()) do
@@ -145,7 +146,7 @@ local function getOrCreatePhysics(root, initialY)
     return bodyPos, bodyGyro
 end
 
--- ANCLAJE PREVENTIVO INMEDIATO
+-- ANCLAJE PREVENTIVO INMEDIATO (FLY PRIMERO)
 local function secureFlightStart()
     local root = getRootPart()
     if not root then return false end
@@ -254,7 +255,7 @@ local function getEntrancePart()
     return nil
 end
 
--- ACCIÓN DE PULSAR PROMPT CON MÚLTIPLES MÉTODOS
+-- ACCIÓN DE PULSAR PROMPT
 local function triggerPromptRobust(prompt)
     if not prompt or not prompt:IsA("ProximityPrompt") then return end
 
@@ -266,12 +267,6 @@ local function triggerPromptRobust(prompt)
         pcall(function() fireproximityprompt(prompt) end)
         pcall(function() fireproximityprompt(prompt, 0) end)
     end
-
-    pcall(function()
-        prompt:InputHoldBegin()
-        task.wait(0.04)
-        prompt:InputHoldEnd()
-    end)
 end
 
 -- APERTURA DIRECTA Y AGRESIVA DE LA PUERTA
@@ -344,25 +339,49 @@ local function getDoorTimerText()
     return nil
 end
 
--- SURTIDOR DE GASOLINA: BUCLE ACTIVO CADA 0.4s MIENTRAS ESTÁ PARADO
-local function pumpFuelContinuously(stationPos, duration)
-    local startT = tick()
-    while State.Running and not State.Paused and (tick() - startT < duration) do
-        local root = getRootPart()
-        for _, prompt in ipairs(workspace:GetDescendants()) do
-            if prompt:IsA("ProximityPrompt") then
-                local pPart = prompt.Parent
-                local pos = pPart:IsA("BasePart") and pPart.Position or (pPart:IsA("Attachment") and pPart.WorldPosition)
-                if pos and (pos - stationPos).Magnitude <= 24 then
-                    triggerPromptRobust(prompt)
+-- ACTIVACIÓN PRECISA DE GASOLINERAS A CORTA DISTANCIA
+local function interactWithGasPump(stationPos)
+    local root = getRootPart()
+    local myPos = root and root.Position or stationPos
+
+    for _, prompt in ipairs(workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") then
+            local pPart = prompt.Parent
+            local pos = pPart and (pPart:IsA("BasePart") and pPart.Position or (pPart:IsA("Attachment") and pPart.WorldPosition))
+
+            -- Solo activa si estás realmente cerca (<= 18 studs) para no activar de lejos
+            if pos and (pos - myPos).Magnitude <= 18 then
+                prompt.HoldDuration = 0
+                prompt.RequiresLineOfSight = false
+                if fireproximityprompt then
+                    pcall(function() fireproximityprompt(prompt) end)
                 end
             end
         end
-        task.wait(0.4)
     end
 end
 
--- FILTRO DE ASALTO: CONTROL DE PRIORIDAD SCREAMER -> PHASER -> GLOWING -> EXPERIMENT (ÚLTIMO)
+-- DETECCIÓN AUTOMÁTICA AL ESTAR CERCA
+ProximityPromptService.PromptShown:Connect(function(prompt)
+    local root = getRootPart()
+    if not root then return end
+
+    local pPart = prompt.Parent
+    local pos = pPart and (pPart:IsA("BasePart") and pPart.Position or (pPart:IsA("Attachment") and pPart.WorldPosition))
+
+    -- Solo responde si el jugador está a corta distancia del surtidor
+    if pos and (pos - root.Position).Magnitude <= 18 then
+        local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
+        if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") then
+            prompt.HoldDuration = 0
+            if fireproximityprompt then
+                pcall(function() fireproximityprompt(prompt) end)
+            end
+        end
+    end
+end)
+
+-- FILTRO DE ASALTO A 400 STUDS (SOLO RESPLANDOR Y EXPERIMENT A MENOS DE 8 STUDS)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
@@ -379,35 +398,42 @@ local function getAnyTargetZombie(centerPos, maxDist)
             if eRoot and (not eHum or eHum.Health > 0) then
                 local dist = (eRoot.Position - centerPos).Magnitude
                 if dist <= maxDist then
-                    local hasHighlight = (entity:FindFirstChildOfClass("Highlight") ~= nil) or (entity:FindFirstChildWhichIsA("Highlight", true) ~= nil)
-                    local isReactorZombie = (entity:GetAttribute("Reactor") == true) or hasHighlight
+                    local name = entity.Name:lower()
+                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
 
-                    if isReactorZombie then
-                        local name = entity.Name:lower()
-                        local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
+                    local hasHighlight = (entity:FindFirstChildOfClass("Highlight") ~= nil) or (entity:FindFirstChildWhichIsA("Highlight", true) ~= nil) or (entity:FindFirstChild("Highlight") ~= nil)
+                    local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
+                    local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
-                        -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO")
-                        if name:find("scream") or name:find("gato") or variant:find("scream") then
-                            priorityScreamer = entity
-                            priorityScreamerRoot = eRoot
-                            break
+                    -- Es zombie válido si tiene resplandor o atributos de asalto y no está durmiendo afuera
+                    local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
+                    local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
+                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma")
+                    local isExperiment = name:find("experiment") or variant:find("experiment")
 
-                        -- 2. PRIORIDAD 2: PHASER / GHOST
-                        elseif name:find("phaser") or name:find("ghost") or name:find("fantasma") then
-                            if not priorityPhaser then
-                                priorityPhaser = entity
-                                priorityPhaserRoot = eRoot
-                            end
+                    -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO")
+                    if isScreamer then
+                        priorityScreamer = entity
+                        priorityScreamerRoot = eRoot
+                        break
 
-                        -- 4. ÚLTIMA PRIORIDAD: EXPERIMENT (JEFE FINAL)
-                        elseif name:find("experiment") or variant:find("experiment") then
-                            if not experimentTarget then
-                                experimentTarget = entity
-                                experimentRoot = eRoot
-                            end
+                    -- 2. PRIORIDAD 2: PHASER / GHOST
+                    elseif isPhaser then
+                        if not priorityPhaser then
+                            priorityPhaser = entity
+                            priorityPhaserRoot = eRoot
+                        end
 
-                        -- 3. PRIORIDAD 3: RESTO DE ZOMBIES NUCLEARES CON RESPLANDOR
-                        elseif dist < bestGlowingDist then
+                    -- 4. ÚLTIMA PRIORIDAD: EXPERIMENT (JEFE FINAL)
+                    elseif isExperiment then
+                        if not experimentTarget then
+                            experimentTarget = entity
+                            experimentRoot = eRoot
+                        end
+
+                    -- 3. PRIORIDAD 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES
+                    elseif isGlowing then
+                        if dist < bestGlowingDist then
                             bestGlowingDist = dist
                             bestGlowingTarget = entity
                             bestGlowingRoot = eRoot
@@ -431,7 +457,7 @@ local function getAnyTargetZombie(centerPos, maxDist)
     return nil, nil, nil
 end
 
--- CONTEO EXACTO DE ZOMBIES DEL REACTOR VIVOS
+-- CONTEO EXACTO DE ZOMBIES DEL REACTOR VIVOS EN 400 STUDS
 local function countLivingZombiesInReactor(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local count = 0
@@ -441,9 +467,16 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
             local eHum = entity:FindFirstChildOfClass("Humanoid")
             if eRoot and (not eHum or eHum.Health > 0) then
                 if (eRoot.Position - centerPos).Magnitude <= maxDist then
-                    local hasHighlight = (entity:FindFirstChildOfClass("Highlight") ~= nil) or (entity:FindFirstChildWhichIsA("Highlight", true) ~= nil)
-                    local isReactorZombie = (entity:GetAttribute("Reactor") == true) or hasHighlight
-                    if isReactorZombie then
+                    local name = entity.Name:lower()
+                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
+                    local hasHighlight = (entity:FindFirstChildOfClass("Highlight") ~= nil) or (entity:FindFirstChildWhichIsA("Highlight", true) ~= nil) or (entity:FindFirstChild("Highlight") ~= nil)
+                    local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
+                    local isHibernating = (entity:GetAttribute("Hibernating") == true)
+
+                    local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
+                    local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("phaser")
+
+                    if isGlowing or isSpecial then
                         count = count + 1
                     end
                 end
@@ -499,10 +532,28 @@ Tabs.Main:AddButton({
             Fluent:Notify({ Title = "Sin Coordenadas", Content = "Falta fijar la puerta o el centro.", Duration = 3 })
             return
         end
-        secureFlightStart()
+
         State.Running = true
         State.Paused = false
-        updateStatus("Iniciado con vuelo seguro.")
+        State.NoclipEnabled = false
+
+        -- 1. ACTIVAR FLY PRIMERO
+        updateStatus("Activando Fly seguro...")
+        secureFlightStart()
+
+        -- 2. ESPERAR 3 SEGUNDOS ANTES DE ACTIVAR NOCLIP
+        task.spawn(function()
+            for s = 3, 1, -1 do
+                if not State.Running then break end
+                updateStatus(string.format("Fly activo. Esperando %ds para activar Noclip...", s))
+                task.wait(1)
+            end
+
+            if State.Running then
+                State.NoclipEnabled = true
+                updateStatus("Noclip activado. Iniciando cacería y puerta...")
+            end
+        end)
     end
 })
 
@@ -522,6 +573,7 @@ Tabs.Main:AddButton({
     Callback = function()
         State.Running = false
         State.Paused = false
+        State.NoclipEnabled = false
         removePhysicsHelpers()
         restoreCollisions()
         updateStatus("Detenido. Físicas normales restauradas.")
@@ -644,6 +696,12 @@ task.spawn(function()
         task.wait(0.5)
 
         if State.Running and not State.Paused then
+            -- Esperar hasta que se cumplan los 3 segundos de Fly para activar Noclip
+            if not State.NoclipEnabled then
+                task.wait(0.3)
+                continue
+            end
+
             -- PASO 1: APERTURA PRIORITARIA INMEDIATA
             updateStatus("[1/4] Yendo a la Puerta del Reactor para abrirla...")
             for _ = 1, 5 do
@@ -670,12 +728,16 @@ task.spawn(function()
                         local mins = math.floor(timeLeft / 60)
                         local secs = timeLeft % 60
 
-                        updateStatus(string.format("[Gas %d/6] Volando rápido... | Cooldown: %02dm %02ds", idx, mins, secs))
+                        updateStatus(string.format("[Gas %d/6] Volando rápido (108)... | Cooldown: %02dm %02ds", idx, mins, secs))
                         flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
-                        task.wait(0.15)
+                        task.wait(0.2)
 
-                        updateStatus(string.format("[Gas %d/6] Surtidor activo continuo (3s)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                        pumpFuelContinuously(gasPos, State.GasStationStop)
+                        updateStatus(string.format("[Gas %d/6] Surtidor activo (3s)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                        local pumpStart = tick()
+                        while State.Running and not State.Paused and (tick() - pumpStart < State.GasStationStop) do
+                            interactWithGasPump(gasPos)
+                            task.wait(0.4)
+                        end
                     end
                 end
 
@@ -684,7 +746,7 @@ task.spawn(function()
                 updateStatus("[2/4] Accediendo al Centro del Reactor...")
                 flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                updateStatus("[3/4] Cacería en Reactor...")
+                updateStatus("[3/4] Cacería en Reactor (Radio 400)...")
                 local inCombat = true
 
                 while State.Running and not State.Paused and inCombat do
@@ -708,25 +770,23 @@ task.spawn(function()
                             orbitTarget(targetRoot, 7, 25.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                        -- CASO 4: EXPERIMENT (JEFE FINAL - ÚLTIMA PRIORIDAD)
+                        -- CASO 4: EXPERIMENT (JEFE FINAL - SOLO ESTANCADO SI ESTÁ A MENOS DE 8 STUDS)
                         elseif targetType == "experiment" then
                             local distToCenter = (targetRoot.Position - CalculatedCenter).Magnitude
 
-                            -- Si Experiment está cerca del centro, nos quedamos estancados en el punto central
-                            if distToCenter <= 48 then
-                                updateStatus("👑 JEFE EXPERIMENT cerca: Anclado en el Centro para el dron...")
-                                flyMoveTo(CalculatedCenter, 45, 2, true)
+                            if distToCenter <= 8.0 then
+                                updateStatus("👑 EXPERIMENT a menos de 8 studs: Estancado en Centro...")
+                                flyMoveTo(CalculatedCenter, 45, 1.5, true)
 
                                 local holdStart = tick()
                                 while State.Running and not State.Paused and targetModel.Parent and (tick() - holdStart < 8) do
                                     local eHum = targetModel:FindFirstChildOfClass("Humanoid")
                                     if not eHum or eHum.Health <= 0 then break end
-                                    if (targetRoot.Position - CalculatedCenter).Magnitude > 52 then break end
-                                    task.wait(0.5)
+                                    if (targetRoot.Position - CalculatedCenter).Magnitude > 8.5 then break end
+                                    task.wait(0.4)
                                 end
                             else
-                                -- Si está lejos, va a buscarlo, orbita y regresa al centro
-                                updateStatus("👑 Buscando a EXPERIMENT (" .. math.floor(distToCenter) .. " studs)...")
+                                updateStatus(string.format("👑 Buscando a EXPERIMENT (>8 studs del centro)..."))
                                 flyMoveTo(targetRoot.Position, 45, 6, true)
                                 orbitTarget(targetRoot, 10, 18.0, 2.5)
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
@@ -752,7 +812,6 @@ task.spawn(function()
                             if not State.Running or State.Paused then break end
                             updateStatus(string.format("Ronda limpia. Esperando próxima ronda: %02ds...", s))
 
-                            -- Si aparece un zombie nuevo durante los 40s, retoma el ataque de inmediato
                             local activeCount = countLivingZombiesInReactor(CalculatedCenter, State.DetectionRadius)
                             if activeCount > 0 then
                                 roundCleared = false
@@ -783,12 +842,16 @@ task.spawn(function()
                             local mins = math.floor(timeLeft / 60)
                             local secs = timeLeft % 60
 
-                            updateStatus(string.format("[Gas %d/6] Volando rápido... | Cooldown: %02dm %02ds", idx, mins, secs))
+                            updateStatus(string.format("[Gas %d/6] Volando rápido (108)... | Cooldown: %02dm %02ds", idx, mins, secs))
                             flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
-                            task.wait(0.15)
+                            task.wait(0.2)
 
-                            updateStatus(string.format("[Gas %d/6] Surtidor activo continuo (3s)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                            pumpFuelContinuously(gasPos, State.GasStationStop)
+                            updateStatus(string.format("[Gas %d/6] Surtidor activo (3s)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                            local pumpStart = tick()
+                            while State.Running and not State.Paused and (tick() - pumpStart < State.GasStationStop) do
+                                interactWithGasPump(gasPos)
+                                task.wait(0.4)
+                            end
                         end
                     end
                 end
@@ -807,8 +870,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB V3 ACTUALIZADO",
-    Content = "Rondas (40s), Jefe Experiment, Gasolineras 100% y Velocidad 88 configurados.",
+    Title = "REACTOR HUB V3 LISTO",
+    Content = "Gasolineras (108 vel), Radio 400 studs, Fly 3s antes de Noclip y Experiment <=8 studs activos.",
     Duration = 4
 })
 
