@@ -1,206 +1,235 @@
 -- ==============================================================================
--- VEHICLE INSTA-KILL & RAM MULTIPLIER (0% LAG | A-CHASSIS OPTIMIZED)
+-- VEHICLE OMNI-RAM & GROUND SMASH (OPTIMIZADO PARA MANEJO ZHUB / 0% LAG)
 -- ==============================================================================
 
-local Fluent
-local success, _ = pcall(function()
-    Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
-end)
-if not success or not Fluent then
-    Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/main.lua"))()
-end
+local Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/main.lua"))()
 
 local Players = game:GetService("Players")
 local lp = Players.LocalPlayer
 
 local Config = {
-    Enabled = true,              -- Activador general
-    ExpandHitbox = true,         -- Ensanchar parachoques para golpear antes
-    ExtraHitboxStuds = 3.5,      -- Studs adicionales hacia el frente y lados
-    ImpactImpulse = 240,         -- Fuerza cinética inyectada en el impacto
-    DownSmash = true             -- Aplastamiento vertical contra el suelo
+    Enabled = true,
+    OmniHitbox = true,           -- Hitbox 360° (frente, laterales y cola)
+    HitboxExpansion = 4.0,       -- Studs expandidos alrededor del auto
+    SmashForce = 320,            -- Fuerza vertical de aplastamiento contra el suelo
+    GhostDamage = true           -- Disparo fantasma de armas en mochila
 }
 
 local CurrentCar = nil
 local CurrentSeat = nil
 local TouchConnections = {}
-local OriginalSizes = {}
+local HitboxParts = {}
 local HitDebounce = {}
 
--- 1. VENTANA PRINCIPAL (FLUENT UI)
+-- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
-    Title = "VEHICLE RAM KILLER",
+    Title = "ZHUB RAM EXTENDER",
     SubTitle = "Sobrevive al Apocalipsis",
-    TabWidth = 150,
-    Size = UDim2.fromOffset(480, 370),
+    TabWidth = 140,
+    Size = UDim2.fromOffset(480, 360),
     Acrylic = false,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
 
-local Tab = Window:AddTab({ Title = "Daño Auto", Icon = "zap" })
+local Tab = Window:AddTab({ Title = "Parachoques", Icon = "shield" })
 
 local StatusParagraph = Tab:AddParagraph({
-    Title = "Estado del Sistema",
-    Content = "Buscando vehículo..."
+    Title = "Estado del Auto",
+    Content = "Sube a tu vehículo..."
 })
 
-local function updateStatus(text)
-    StatusParagraph:SetDesc(text)
+-- FUNCIÓN PARA OBTENER ARMAS DE MOCHILA O MANO
+local function getGhostWeaponEvent()
+    local char = lp.Character
+    local bp = lp:FindFirstChild("Backpack")
+
+    local function search(folder)
+        if not folder then return nil end
+        for _, tool in ipairs(folder:GetChildren()) do
+            if tool:IsA("Tool") then
+                -- Prioridad cuerpo a cuerpo pesado (Sledgehammer/Bat)
+                local hitTargets = tool:FindFirstChild("HitTargets")
+                if hitTargets and hitTargets:IsA("RemoteEvent") then
+                    return hitTargets, "melee", tool
+                end
+                -- Armas de fuego (AK-47 / AA-12 / Rifle)
+                local projHit = tool:FindFirstChild("ProjectileHit")
+                if projHit and projHit:IsA("RemoteEvent") then
+                    return projHit, "gun", tool
+                end
+            end
+        end
+        return nil
+    end
+
+    local ev, tType, tool = search(char)
+    if ev then return ev, tType, tool end
+    return search(bp)
 end
 
--- RESTAURAR PROPIEDADES ORIGINALES
-local function cleanupVehicle()
+-- APLICAR DAÑO LETAL AL ZOMBIE (SIN TOCAR EL AUTO)
+local function applyImpactToZombie(model)
+    if not Config.Enabled then return end
+    if HitDebounce[model] then return end
+    HitDebounce[model] = true
+
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model.PrimaryPart
+
+    if hum and hum.Health > 0 and root then
+        -- 1. APLASTAMIENTO HACIA ABAJO (Afecta solo al zombie, el auto no se entera)
+        pcall(function()
+            root.AssemblyLinearVelocity = Vector3.new(0, -Config.SmashForce, 0)
+        end)
+
+        -- 2. DAÑO FANTASMA DE TU ARMA
+        if Config.GhostDamage then
+            local remote, tType, tool = getGhostWeaponEvent()
+            if remote then
+                pcall(function()
+                    if tType == "melee" then
+                        remote:FireServer({model})
+                    elseif tType == "gun" then
+                        remote:FireServer(root, root.Position)
+                    end
+                end)
+            end
+        end
+    end
+
+    task.delay(0.2, function()
+        HitDebounce[model] = nil
+    end)
+end
+
+-- LIMPIEZA DE CONEXIONES
+local function clearHitboxes()
     for _, conn in ipairs(TouchConnections) do
         conn:Disconnect()
     end
     table.clear(TouchConnections)
 
-    for part, originalSize in pairs(OriginalSizes) do
-        if part and part.Parent then
-            part.Size = originalSize
-        end
+    for _, p in ipairs(HitboxParts) do
+        if p and p.Parent then p:Destroy() end
     end
-    table.clear(OriginalSizes)
+    table.clear(HitboxParts)
     table.clear(HitDebounce)
 
     CurrentCar = nil
     CurrentSeat = nil
 end
 
--- GOLPE CINÉTICO MORTAL (CERO CÁLCULOS CONTINUOS)
-local function onBumperTouched(hit, bumperPart, seat)
-    if not Config.Enabled then return end
-    if not hit or not hit.Parent then return end
-
-    local model = hit:FindFirstAncestorOfClass("Model")
-    if not model or model == lp.Character or Players:GetPlayerFromCharacter(model) then return end
-
-    local hum = model:FindFirstChildOfClass("Humanoid")
-    local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model.PrimaryPart
-
-    if hum and hum.Health > 0 and root and not HitDebounce[model] then
-        HitDebounce[model] = true
-
-        local seatCF = seat.CFrame
-        local forwardDir = seatCF.LookVector
-
-        -- 1. Inyección de velocidad instantánea en el parachoques para que el juego calcule daño crítico
-        seat.AssemblyLinearVelocity = forwardDir * Config.ImpactImpulse
-
-        -- 2. Fuerza de aplastamiento contra el suelo (rompe las articulaciones de Riot, Muscle y Hazmat)
-        if Config.DownSmash then
-            root.AssemblyLinearVelocity = Vector3.new(forwardDir.X * 80, -180, forwardDir.Z * 80)
-        end
-
-        task.delay(0.2, function()
-            HitDebounce[model] = nil
-        end)
-    end
-end
-
--- VINCULAR Y OPTIMIZAR PARACHOQUES (BUMPER Y BACKBUMPER)
-local function setupVehicleDamage(car, seat)
-    cleanupVehicle()
+-- CREAR HITBOX 360° TRANSPARENTE ALREDEDOR DEL AUTO
+local function setupOmniHitbox(car, seat)
+    clearHitboxes()
     CurrentCar = car
     CurrentSeat = seat
 
-    local bumpersFound = 0
-    local bumperNames = {"bumper", "backbumper", "plow", "grill"}
+    -- Crear una caja de impacto que envuelve todo el auto
+    local hitbox = Instance.new("Part")
+    hitbox.Name = "OmniRamHitbox"
+    hitbox.Size = (car:GetExtentsSize()) + Vector3.new(Config.HitboxExpansion, 1.5, Config.HitboxExpansion)
+    hitbox.CFrame = seat.CFrame
+    hitbox.Transparency = 1 -- Invisible
+    hitbox.CanCollide = false
+    hitbox.CanTouch = true
+    hitbox.Massless = true
+    hitbox.Parent = car
 
+    -- Unir rígidamente al asiento para que siga cualquier rotación o derrape del ZHUB
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = seat
+    weld.Part1 = hitbox
+    weld.Parent = hitbox
+
+    table.insert(HitboxParts, hitbox)
+
+    -- Detectar contacto en cualquier ángulo (frente, lados, reversa)
+    local conn = hitbox.Touched:Connect(function(hit)
+        if not hit or not hit.Parent then return end
+        local model = hit:FindFirstAncestorOfClass("Model")
+        if model and model ~= lp.Character and not Players:GetPlayerFromCharacter(model) then
+            applyImpactToZombie(model)
+        end
+    end)
+    table.insert(TouchConnections, conn)
+
+    -- También activar los bumpers nativos si existen
     for _, p in ipairs(car:GetDescendants()) do
         if p:IsA("BasePart") then
-            local pName = p.Name:lower()
-            local isTargetBumper = false
-
-            for _, bName in ipairs(bumperNames) do
-                if pName == bName or pName:find(bName) then
-                    isTargetBumper = true
-                    break
-                end
-            end
-
-            if isTargetBumper then
-                bumpersFound = bumpersFound + 1
-
-                -- Guardar tamaño original
-                OriginalSizes[p] = p.Size
-
-                -- 1. Forzar detección física sin colisión sólida contra postes
-                p.CanCollide = false
+            local n = p.Name:lower()
+            if n:find("bump") or n:find("plow") or n == "bumper" then
                 p.CanTouch = true
-
-                -- 2. Eliminar fricción para que no pierda velocidad al atropellar
-                p.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
-
-                -- 3. Expandir la Hitbox ligeramente hacia el frente y lados
-                if Config.ExpandHitbox then
-                    p.Size = p.Size + Vector3.new(Config.ExtraHitboxStuds, 1.2, Config.ExtraHitboxStuds)
-                end
-
-                -- 4. Conectar evento nativo .Touched (Reactivo, 0 lag de CPU)
-                local conn = p.Touched:Connect(function(hit)
-                    onBumperTouched(hit, p, seat)
+                p.CanCollide = false
+                local bConn = p.Touched:Connect(function(hit)
+                    if not hit or not hit.Parent then return end
+                    local model = hit:FindFirstAncestorOfClass("Model")
+                    if model and model ~= lp.Character and not Players:GetPlayerFromCharacter(model) then
+                        applyImpactToZombie(model)
+                    end
                 end)
-                table.insert(TouchConnections, conn)
+                table.insert(TouchConnections, bConn)
             end
         end
     end
 
-    if bumpersFound > 0 then
-        updateStatus(string.format("✅ Conectado a [%s]\n%d parachoques optimizados con daño crítico.", car.Name, bumpersFound))
-    else
-        updateStatus(string.format("⚠️ Montado en [%s] pero no se hallaron bumpers nativos.", car.Name))
-    end
+    StatusParagraph:SetDesc(string.format("✅ Conectado a [%s]\nHitbox 360° activa (+%.1f studs). Cero aceleración forzada.", car.Name, Config.HitboxExpansion))
 end
 
 -- CONTROLES DEL MENÚ
 Tab:AddToggle("MasterToggle", {
-    Title = "Atropello Mortal (Insta-Kill)",
-    Description = "Multiplica la fuerza de impacto al tocar cualquier zombie",
+    Title = "Parachoques Letal Activo",
     Default = true,
     Callback = function(v)
         Config.Enabled = v
-        if not v then
-            updateStatus("Desactivado temporalmente.")
-        elseif CurrentCar and CurrentSeat then
-            setupVehicleDamage(CurrentCar, CurrentSeat)
+        if v and CurrentCar and CurrentSeat then
+            setupOmniHitbox(CurrentCar, CurrentSeat)
         end
     end
 })
 
-Tab:AddToggle("HitboxToggle", {
-    Title = "Hitbox Frontal Extendida",
-    Description = "Permite golpear a los zombies antes de que toquen la carrocería",
-    Default = true,
+Tab:AddSlider("SizeSlider", {
+    Title = "Alcance de la Hitbox (Studs)",
+    Description = "Distancia extra para golpear antes de tocar tu carrocería",
+    Default = 4.0,
+    Min = 2.0,
+    Max = 8.0,
+    Rounding = 1,
     Callback = function(v)
-        Config.ExpandHitbox = v
+        Config.HitboxExpansion = v
         if CurrentCar and CurrentSeat then
-            setupVehicleDamage(CurrentCar, CurrentSeat)
+            setupOmniHitbox(CurrentCar, CurrentSeat)
         end
     end
 })
 
-Tab:AddSlider("ForceSlider", {
-    Title = "Potencia de Impacto Cinético",
-    Description = "Velocidad inyectada al momento del contacto",
-    Default = 240,
+Tab:AddToggle("GhostToggle", {
+    Title = "Activar Daño Fantasma de Armas",
+    Description = "Aplica el daño de tus armas al golpear con el auto",
+    Default = true,
+    Callback = function(v) Config.GhostDamage = v end
+})
+
+Tab:AddSlider("SmashSlider", {
+    Title = "Fuerza de Aplastamiento al Zombie",
+    Default = 320,
     Min = 150,
-    Max = 400,
+    Max = 500,
     Rounding = 0,
-    Callback = function(v) Config.ImpactImpulse = v end
+    Callback = function(v) Config.SmashForce = v end
 })
 
 -- BOTÓN FLOTANTE CÍRCULAR (Y = 0.40)
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "CarDamageFloatBtn"
+ScreenGui.Name = "OmniRamFloatBtn"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = lp:WaitForChild("PlayerGui")
 
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(220, 40, 40)
+FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 20, 20)
 FloatBtn.Image = "rbxassetid://10723415903"
 FloatBtn.Parent = ScreenGui
 
@@ -214,7 +243,7 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isOpen
 end)
 
--- DETECTOR DE SUBIDA / BAJADA DEL VEHÍCULO (SILENCIOSO CADA 1.5s)
+-- DETECCIÓN DEL ASIENTO (CADA 1.5s)
 task.spawn(function()
     while true do
         task.wait(1.5)
@@ -225,20 +254,20 @@ task.spawn(function()
         if seat and seat:IsA("VehicleSeat") then
             local car = seat:FindFirstAncestorOfClass("Model")
             if car and car ~= CurrentCar then
-                setupVehicleDamage(car, seat)
+                setupOmniHitbox(car, seat)
             end
         else
             if CurrentCar then
-                cleanupVehicle()
-                updateStatus("Esperando a que subas a un vehículo...")
+                clearHitboxes()
+                StatusParagraph:SetDesc("Esperando a que subas a un vehículo...")
             end
         end
     end
 end)
 
 Fluent:Notify({
-    Title = "VEHICLE RAM KILLER ACTIVO",
-    Content = "Parachoques vinculados con daño masivo sin lag.",
+    Title = "PARACHOQUES 360° LISTO",
+    Content = "Sin empujes bruscos. Adaptado para manejo ZHUB.",
     Duration = 3.5
 })
 
