@@ -260,13 +260,11 @@ local function triggerPromptRobust(prompt)
     prompt.RequiresLineOfSight = false
     prompt.MaxActivationDistance = 60
 
-    -- 1. Disparo nativo de ejecutores
     if fireproximityprompt then
         pcall(function() fireproximityprompt(prompt) end)
         pcall(function() fireproximityprompt(prompt, 0) end)
     end
 
-    -- 2. Simulación directa de evento de pulsación en Roblox
     pcall(function()
         prompt:InputHoldBegin()
         task.wait(0.04)
@@ -344,7 +342,7 @@ local function getDoorTimerText()
         end
     end
 
-    return nil -- Puerta lista para abrirse
+    return nil
 end
 
 -- SURTIDOR DE GASOLINA
@@ -367,54 +365,85 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- DETECCIÓN DE ZOMBIES EN EL REACTOR
+-- DETECCIÓN EXCLUSIVA DE ZOMBIES CON RESPLANDOR (HIGHLIGHT / REACTOR)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
-    local bestTarget = nil
-    local bestRoot = nil
-    local bestDist = math.huge
+    local priorityScreamer = nil
+    local priorityScreamerRoot = nil
     local priorityPhaser = nil
-    local priorityRoot = nil
+    local priorityPhaserRoot = nil
+    local bestGlowingTarget = nil
+    local bestGlowingRoot = nil
+    local bestGlowingDist = math.huge
 
     for _, entity in ipairs(charFolder:GetChildren()) do
         if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
-            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso")
+            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
             local eHum = entity:FindFirstChildOfClass("Humanoid")
 
             if eRoot and (not eHum or eHum.Health > 0) then
                 local dist = (eRoot.Position - centerPos).Magnitude
                 if dist <= maxDist then
-                    local name = entity.Name:lower()
-                    if name:find("phaser") or name:find("ghost") or name:find("fantasma") then
-                        priorityPhaser = entity
-                        priorityRoot = eRoot
-                        break
-                    elseif dist < bestDist then
-                        bestDist = dist
-                        bestTarget = entity
-                        bestRoot = eRoot
+                    -- CONDICIÓN OBLIGATORIA: DEBE TENER EL RESPLANDOR (HIGHLIGHT O REACTOR = TRUE)
+                    local hasHighlight = (entity:FindFirstChildOfClass("Highlight") ~= nil) or (entity:FindFirstChildWhichIsA("Highlight", true) ~= nil)
+                    local isReactorZombie = (entity:GetAttribute("Reactor") == true) or hasHighlight
+
+                    if isReactorZombie then
+                        local name = entity.Name:lower()
+                        local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
+
+                        -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO") CON RESPLANDOR
+                        if name:find("scream") or name:find("gato") or variant:find("scream") then
+                            priorityScreamer = entity
+                            priorityScreamerRoot = eRoot
+                            break
+
+                        -- 2. PRIORIDAD SECUNDARIA: PHASER / GHOST CON RESPLANDOR
+                        elseif name:find("phaser") or name:find("ghost") or name:find("fantasma") then
+                            if not priorityPhaser then
+                                priorityPhaser = entity
+                                priorityPhaserRoot = eRoot
+                            end
+
+                        -- 3. CUALQUIER OTRO ZOMBIE RESPLANDECIENTE DE LA NUCLEAR
+                        elseif dist < bestGlowingDist then
+                            bestGlowingDist = dist
+                            bestGlowingTarget = entity
+                            bestGlowingRoot = eRoot
+                        end
                     end
                 end
             end
         end
     end
 
-    if priorityPhaser then
-        return priorityPhaser, priorityRoot
+    if priorityScreamer then
+        return priorityScreamer, priorityScreamerRoot, true
+    elseif priorityPhaser then
+        return priorityPhaser, priorityPhaserRoot, false
+    elseif bestGlowingTarget then
+        return bestGlowingTarget, bestGlowingRoot, false
     end
-    return bestTarget, bestRoot
+
+    -- SI NO TIENE RESPLANDOR, DEVUELVE NIL (NUNCA ATACA ZOMBIES COMUNES DE AFUERA)
+    return nil, nil, false
 end
 
+-- CONTEO EXACTO DE ZOMBIES RESPLANDECIENTES (HIGHLIGHT / REACTOR)
 local function countLivingZombiesInReactor(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local count = 0
     for _, entity in ipairs(charFolder:GetChildren()) do
         if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
-            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso")
+            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
             local eHum = entity:FindFirstChildOfClass("Humanoid")
             if eRoot and (not eHum or eHum.Health > 0) then
                 if (eRoot.Position - centerPos).Magnitude <= maxDist then
-                    count = count + 1
+                    local hasHighlight = (entity:FindFirstChildOfClass("Highlight") ~= nil) or (entity:FindFirstChildWhichIsA("Highlight", true) ~= nil)
+                    local isReactorZombie = (entity:GetAttribute("Reactor") == true) or hasHighlight
+                    if isReactorZombie then
+                        count = count + 1
+                    end
                 end
             end
         end
@@ -645,18 +674,23 @@ task.spawn(function()
                 updateStatus("[2/4] Accediendo al Centro del Reactor...")
                 flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                updateStatus("[3/4] Limpiando Reactor Nuclear (Radio 300)...")
+                updateStatus("[3/4] Limpiando Reactor Nuclear (Solo con Resplandor)...")
                 local inCombat = true
                 local clearStreak = 0
 
                 while State.Running and not State.Paused and inCombat do
                     task.wait(0.2)
-                    local targetModel, targetRoot = getAnyTargetZombie(CalculatedCenter, State.DetectionRadius)
+                    local targetModel, targetRoot, isScreamer = getAnyTargetZombie(CalculatedCenter, State.DetectionRadius)
 
                     if targetModel and targetRoot then
                         clearStreak = 0
                         local name = targetModel.Name
-                        updateStatus("Rodeando a " .. name .. " para el dron...")
+
+                        if isScreamer then
+                            updateStatus("🚨 PRIORIDAD: Caza del SCREAMER para el dron...")
+                        else
+                            updateStatus("Rodeando a " .. name .. " [Resplandor] para el dron...")
+                        end
 
                         flyMoveTo(targetRoot.Position, 45, 6, true)
 
@@ -724,7 +758,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB LISTO",
-    Content = "Apertura prioritaria inmediata y 6 gasolineras activas.",
+    Content = "Filtro estricto de Resplandor (Highlight) y Prioridad Screamer activados.",
     Duration = 4
 })
 
