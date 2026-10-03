@@ -35,7 +35,7 @@ local State = {
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
-    DetectionRadius = 400     -- 400 studs a la redonda
+    DetectionRadius = 500     -- 400 studs a la redonda
 }
 
 local Point2_Door = DEFAULT_DOOR
@@ -372,7 +372,7 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- FILTRO DE ASALTO A 400 STUDS (SOLO RESPLANDOR Y EXPERIMENT)
+-- FILTRO DE ASALTO A 400 STUDS (DETECCIÓN BASE ORIGINAL)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
@@ -398,7 +398,7 @@ local function getAnyTargetZombie(centerPos, maxDist)
 
                     local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
                     local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
-                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma")
+                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or variant:find("phaser") or variant:find("ghost")
                     local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
 
                     -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO")
@@ -447,7 +447,42 @@ local function getAnyTargetZombie(centerPos, maxDist)
     return nil, nil, nil
 end
 
--- CONTEO EXACTO DE ZOMBIES DEL REACTOR VIVOS EN 400 STUDS
+-- CONTEO Y CLASIFICACIÓN DE ZOMBIES EN EL REACTOR
+local function countZombieTypes(centerPos, maxDist)
+    local charFolder = workspace:FindFirstChild("Characters") or workspace
+    local screamers, phasers, others = 0, 0, 0
+    for _, entity in ipairs(charFolder:GetChildren()) do
+        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
+            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
+            local eHum = entity:FindFirstChildOfClass("Humanoid")
+            if eRoot and (not eHum or eHum.Health > 0) then
+                if (eRoot.Position - centerPos).Magnitude <= maxDist then
+                    local name = entity.Name:lower()
+                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
+                    local hasHighlight = (entity:FindFirstChildOfClass("Highlight") ~= nil) or (entity:FindFirstChildWhichIsA("Highlight", true) ~= nil) or (entity:FindFirstChild("Highlight") ~= nil)
+                    local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
+                    local isHibernating = (entity:GetAttribute("Hibernating") == true)
+
+                    local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
+                    local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
+                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or variant:find("phaser") or variant:find("ghost")
+                    local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
+
+                    if isScreamer then
+                        screamers = screamers + 1
+                    elseif isPhaser then
+                        phasers = phasers + 1
+                    elseif isGlowing or isExperiment then
+                        others = others + 1
+                    end
+                end
+            end
+        end
+    end
+    return screamers, phasers, others
+end
+
+-- CONTEO EXACTO DE ZOMBIES TOTALES VIVOS
 local function countLivingZombiesInReactor(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local count = 0
@@ -464,7 +499,7 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
                     local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
                     local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
-                    local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento") or name:find("phaser")
+                    local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento") or name:find("phaser") or variant:find("phaser") or name:find("ghost") or variant:find("ghost")
 
                     if isGlowing or isSpecial then
                         count = count + 1
@@ -767,9 +802,29 @@ task.spawn(function()
 
                 updateStatus("[3/4] Cacería en Reactor (Radio 400)...")
                 local inCombat = true
+                local screamerPhaserStuckTimer = nil
 
                 while State.Running and not State.Paused and inCombat do
                     task.wait(0.2)
+
+                    -- === REGLA DE DESBUGEAR: SI SOLO QUEDAN SCREAMERS Y/O PHASERS POR MÁS DE 1 MINUTO ===
+                    local sCount, pCount, otherCount = countZombieTypes(CalculatedCenter, State.DetectionRadius)
+                    if otherCount == 0 and (sCount > 0 or pCount > 0) then
+                        if not screamerPhaserStuckTimer then
+                            screamerPhaserStuckTimer = tick()
+                        elseif (tick() - screamerPhaserStuckTimer >= 60) then
+                            updateStatus("🚀 Solo quedan Screamer/Phaser (>1 min). Saliendo 450 studs para desbugear...")
+                            local escapePos = CalculatedCenter - (DoorForwardDir * 450)
+                            flyMoveTo(escapePos, State.GasFlySpeed, 8, false)
+                            task.wait(3.5)
+                            updateStatus("Regresando al Centro del Reactor...")
+                            flyMoveTo(CalculatedCenter, State.GasFlySpeed, 3, true)
+                            screamerPhaserStuckTimer = tick() -- Reinicia el contador para la siguiente evaluación
+                        end
+                    else
+                        screamerPhaserStuckTimer = nil
+                    end
+
                     local targetModel, targetRoot, targetType = getAnyTargetZombie(CalculatedCenter, State.DetectionRadius)
 
                     if targetModel and targetRoot then
@@ -793,7 +848,6 @@ task.spawn(function()
                         elseif targetType == "experiment" then
                             local distToCenter = (targetRoot.Position - CalculatedCenter).Magnitude
 
-                            -- Si Experiment está a 22 studs o menos, nos anclamos 100% quietos en el centro
                             if distToCenter <= 22.0 then
                                 updateStatus("👑 EXPERIMENT en rango: Anclado en Centro para el dron...")
                                 flyMoveTo(CalculatedCenter, 45, 1.5, true)
@@ -807,16 +861,14 @@ task.spawn(function()
                                     local eHum = targetModel:FindFirstChildOfClass("Humanoid")
                                     if not eHum or eHum.Health <= 0 then break end
                                     local currentDist = (targetRoot.Position - CalculatedCenter).Magnitude
-                                    if currentDist > 26.0 then break end -- Solo si sale del rango
+                                    if currentDist > 26.0 then break end
 
-                                    -- Forzar anclaje inmóvil en el centro
                                     if bp then
                                         bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
                                     end
                                     task.wait(0.4)
                                 end
                             else
-                                -- Si está a más de 22 studs (en pasillos lejanos), va a buscarlo
                                 updateStatus(string.format("👑 Buscando a EXPERIMENT (%d studs)...", math.floor(distToCenter)))
                                 flyMoveTo(targetRoot.Position, 45, 6, true)
                                 orbitTarget(targetRoot, 8, 14.0, 2.5)
@@ -836,6 +888,7 @@ task.spawn(function()
 
                     else
                         -- No hay zombies en la sala: ir al centro y esperar 40s a que aparezca la siguiente ronda
+                        screamerPhaserStuckTimer = nil
                         flyMoveTo(CalculatedCenter, 45, 3, true)
                         local roundCleared = true
 
@@ -852,7 +905,6 @@ task.spawn(function()
                             task.wait(1)
                         end
 
-                        -- Si pasaron los 40 segundos completos con 0 zombies, el reactor está 100% completado
                         if roundCleared and State.Running and not State.Paused then
                             inCombat = false
                         end
@@ -931,7 +983,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Gasolineras (doble parada + retroceso 20s, vel 128) y Experiment anclado.",
+    Content = "Regla de 1 min para Screamer/Phaser activa y gasolineras conservadas.",
     Duration = 4
 })
 
