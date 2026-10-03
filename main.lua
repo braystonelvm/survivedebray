@@ -35,7 +35,7 @@ local State = {
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
-    DetectionRadius = 700     -- 400 studs a la redonda
+    DetectionRadius = 750     -- 750 studs a la redonda
 }
 
 local Point2_Door = DEFAULT_DOOR
@@ -372,7 +372,7 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- FILTRO DE ASALTO A 400 STUDS (DETECCIÓN BASE ORIGINAL)
+-- FILTRO DE ASALTO A 650 STUDS (DETECCIÓN BASE ORIGINAL)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
@@ -814,7 +814,7 @@ task.spawn(function()
                             screamerPhaserStuckTimer = tick()
                         elseif (tick() - screamerPhaserStuckTimer >= 60) then
                             updateStatus("🚀 Solo quedan Screamer/Phaser (>1 min). Saliendo 450 studs para desbugear...")
-                            local escapePos = CalculatedCenter - (DoorForwardDir * 450)
+                            local escapePos = CalculatedCenter - (DoorForwardDir * 850)
                             flyMoveTo(escapePos, State.GasFlySpeed, 8, false)
                             task.wait(3.5)
                             updateStatus("Regresando al Centro del Reactor...")
