@@ -35,7 +35,7 @@ local State = {
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
-    DetectionRadius = 500     -- 400 studs a la redonda
+    DetectionRadius = 700     -- 400 studs a la redonda
 }
 
 local Point2_Door = DEFAULT_DOOR
