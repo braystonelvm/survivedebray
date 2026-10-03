@@ -32,7 +32,7 @@ local State = {
     LootChests = false,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
-    GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
+    GasStationStop = 4.0,     -- 4 segundos de parada por estación
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
     DetectionRadius = 400     -- 400 studs a la redonda
@@ -447,7 +447,7 @@ local function getAnyTargetZombie(centerPos, maxDist)
     return nil, nil, nil
 end
 
--- CONTEO EXACTO DE ZOMBIES DEL REACTOR VIVOS EN 400 STUDS
+-- CONTEO EXACTO DE ZOMBIES DEL REACTOR VIVOS EN RADIO DEFINIDO
 local function countLivingZombiesInReactor(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local count = 0
@@ -718,44 +718,15 @@ task.spawn(function()
                         local mins = math.floor(timeLeft / 60)
                         local secs = timeLeft % 60
 
-                        local rootBefore = getRootPart()
-                        local approachPos = rootBefore and rootBefore.Position or Point2_Door
-
-                        -- === PARADA 1: VUELO Y ACTIVACIÓN (4 SEGUNDOS) ===
-                        updateStatus(string.format("[Gas %d/6] Parada 1/2 (Vuelo 128)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                        updateStatus(string.format("[Gas %d/6] Volando rápido (128)... | Cooldown: %02dm %02ds", idx, mins, secs))
                         flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
                         task.wait(0.15)
 
-                        updateStatus(string.format("[Gas %d/6] Surtidor Activo 1 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                        local stop1 = tick()
-                        while State.Running and not State.Paused and (tick() - stop1 < State.GasStationStop) do
+                        updateStatus(string.format("[Gas %d/6] Surtidor Activo (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                        local stopT = tick()
+                        while State.Running and not State.Paused and (tick() - stopT < State.GasStationStop) do
                             interactWithGasPump(gasPos)
-                            task.wait(0.6)
-                        end
-
-                        if not State.Running or State.Paused then break end
-
-                        -- === RETROCESO DE 20 STUDS ===
-                        updateStatus(string.format("[Gas %d/6] Retrocediendo 20 studs...", idx))
-                        local dirAway = (approachPos - gasPos).Unit
-                        if dirAway.Magnitude == 0 or dirAway ~= dirAway then
-                            dirAway = Vector3.new(0, 0, 1)
-                        end
-                        local retreatPos = Vector3.new(gasPos.X + dirAway.X * 20, gasPos.Y, gasPos.Z + dirAway.Z * 20)
-                        flyMoveTo(retreatPos, State.GasFlySpeed, 3.0, false)
-                        task.wait(0.3)
-
-                        if not State.Running or State.Paused then break end
-
-                        -- === PARADA 2: REINGRESO Y ACTIVACIÓN (4 SEGUNDOS) ===
-                        updateStatus(string.format("[Gas %d/6] Reingreso Parada 2/2 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                        flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
-                        task.wait(0.15)
-
-                        local stop2 = tick()
-                        while State.Running and not State.Paused and (tick() - stop2 < State.GasStationStop) do
-                            interactWithGasPump(gasPos)
-                            task.wait(0.6)
+                            task.wait(0.5)
                         end
                     end
                 end
@@ -775,11 +746,41 @@ task.spawn(function()
                     if targetModel and targetRoot then
                         local name = targetModel.Name
 
-                        -- CASO 1: SCREAMER (PRIORIDAD #1)
+                        -- CASO 1: SCREAMER (PRIORIDAD #1 CON DETECCIÓN ANTI-BUG EN TECHO)
                         if targetType == "screamer" then
-                            updateStatus("🚨 PRIORIDAD #1: Caza del SCREAMER para el dron...")
-                            flyMoveTo(targetRoot.Position, 45, 6, true)
-                            orbitTarget(targetRoot, 7, 25.0, 3)
+                            local distScreamerToCenter = (targetRoot.Position - CalculatedCenter).Magnitude
+                            local zombiesIn30Studs = countLivingZombiesInReactor(CalculatedCenter, 30)
+
+                            -- Regla: Si es el ÚNICO zombie cerca del centro (<=30 studs), está trabado en el techo
+                            if zombiesIn30Studs == 1 and distScreamerToCenter <= 30 then
+                                updateStatus("🐱 SCREAMER trabado en techo (<=30 studs). Esperando 40s para el dron...")
+                                flyMoveTo(targetRoot.Position, 45, 6, true)
+                                orbitTarget(targetRoot, 7, 40.0, 3)
+
+                                -- Verificar si sigue vivo después de los 40s
+                                local stillAlive = false
+                                if targetModel.Parent and targetRoot.Parent then
+                                    local eHum = targetModel:FindFirstChildOfClass("Humanoid")
+                                    if not eHum or eHum.Health > 0 then
+                                        stillAlive = true
+                                    end
+                                end
+
+                                -- Si sigue vivo, nos alejamos 450 studs para forzar que baje a tierra
+                                if stillAlive and State.Running and not State.Paused then
+                                    updateStatus("🚀 Screamer atorado: Alejándose 450 studs para desbugearlo a tierra...")
+                                    local escapePos = CalculatedCenter - (DoorForwardDir * 450)
+                                    flyMoveTo(escapePos, State.GasFlySpeed, 8, false)
+                                    task.wait(3.5)
+                                    updateStatus("Regresando al Centro del Reactor...")
+                                    flyMoveTo(CalculatedCenter, State.GasFlySpeed, 3, true)
+                                end
+                            else
+                                -- Screamer normal (en combate libre con otros zombies)
+                                updateStatus("🚨 PRIORIDAD #1: Caza del SCREAMER para el dron...")
+                                flyMoveTo(targetRoot.Position, 45, 6, true)
+                                orbitTarget(targetRoot, 7, 25.0, 3)
+                            end
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
                         -- CASO 2: PHASER (PRIORIDAD #2)
@@ -793,7 +794,6 @@ task.spawn(function()
                         elseif targetType == "experiment" then
                             local distToCenter = (targetRoot.Position - CalculatedCenter).Magnitude
 
-                            -- Si Experiment está a 22 studs o menos, nos anclamos 100% quietos en el centro
                             if distToCenter <= 22.0 then
                                 updateStatus("👑 EXPERIMENT en rango: Anclado en Centro para el dron...")
                                 flyMoveTo(CalculatedCenter, 45, 1.5, true)
@@ -807,16 +807,14 @@ task.spawn(function()
                                     local eHum = targetModel:FindFirstChildOfClass("Humanoid")
                                     if not eHum or eHum.Health <= 0 then break end
                                     local currentDist = (targetRoot.Position - CalculatedCenter).Magnitude
-                                    if currentDist > 26.0 then break end -- Solo si sale del rango
+                                    if currentDist > 26.0 then break end
 
-                                    -- Forzar anclaje inmóvil en el centro
                                     if bp then
                                         bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
                                     end
                                     task.wait(0.4)
                                 end
                             else
-                                -- Si está a más de 22 studs (en pasillos lejanos), va a buscarlo
                                 updateStatus(string.format("👑 Buscando a EXPERIMENT (%d studs)...", math.floor(distToCenter)))
                                 flyMoveTo(targetRoot.Position, 45, 6, true)
                                 orbitTarget(targetRoot, 8, 14.0, 2.5)
@@ -852,7 +850,6 @@ task.spawn(function()
                             task.wait(1)
                         end
 
-                        -- Si pasaron los 40 segundos completos con 0 zombies, el reactor está 100% completado
                         if roundCleared and State.Running and not State.Paused then
                             inCombat = false
                         end
@@ -873,44 +870,15 @@ task.spawn(function()
                             local mins = math.floor(timeLeft / 60)
                             local secs = timeLeft % 60
 
-                            local rootBefore = getRootPart()
-                            local approachPos = rootBefore and rootBefore.Position or Point2_Door
-
-                            -- === PARADA 1: VUELO Y ACTIVACIÓN (4 SEGUNDOS) ===
-                            updateStatus(string.format("[Gas %d/6] Parada 1/2 (Vuelo 128)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                            updateStatus(string.format("[Gas %d/6] Volando rápido (128)... | Cooldown: %02dm %02ds", idx, mins, secs))
                             flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
                             task.wait(0.15)
 
-                            updateStatus(string.format("[Gas %d/6] Surtidor Activo 1 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                            local stop1 = tick()
-                            while State.Running and not State.Paused and (tick() - stop1 < State.GasStationStop) do
+                            updateStatus(string.format("[Gas %d/6] Surtidor Activo (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
+                            local stopT = tick()
+                            while State.Running and not State.Paused and (tick() - stopT < State.GasStationStop) do
                                 interactWithGasPump(gasPos)
-                                task.wait(0.6)
-                            end
-
-                            if not State.Running or State.Paused then break end
-
-                            -- === RETROCESO DE 20 STUDS ===
-                            updateStatus(string.format("[Gas %d/6] Retrocediendo 20 studs...", idx))
-                            local dirAway = (approachPos - gasPos).Unit
-                            if dirAway.Magnitude == 0 or dirAway ~= dirAway then
-                                dirAway = Vector3.new(0, 0, 1)
-                            end
-                            local retreatPos = Vector3.new(gasPos.X + dirAway.X * 20, gasPos.Y, gasPos.Z + dirAway.Z * 20)
-                            flyMoveTo(retreatPos, State.GasFlySpeed, 3.0, false)
-                            task.wait(0.3)
-
-                            if not State.Running or State.Paused then break end
-
-                            -- === PARADA 2: REINGRESO Y ACTIVACIÓN (4 SEGUNDOS) ===
-                            updateStatus(string.format("[Gas %d/6] Reingreso Parada 2/2 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
-                            flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
-                            task.wait(0.15)
-
-                            local stop2 = tick()
-                            while State.Running and not State.Paused and (tick() - stop2 < State.GasStationStop) do
-                                interactWithGasPump(gasPos)
-                                task.wait(0.6)
+                                task.wait(0.5)
                             end
                         end
                     end
@@ -930,8 +898,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Gasolineras (doble parada + retroceso 20s, vel 128) y Experiment anclado.",
+    Title = "REACTOR HUB V3 OPTIMIZADO",
+    Content = "Gasolineras limpias (4s, vel 128) y Anti-Bug de Screamer (450 studs) activos.",
     Duration = 4
 })
 
