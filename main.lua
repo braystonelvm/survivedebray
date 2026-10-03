@@ -32,7 +32,7 @@ local State = {
     LootChests = false,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
-    GasStationStop = 4.0,     -- 4 segundos de parada por estación
+    GasStationStop = 4.0,     -- 4 segundos de parada limpia única
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
     DetectionRadius = 400     -- 400 studs a la redonda
@@ -109,7 +109,7 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP ACTIVO SOLO CUANDO NOCLIPENABLED ESTÁ EN TRUE (3s DESPUÉS DEL FLY)
+-- NOCLIP ACTIVO SOLO TRAS 3 SEGUNDOS DE FLY
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused and State.NoclipEnabled then
         local char = lp.Character
@@ -339,7 +339,7 @@ local function getDoorTimerText()
     return nil
 end
 
--- INTERACCIÓN CON GASOLINERAS (MÉTODO EFECTIVO ORIGINAL)
+-- INTERACCIÓN CON GASOLINERAS
 local function interactWithGasPump(stationPos)
     for _, prompt in ipairs(workspace:GetDescendants()) do
         if prompt:IsA("ProximityPrompt") then
@@ -359,7 +359,6 @@ local function interactWithGasPump(stationPos)
     end
 end
 
--- RESPALDO AUTOMÁTICO PROXIMITY PROMPT
 ProximityPromptService.PromptShown:Connect(function(prompt)
     local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
     if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") then
@@ -372,7 +371,7 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- FILTRO DE ASALTO A 400 STUDS (SOLO RESPLANDOR Y EXPERIMENT)
+-- FILTRO DE ASALTO A 400 STUDS (SCREAMER, PHASER, HIGHLIGHT Y EXPERIMENT)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
@@ -396,34 +395,37 @@ local function getAnyTargetZombie(centerPos, maxDist)
                     local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
                     local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
-                    local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
                     local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
-                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma")
+                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or variant:find("phaser") or variant:find("ghost")
                     local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
 
-                    -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO")
-                    if isScreamer then
-                        priorityScreamer = entity
-                        priorityScreamerRoot = eRoot
-                        break
+                    -- Zombie válido del reactor si tiene resplandor o es tipo especial y NO está hibernando afuera
+                    local isReactorZombie = (hasHighlight or isReactorAttr or isScreamer or isPhaser or isExperiment) and not isHibernating
 
-                    -- 2. PRIORIDAD 2: PHASER / GHOST
-                    elseif isPhaser then
-                        if not priorityPhaser then
-                            priorityPhaser = entity
-                            priorityPhaserRoot = eRoot
-                        end
+                    if isReactorZombie then
+                        -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO")
+                        if isScreamer then
+                            if not priorityScreamer then
+                                priorityScreamer = entity
+                                priorityScreamerRoot = eRoot
+                            end
 
-                    -- 4. ÚLTIMA PRIORIDAD: EXPERIMENT (JEFE FINAL)
-                    elseif isExperiment then
-                        if not experimentTarget then
-                            experimentTarget = entity
-                            experimentRoot = eRoot
-                        end
+                        -- 2. PRIORIDAD 2: PHASER / GHOST
+                        elseif isPhaser then
+                            if not priorityPhaser then
+                                priorityPhaser = entity
+                                priorityPhaserRoot = eRoot
+                            end
 
-                    -- 3. PRIORIDAD 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES
-                    elseif isGlowing then
-                        if dist < bestGlowingDist then
+                        -- 4. ÚLTIMA PRIORIDAD: EXPERIMENT (JEFE FINAL)
+                        elseif isExperiment then
+                            if not experimentTarget then
+                                experimentTarget = entity
+                                experimentRoot = eRoot
+                            end
+
+                        -- 3. PRIORIDAD 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES
+                        elseif dist < bestGlowingDist then
                             bestGlowingDist = dist
                             bestGlowingTarget = entity
                             bestGlowingRoot = eRoot
@@ -463,10 +465,9 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
                     local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
                     local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
-                    local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
-                    local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento") or name:find("phaser")
+                    local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento") or name:find("phaser") or variant:find("phaser") or name:find("ghost") or variant:find("ghost")
 
-                    if isGlowing or isSpecial then
+                    if ((hasHighlight or isReactorAttr) and not isHibernating) or (isSpecial and not isHibernating) then
                         count = count + 1
                     end
                 end
@@ -704,7 +705,7 @@ task.spawn(function()
             -- PASO 2: VERIFICAR SI ESTÁ EN COOLDOWN O LIBRE
             local cdText = getDoorTimerText()
 
-            -- SI LA PUERTA ESTÁ ENFRIÁNDOSE (TIEMPO ACTIVO) -> IR DIRECTO A GASOLINERAS
+            -- SI LA PUERTA ESTÁ EN ENFRIAMIENTO (TIEMPO ACTIVO) -> IR DIRECTO A GASOLINERAS
             if cdText then
                 updateStatus("Reactor en Cooldown (" .. cdText .. "). Yendo a Gasolineras...")
                 local cooldownStart = tick()
@@ -718,6 +719,7 @@ task.spawn(function()
                         local mins = math.floor(timeLeft / 60)
                         local secs = timeLeft % 60
 
+                        -- VUELO RÁPIDO (128) Y UNA SOLA PARADA LIMPIA DE 4s (SIN RETROCESO)
                         updateStatus(string.format("[Gas %d/6] Volando rápido (128)... | Cooldown: %02dm %02ds", idx, mins, secs))
                         flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
                         task.wait(0.15)
@@ -726,7 +728,7 @@ task.spawn(function()
                         local stopT = tick()
                         while State.Running and not State.Paused and (tick() - stopT < State.GasStationStop) do
                             interactWithGasPump(gasPos)
-                            task.wait(0.5)
+                            task.wait(0.4)
                         end
                     end
                 end
@@ -746,18 +748,18 @@ task.spawn(function()
                     if targetModel and targetRoot then
                         local name = targetModel.Name
 
-                        -- CASO 1: SCREAMER (PRIORIDAD #1 CON DETECCIÓN ANTI-BUG EN TECHO)
+                        -- CASO 1: SCREAMER (PRIORIDAD #1 CON REGLA ESTRICTA DE 30 STUDS)
                         if targetType == "screamer" then
                             local distScreamerToCenter = (targetRoot.Position - CalculatedCenter).Magnitude
-                            local zombiesIn30Studs = countLivingZombiesInReactor(CalculatedCenter, 30)
+                            local zombiesIn30 = countLivingZombiesInReactor(CalculatedCenter, 30)
 
-                            -- Regla: Si es el ÚNICO zombie cerca del centro (<=30 studs), está trabado en el techo
-                            if zombiesIn30Studs == 1 and distScreamerToCenter <= 30 then
-                                updateStatus("🐱 SCREAMER trabado en techo (<=30 studs). Esperando 40s para el dron...")
+                            -- REGLA CORREGIDA: Si está a <= 30 studs del centro Y es el ÚNICO en esa burbuja de 30 studs
+                            -- (Ignora si hay Phasers u otros a 80-400 studs)
+                            if distScreamerToCenter <= 30 and zombiesIn30 <= 1 then
+                                updateStatus("🐱 SCREAMER solo en techo (<=30 studs). Esperando 40s para el dron...")
                                 flyMoveTo(targetRoot.Position, 45, 6, true)
                                 orbitTarget(targetRoot, 7, 40.0, 3)
 
-                                -- Verificar si sigue vivo después de los 40s
                                 local stillAlive = false
                                 if targetModel.Parent and targetRoot.Parent then
                                     local eHum = targetModel:FindFirstChildOfClass("Humanoid")
@@ -766,9 +768,9 @@ task.spawn(function()
                                     end
                                 end
 
-                                -- Si sigue vivo, nos alejamos 450 studs para forzar que baje a tierra
+                                -- Si tras 40s no murió, salimos 450 studs para que el juego lo resetee al suelo
                                 if stillAlive and State.Running and not State.Paused then
-                                    updateStatus("🚀 Screamer atorado: Alejándose 450 studs para desbugearlo a tierra...")
+                                    updateStatus("🚀 Screamer atorado: Volando 450 studs para desbugearlo al suelo...")
                                     local escapePos = CalculatedCenter - (DoorForwardDir * 450)
                                     flyMoveTo(escapePos, State.GasFlySpeed, 8, false)
                                     task.wait(3.5)
@@ -776,7 +778,7 @@ task.spawn(function()
                                     flyMoveTo(CalculatedCenter, State.GasFlySpeed, 3, true)
                                 end
                             else
-                                -- Screamer normal (en combate libre con otros zombies)
+                                -- Screamer normal en zona de combate activo
                                 updateStatus("🚨 PRIORIDAD #1: Caza del SCREAMER para el dron...")
                                 flyMoveTo(targetRoot.Position, 45, 6, true)
                                 orbitTarget(targetRoot, 7, 25.0, 3)
@@ -821,7 +823,7 @@ task.spawn(function()
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
                             end
 
-                        -- CASO 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES
+                        -- CASO 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES (HASTA 400 STUDS)
                         else
                             updateStatus("Rodeando a " .. name .. " [Resplandor]...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
@@ -878,7 +880,7 @@ task.spawn(function()
                             local stopT = tick()
                             while State.Running and not State.Paused and (tick() - stopT < State.GasStationStop) do
                                 interactWithGasPump(gasPos)
-                                task.wait(0.5)
+                                task.wait(0.4)
                             end
                         end
                     end
@@ -898,8 +900,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB V3 OPTIMIZADO",
-    Content = "Gasolineras limpias (4s, vel 128) y Anti-Bug de Screamer (450 studs) activos.",
+    Title = "REACTOR HUB V3 PERFECCIONADO",
+    Content = "Burbuja de 30 studs corregida, Gasolinera limpia (1 parada) y Phasers 100% activos.",
     Duration = 4
 })
 
