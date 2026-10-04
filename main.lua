@@ -31,7 +31,7 @@ local State = {
     CurrentStatus = "Inactivo",
     LootChests = false,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
-    BaseNuclearWait = 870,    -- 15 minutos de espera en gasolineras
+    BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
@@ -704,10 +704,10 @@ Tabs.Settings:AddSection("Tiempos de Espera")
 
 Tabs.Settings:AddSlider("BaseWaitSlider", {
     Title = "Tiempo de enfriamiento en Base (Minutos)",
-    Default = 14.5,
+    Default = 15,
     Min = 5,
     Max = 30,
-    Rounding = 1,
+    Rounding = 0,
     Callback = function(Value) State.BaseNuclearWait = Value * 60 end
 })
 
