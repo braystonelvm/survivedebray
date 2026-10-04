@@ -31,12 +31,12 @@ local State = {
     CurrentStatus = "Inactivo",
     LootChests = false,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
-    BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
+    BaseNuclearWait = 870,    -- 15 minutos de espera en gasolineras
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
     DetectionRadius = 750,    -- 750 studs a la redonda
-    CenterCampTime = 600      -- 10 minutos de espera en centro tras abrir puerta
+    CenterCampTime = 780      -- 10 minutos de espera en centro tras abrir puerta
 }
 
 local Point2_Door = DEFAULT_DOOR
@@ -704,10 +704,10 @@ Tabs.Settings:AddSection("Tiempos de Espera")
 
 Tabs.Settings:AddSlider("BaseWaitSlider", {
     Title = "Tiempo de enfriamiento en Base (Minutos)",
-    Default = 15,
+    Default = 14.5,
     Min = 5,
     Max = 30,
-    Rounding = 0,
+    Rounding = 1,
     Callback = function(Value) State.BaseNuclearWait = Value * 60 end
 })
 
@@ -731,7 +731,7 @@ Tabs.Settings:AddSlider("WaveWaitSlider", {
 
 Tabs.Settings:AddSlider("CenterCampSlider", {
     Title = "Espera en Centro tras abrir puerta (Minutos)",
-    Default = 10,
+    Default = 13,
     Min = 1,
     Max = 20,
     Rounding = 0,
