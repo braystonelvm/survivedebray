@@ -373,10 +373,14 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- DETECCIÓN EXCLUSIVA DE PHASERS (PARA LOS 10 MINUTOS EN EL CENTRO)
+-- DETECCIÓN EXCLUSIVA Y PROFUNDA DE PHASERS (IGNORA HIBERNACIÓN COMPLETAMENTE)
 local function getPriorityPhaser(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
-    for _, entity in ipairs(charFolder:GetChildren()) do
+    local bestPhaser = nil
+    local bestRoot = nil
+    local shortestDist = math.huge
+
+    local function checkEntity(entity)
         if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
             local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
             local eHum = entity:FindFirstChildOfClass("Humanoid")
@@ -386,18 +390,35 @@ local function getPriorityPhaser(centerPos, maxDist)
                 if dist <= maxDist then
                     local name = entity.Name:lower()
                     local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
-                    local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
-                    if not isHibernating then
-                        if name:find("phaser") or name:find("ghost") or name:find("fantasma") or variant:find("phaser") or variant:find("ghost") then
-                            return entity, eRoot
+                    -- Detección de todas las variantes de Phaser (SIN importar si tiene Hibernating = true)
+                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
+
+                    if isPhaser then
+                        if dist < shortestDist then
+                            shortestDist = dist
+                            bestPhaser = entity
+                            bestRoot = eRoot
                         end
                     end
                 end
             end
         end
     end
-    return nil, nil
+
+    -- 1. Revisar carpeta Characters
+    for _, entity in ipairs(charFolder:GetChildren()) do
+        checkEntity(entity)
+    end
+
+    -- 2. Revisión de respaldo directo en Workspace por si se movieron
+    if charFolder ~= workspace then
+        for _, entity in ipairs(workspace:GetChildren()) do
+            checkEntity(entity)
+        end
+    end
+
+    return bestPhaser, bestRoot
 end
 
 -- FILTRO DE ASALTO COMPLETO (DETECCIÓN BASE ORIGINAL)
@@ -424,34 +445,39 @@ local function getAnyTargetZombie(centerPos, maxDist)
                     local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
                     local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
-                    local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
                     local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
-                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or variant:find("phaser") or variant:find("ghost")
+                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
                     local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
 
-                    -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO")
-                    if isScreamer then
-                        priorityScreamer = entity
-                        priorityScreamerRoot = eRoot
-                        break
+                    -- Los zombies especiales (Phaser, Screamer, Experiment) son válidos siempre, incluso si están en reposo
+                    local isSpecial = isScreamer or isPhaser or isExperiment
+                    local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
+                    local isReactorZombie = isSpecial or isGlowing
 
-                    -- 2. PRIORIDAD 2: PHASER / GHOST
-                    elseif isPhaser then
-                        if not priorityPhaser then
-                            priorityPhaser = entity
-                            priorityPhaserRoot = eRoot
-                        end
+                    if isReactorZombie then
+                        -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO")
+                        if isScreamer then
+                            if not priorityScreamer then
+                                priorityScreamer = entity
+                                priorityScreamerRoot = eRoot
+                            end
 
-                    -- 4. ÚLTIMA PRIORIDAD: EXPERIMENT (JEFE FINAL)
-                    elseif isExperiment then
-                        if not experimentTarget then
-                            experimentTarget = entity
-                            experimentRoot = eRoot
-                        end
+                        -- 2. PRIORIDAD 2: PHASER / GHOST
+                        elseif isPhaser then
+                            if not priorityPhaser then
+                                priorityPhaser = entity
+                                priorityPhaserRoot = eRoot
+                            end
 
-                    -- 3. PRIORIDAD 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES
-                    elseif isGlowing then
-                        if dist < bestGlowingDist then
+                        -- 4. ÚLTIMA PRIORIDAD: EXPERIMENT (JEFE FINAL)
+                        elseif isExperiment then
+                            if not experimentTarget then
+                                experimentTarget = entity
+                                experimentRoot = eRoot
+                            end
+
+                        -- 3. PRIORIDAD 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES
+                        elseif dist < bestGlowingDist then
                             bestGlowingDist = dist
                             bestGlowingTarget = entity
                             bestGlowingRoot = eRoot
@@ -491,16 +517,15 @@ local function countZombieTypes(centerPos, maxDist)
                     local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
                     local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
-                    local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
                     local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
-                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or variant:find("phaser") or variant:find("ghost")
+                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
                     local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
 
                     if isScreamer then
                         screamers = screamers + 1
                     elseif isPhaser then
                         phasers = phasers + 1
-                    elseif isGlowing or isExperiment then
+                    elseif ((hasHighlight or isReactorAttr) and not isHibernating) or isExperiment then
                         others = others + 1
                     end
                 end
@@ -526,10 +551,9 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
                     local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
                     local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
-                    local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
                     local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento") or name:find("phaser") or variant:find("phaser") or name:find("ghost") or variant:find("ghost")
 
-                    if isGlowing or isSpecial then
+                    if isSpecial or ((hasHighlight or isReactorAttr) and not isHibernating) then
                         count = count + 1
                     end
                 end
@@ -838,32 +862,41 @@ task.spawn(function()
                 updateStatus("[2/4] Accediendo al Centro del Reactor...")
                 flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                -- FASE 1: 10 MINUTOS EN EL CENTRO (SOLO CAZA PHASERS) SI SE CONFIRMÓ EL BOTÓN
+                -- FASE 1: 10 MINUTOS EN EL CENTRO (CACERÍA ENCADENADA DE PHASERS)
                 if doorWasPressed then
                     local centerDefenseEnd = tick() + State.CenterCampTime
-                    updateStatus("🛡️ Puerta abierta confirmada: 10m en Centro (Solo Phasers)...")
+                    updateStatus("🛡️ Puerta abierta confirmada: 10m en Centro (Caza Total de Phasers)...")
 
                     while State.Running and not State.Paused and tick() < centerDefenseEnd do
                         local timeLeft = math.max(0, math.floor(centerDefenseEnd - tick()))
                         local m = math.floor(timeLeft / 60)
                         local s = timeLeft % 60
 
-                        -- Revisar únicamente si hay algún Phaser en el radio de 750 studs
+                        -- 1. Buscar al Phaser más cercano (ignora Hibernación para que no se escape ninguno)
                         local phaserTarget, phaserRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
                         if phaserTarget and phaserRoot then
-                            updateStatus(string.format("👻 PHASER detectado en guardia (%02dm %02ds rest). Cazando...", m, s))
+                            local pName = phaserTarget.Name
+                            updateStatus(string.format("👻 Cazando PHASER [%s] (%02dm %02ds rest)...", pName, m, s))
                             flyMoveTo(phaserRoot.Position, 45, 6, true)
                             orbitTarget(phaserRoot, 7, 25.0, 3)
-                            flyMoveTo(CalculatedCenter, 42, 3, true)
+
+                            -- Nota: NO regresa al centro de inmediato, el bucle revisa si queda otro Phaser vivo
                         else
-                            -- Mantenerse anclado exactamente en el centro
+                            -- 2. Si no hay ningún Phaser vivo en el radio de 750 studs, regresar/mantenerse en el centro
                             local myRoot = getRootPart()
-                            local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
-                            local targetY = Point2_Door.Y + 3.0
-                            if bp then
-                                bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
+                            local distToCenter = myRoot and (myRoot.Position - CalculatedCenter).Magnitude or 0
+
+                            if distToCenter > 6 then
+                                flyMoveTo(CalculatedCenter, 42, 3, true)
+                            else
+                                local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
+                                local targetY = Point2_Door.Y + 3.0
+                                if bp then
+                                    bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
+                                end
                             end
-                            updateStatus(string.format("🛡️ Guardia Centro: %02dm %02ds | Esperando Phasers...", m, s))
+
+                            updateStatus(string.format("🛡️ Guardia Centro: %02dm %02ds | Sin Phasers en radar...", m, s))
                             task.wait(0.5)
                         end
                     end
@@ -1055,7 +1088,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Confirmación de botón y 10 min de defensa central (Phasers) activos.",
+    Content = "Caza total de Phasers sin filtros de hibernación activada.",
     Duration = 4
 })
 
