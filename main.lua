@@ -35,7 +35,8 @@ local State = {
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
-    DetectionRadius = 750     -- 750 studs a la redonda
+    DetectionRadius = 750,    -- 750 studs a la redonda
+    CenterCampTime = 600      -- 10 minutos de espera en centro tras abrir puerta
 }
 
 local Point2_Door = DEFAULT_DOOR
@@ -109,7 +110,7 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP ACTIVO SOLO CUANDO NOCLIPENABLED ESTÁ EN TRUE (3s DESPUÉS DEL FLY)
+-- NOCLIP ACTIVO SOLO TRAS 3 SEGUNDOS DE FLY
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused and State.NoclipEnabled then
         local char = lp.Character
@@ -269,7 +270,7 @@ local function triggerPromptRobust(prompt)
     end
 end
 
--- APERTURA DIRECTA Y AGRESIVA DE LA PUERTA
+-- APERTURA DIRECTA Y AGRESIVA DE LA PUERTA (DEVUELVE TRUE SI ACTIVÓ UN PROMPT VÁLIDO)
 local function openNuclearDoorDirect()
     local entrance = getEntrancePart()
     local targetPos = entrance and entrance.Position or Point2_Door
@@ -281,14 +282,14 @@ local function openNuclearDoorDirect()
 
     if entrance then
         local directPrompt = entrance:FindFirstChildOfClass("ProximityPrompt")
-        if directPrompt then
+        if directPrompt and directPrompt.Enabled then
             triggerPromptRobust(directPrompt)
             opened = true
         end
     end
 
     for _, prompt in ipairs(workspace:GetDescendants()) do
-        if prompt:IsA("ProximityPrompt") then
+        if prompt:IsA("ProximityPrompt") and prompt.Enabled then
             local pPart = prompt.Parent
             local pPos = pPart and (pPart:IsA("BasePart") and pPart.Position or (pPart:IsA("Attachment") and pPart.WorldPosition))
 
@@ -372,7 +373,34 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- FILTRO DE ASALTO A 650 STUDS (DETECCIÓN BASE ORIGINAL)
+-- DETECCIÓN EXCLUSIVA DE PHASERS (PARA LOS 10 MINUTOS EN EL CENTRO)
+local function getPriorityPhaser(centerPos, maxDist)
+    local charFolder = workspace:FindFirstChild("Characters") or workspace
+    for _, entity in ipairs(charFolder:GetChildren()) do
+        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
+            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
+            local eHum = entity:FindFirstChildOfClass("Humanoid")
+
+            if eRoot and (not eHum or eHum.Health > 0) then
+                local dist = (eRoot.Position - centerPos).Magnitude
+                if dist <= maxDist then
+                    local name = entity.Name:lower()
+                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
+                    local isHibernating = (entity:GetAttribute("Hibernating") == true)
+
+                    if not isHibernating then
+                        if name:find("phaser") or name:find("ghost") or name:find("fantasma") or variant:find("phaser") or variant:find("ghost") then
+                            return entity, eRoot
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+-- FILTRO DE ASALTO COMPLETO (DETECCIÓN BASE ORIGINAL)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
@@ -482,7 +510,7 @@ local function countZombieTypes(centerPos, maxDist)
     return screamers, phasers, others
 end
 
--- CONTEO EXACTO DE ZOMBIES TOTALES VIVOS
+-- CONTEO TOTAL DE ZOMBIES VIVOS
 local function countLivingZombiesInReactor(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local count = 0
@@ -562,11 +590,9 @@ Tabs.Main:AddButton({
         State.Paused = false
         State.NoclipEnabled = false
 
-        -- 1. ACTIVAR FLY PRIMERO
         updateStatus("Activando Fly seguro...")
         secureFlightStart()
 
-        -- 2. ESPERAR 3 SEGUNDOS ANTES DE ACTIVAR NOCLIP
         task.spawn(function()
             for s = 3, 1, -1 do
                 if not State.Running then break end
@@ -679,6 +705,15 @@ Tabs.Settings:AddSlider("WaveWaitSlider", {
     Callback = function(Value) State.WaveWaitTime = Value end
 })
 
+Tabs.Settings:AddSlider("CenterCampSlider", {
+    Title = "Espera en Centro tras abrir puerta (Minutos)",
+    Default = 10,
+    Min = 1,
+    Max = 20,
+    Rounding = 0,
+    Callback = function(Value) State.CenterCampTime = Value * 60 end
+})
+
 -- BOTÓN FLOTANTE CÍRCULAR (Y = 0.40)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "ReactorHubFloatingBtn"
@@ -727,11 +762,14 @@ task.spawn(function()
                 continue
             end
 
-            -- PASO 1: APERTURA PRIORITARIA INMEDIATA
+            -- PASO 1: APERTURA PRIORITARIA INMEDIATA CON CONFIRMACIÓN
             updateStatus("[1/4] Yendo a la Puerta del Reactor para abrirla...")
+            local doorWasPressed = false
             for _ = 1, 5 do
                 if not State.Running or State.Paused then break end
-                openNuclearDoorDirect()
+                if openNuclearDoorDirect() then
+                    doorWasPressed = true
+                end
                 task.wait(0.2)
             end
             task.wait(0.5)
@@ -739,7 +777,7 @@ task.spawn(function()
             -- PASO 2: VERIFICAR SI ESTÁ EN COOLDOWN O LIBRE
             local cdText = getDoorTimerText()
 
-            -- SI LA PUERTA ESTÁ ENFRIÁNDOSE (TIEMPO ACTIVO) -> IR DIRECTO A GASOLINERAS
+            -- SI LA PUERTA ESTÁ EN ENFRIAMIENTO (TIEMPO ACTIVO) -> IR DIRECTO A GASOLINERAS
             if cdText then
                 updateStatus("Reactor en Cooldown (" .. cdText .. "). Yendo a Gasolineras...")
                 local cooldownStart = tick()
@@ -795,31 +833,65 @@ task.spawn(function()
                     end
                 end
 
-            -- SI LA PUERTA ESTÁ LISTA -> ENTRAR AL CENTRO Y PELEAR RONDAS
+            -- SI LA PUERTA ESTÁ LISTA / SE CONFIRMÓ LA APERTURA
             else
                 updateStatus("[2/4] Accediendo al Centro del Reactor...")
                 flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                updateStatus("[3/4] Cacería en Reactor (Radio 400)...")
+                -- FASE 1: 10 MINUTOS EN EL CENTRO (SOLO CAZA PHASERS) SI SE CONFIRMÓ EL BOTÓN
+                if doorWasPressed then
+                    local centerDefenseEnd = tick() + State.CenterCampTime
+                    updateStatus("🛡️ Puerta abierta confirmada: 10m en Centro (Solo Phasers)...")
+
+                    while State.Running and not State.Paused and tick() < centerDefenseEnd do
+                        local timeLeft = math.max(0, math.floor(centerDefenseEnd - tick()))
+                        local m = math.floor(timeLeft / 60)
+                        local s = timeLeft % 60
+
+                        -- Revisar únicamente si hay algún Phaser en el radio de 750 studs
+                        local phaserTarget, phaserRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
+                        if phaserTarget and phaserRoot then
+                            updateStatus(string.format("👻 PHASER detectado en guardia (%02dm %02ds rest). Cazando...", m, s))
+                            flyMoveTo(phaserRoot.Position, 45, 6, true)
+                            orbitTarget(phaserRoot, 7, 25.0, 3)
+                            flyMoveTo(CalculatedCenter, 42, 3, true)
+                        else
+                            -- Mantenerse anclado exactamente en el centro
+                            local myRoot = getRootPart()
+                            local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
+                            local targetY = Point2_Door.Y + 3.0
+                            if bp then
+                                bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
+                            end
+                            updateStatus(string.format("🛡️ Guardia Centro: %02dm %02ds | Esperando Phasers...", m, s))
+                            task.wait(0.5)
+                        end
+                    end
+
+                    updateStatus("✅ 10 min completados. Iniciando cacería completa...")
+                end
+
+                -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 750)
+                updateStatus("[3/4] Cacería en Reactor (Radio 750)...")
                 local inCombat = true
                 local screamerPhaserStuckTimer = nil
 
                 while State.Running and not State.Paused and inCombat do
                     task.wait(0.2)
 
-                    -- === REGLA DE DESBUGEAR: SI SOLO QUEDAN SCREAMERS Y/O PHASERS POR MÁS DE 1 MINUTO ===
+                    -- REGLA: SI SOLO QUEDAN SCREAMER/PHASER POR MÁS DE 1 MINUTO -> SALIR 850 STUDS
                     local sCount, pCount, otherCount = countZombieTypes(CalculatedCenter, State.DetectionRadius)
                     if otherCount == 0 and (sCount > 0 or pCount > 0) then
                         if not screamerPhaserStuckTimer then
                             screamerPhaserStuckTimer = tick()
                         elseif (tick() - screamerPhaserStuckTimer >= 60) then
-                            updateStatus("🚀 Solo quedan Screamer/Phaser (>1 min). Saliendo 450 studs para desbugear...")
+                            updateStatus("🚀 Solo quedan Screamer/Phaser (>1 min). Saliendo 850 studs para desbugear...")
                             local escapePos = CalculatedCenter - (DoorForwardDir * 850)
                             flyMoveTo(escapePos, State.GasFlySpeed, 8, false)
                             task.wait(3.5)
                             updateStatus("Regresando al Centro del Reactor...")
                             flyMoveTo(CalculatedCenter, State.GasFlySpeed, 3, true)
-                            screamerPhaserStuckTimer = tick() -- Reinicia el contador para la siguiente evaluación
+                            screamerPhaserStuckTimer = tick()
                         end
                     else
                         screamerPhaserStuckTimer = nil
@@ -983,7 +1055,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Regla de 1 min para Screamer/Phaser activa y gasolineras conservadas.",
+    Content = "Confirmación de botón y 10 min de defensa central (Phasers) activos.",
     Duration = 4
 })
 
