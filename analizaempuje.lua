@@ -1,5 +1,5 @@
 -- ==============================================================================
--- AUTO-REPARAR Y SUBIR AL AUTO (REPARACIÓN EN CAPÓ + SUBIDA) | TECLA 'V'
+-- AUTO-REPARAR Y SUBIR AL AUTO (REPARACIÓN EN CAPÓ + SUBIDA) | TECLA 'V'ok
 -- ==============================================================================
 
 local Players = game:GetService("Players")
