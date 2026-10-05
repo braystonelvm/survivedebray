@@ -8,7 +8,7 @@ local lp = Players.LocalPlayer
 
 -- CONFIGURACIÓN DE PUNTOS Y TIEMPO
 local BASE_POSITION = Vector3.new(-114.5, 25.0, -2.0) -- Punto 1 (Centro de Base elevado para evitar colisiones)
-local WAIT_IN_BASE = 4.0                              -- Segundos que permanecerás en la base antes de volver
+local WAIT_IN_BASE = 8.0                              -- Segundos que permanecerás en la base antes de volver
 local TELEPORT_KEY = Enum.KeyCode.B                   -- Tecla para activar la maniobra
 
 local InAction = false
