@@ -46,7 +46,7 @@ local State = {
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
-    DetectionRadius = 950,    -- 750 studs a la redonda
+    DetectionRadius = 950,    -- 950 studs a la redonda
     CenterCampTime = 60       -- 1 minuto por defecto en centro tras abrir puerta
 }
 
@@ -407,7 +407,7 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- DETECCIÓN EXCLUSIVA DE PHASERS (PRIORIZA EL MÁS LEJANO)
+-- DETECCIÓN EXCLUSIVA DE PHASERS NUCLEARES (CON REFLEJO VERDE/HIGHLIGHT O ATRIBUTO REACTOR)
 local function getPriorityPhaser(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local bestPhaser = nil
@@ -425,9 +425,15 @@ local function getPriorityPhaser(centerPos, maxDist)
                     local name = entity.Name:lower()
                     local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
 
+                    -- Identificar si es un Phaser
                     local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
 
-                    if isPhaser then
+                    -- Comprobar si tiene el reflejo verde (Highlight) o atributo del evento nuclear
+                    local hasHighlight = (entity:FindFirstChildOfClass("Highlight") ~= nil) or (entity:FindFirstChildWhichIsA("Highlight", true) ~= nil) or (entity:FindFirstChild("Highlight") ~= nil)
+                    local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
+
+                    -- Solo atacar si es Phaser Y pertenece al reactor (reflejo verde / atributo)
+                    if isPhaser and (hasHighlight or isReactorAttr) then
                         if dist > longestDist then
                             longestDist = dist
                             bestPhaser = entity
@@ -452,7 +458,7 @@ local function getPriorityPhaser(centerPos, maxDist)
     return bestPhaser, bestRoot
 end
 
--- FILTRO DE ASALTO COMPLETO (PHASER MÁS LEJANO EN PRIORIDAD)
+-- FILTRO DE ASALTO COMPLETO (SOLO PHASERS CON REFLEJO VERDE Y PRIORIDAD AL MÁS LEJANO)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
@@ -481,7 +487,10 @@ local function getAnyTargetZombie(centerPos, maxDist)
                     local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
                     local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
 
-                    local isSpecial = isScreamer or isPhaser or isExperiment
+                    -- El Phaser DEBE tener el reflejo verde o atributo nuclear para ser considerado del reactor
+                    local isNuclearPhaser = isPhaser and (hasHighlight or isReactorAttr)
+
+                    local isSpecial = isScreamer or isNuclearPhaser or isExperiment
                     local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
                     local isReactorZombie = isSpecial or isGlowing
 
@@ -493,8 +502,8 @@ local function getAnyTargetZombie(centerPos, maxDist)
                                 priorityScreamerRoot = eRoot
                             end
 
-                        -- 2. PRIORIDAD 2: PHASER / GHOST (ATACA AL MÁS LEJANO)
-                        elseif isPhaser then
+                        -- 2. PRIORIDAD 2: PHASER NUCLEAR (ÚNICAMENTE CON REFLEJO VERDE, EL MÁS LEJANO)
+                        elseif isNuclearPhaser then
                             if dist > furthestPhaserDist then
                                 furthestPhaserDist = dist
                                 priorityPhaser = entity
@@ -553,9 +562,11 @@ local function countZombieTypes(centerPos, maxDist)
                     local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
                     local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
 
+                    local isNuclearPhaser = isPhaser and (hasHighlight or isReactorAttr)
+
                     if isScreamer then
                         screamers = screamers + 1
-                    elseif isPhaser then
+                    elseif isNuclearPhaser then
                         phasers = phasers + 1
                     elseif ((hasHighlight or isReactorAttr) and not isHibernating) or isExperiment then
                         others = others + 1
@@ -567,7 +578,7 @@ local function countZombieTypes(centerPos, maxDist)
     return screamers, phasers, others
 end
 
--- CONTEO TOTAL DE ZOMBIES VIVOS
+-- CONTEO TOTAL DE ZOMBIES VIVOS EN EL REACTOR
 local function countLivingZombiesInReactor(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local count = 0
@@ -583,7 +594,8 @@ local function countLivingZombiesInReactor(centerPos, maxDist)
                     local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
                     local isHibernating = (entity:GetAttribute("Hibernating") == true)
 
-                    local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento") or name:find("phaser") or variant:find("phaser") or name:find("ghost") or variant:find("ghost")
+                    local isNuclearPhaser = (name:find("phaser") or variant:find("phaser") or name:find("ghost") or variant:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phase")) and (hasHighlight or isReactorAttr)
+                    local isSpecial = name:find("scream") or variant:find("scream") or name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento") or isNuclearPhaser
 
                     if isSpecial or ((hasHighlight or isReactorAttr) and not isHibernating) then
                         count = count + 1
@@ -893,7 +905,7 @@ task.spawn(function()
                 updateStatus("[2/4] Accediendo al Centro del Reactor...")
                 flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                -- FASE 1: 1 MINUTO EN EL CENTRO (CACERÍA ENCADENADA DE PHASERS, PRIORIZANDO LEJANOS)
+                -- FASE 1: 1 MINUTO EN EL CENTRO (CACERÍA ENCADENADA DE PHASERS NUCLEARES, PRIORIZANDO LEJANOS)
                 if doorWasPressed then
                     local centerDefenseEnd = tick() + State.CenterCampTime
                     updateStatus("🛡️ Puerta abierta confirmada: 1m en Centro (Caza de Phasers)...")
@@ -903,7 +915,7 @@ task.spawn(function()
                         local m = math.floor(timeLeft / 60)
                         local s = timeLeft % 60
 
-                        -- 1. Buscar al Phaser más lejano
+                        -- 1. Buscar al Phaser nuclear más lejano
                         local phaserTarget, phaserRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
                         if phaserTarget and phaserRoot then
                             local pName = phaserTarget.Name
@@ -911,7 +923,7 @@ task.spawn(function()
                             flyMoveTo(phaserRoot.Position, 45, 6, true)
                             orbitTarget(phaserRoot, 7, 25.0, 3)
                         else
-                            -- 2. Si no hay Phaser en radar, permanecer en el centro
+                            -- 2. Si no hay Phaser nuclear en radar, permanecer en el centro
                             local myRoot = getRootPart()
                             local distToCenter = myRoot and (myRoot.Position - CalculatedCenter).Magnitude or 0
 
@@ -933,8 +945,8 @@ task.spawn(function()
                     updateStatus("✅ 1 min completado. Iniciando cacería completa...")
                 end
 
-                -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 750)
-                updateStatus("[3/4] Cacería en Reactor (Radio 750)...")
+                -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 950)
+                updateStatus("[3/4] Cacería en Reactor (Radio 950)...")
                 local inCombat = true
                 local screamerPhaserStuckTimer = nil
 
@@ -971,7 +983,7 @@ task.spawn(function()
                             orbitTarget(targetRoot, 7, 25.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                        -- CASO 2: PHASER (PRIORIDAD #2 - MÁS LEJANO)
+                        -- CASO 2: PHASER NUCLEAR (PRIORIDAD #2 - MÁS LEJANO)
                         elseif targetType == "phaser" then
                             updateStatus("👻 PRIORIDAD #2: Caza del PHASER más lejano...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
@@ -1121,7 +1133,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Mapa actualizado, cofres por defecto y Phasers lejanos priorizados.",
+    Content = "Phasers filtrados solo con reflejo verde. Radio 950 activo.",
     Duration = 4
 })
 
