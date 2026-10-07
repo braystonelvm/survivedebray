@@ -13,20 +13,15 @@ local mouse = lp:GetMouse()
 -- Variables de configuración
 local Config = {
     ZigZagEnabled = false,
-    SwitchInterval = 1.2,
-    LateralDist = 14,
-    MoveSpeed = 45,
-    AutoSendItems = false,
-    CollectRadius = 25,
-    BasePrevent = true,       -- Evita mover cosas que ya estén en la base
-    BaseRadius = 45,          -- Radio considerado "dentro de la base"
-    SpreadRadius = 4          -- Dispersión para que no se amontonen en un punto
+    SwitchInterval = 1.2,   -- Tiempo hacia cada lado
+    LateralDist = 12,       -- Amplitud del zigzag en studs
+    MoveSpeed = 24          -- Velocidad forzada de desplazamiento
 }
 
 local CurrentTarget = nil
 local TargetHighlight = nil
-local DropPointMarker = nil
 
+-- Crear o limpiar Highlight visual
 local function clearHighlight()
     if TargetHighlight then
         TargetHighlight:Destroy()
@@ -52,22 +47,20 @@ local Window = Fluent:CreateWindow({
     Title = "ZOMBIE HUB | CUSTOM",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(580, 460),
+    Size = UDim2.fromOffset(580, 430),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
 
 local Tabs = {
-    Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" }),
-    Items = Window:AddTab({ Title = "Teletransporte", Icon = "box" })
+    Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" })
 }
 
--- PESTAÑA 1: COMBATE Y AUTO
-Tabs.Combat:AddSection("Controles de Zigzag / Atropello")
+Tabs.Combat:AddSection("Controles de Zigzag")
 
 Tabs.Combat:AddToggle("ZigZagToggle", {
-    Title = "Activar Movimiento / Atropello Automático",
+    Title = "Activar Movimiento Automático",
     Default = false,
     Callback = function(Value)
         Config.ZigZagEnabled = Value
@@ -75,14 +68,14 @@ Tabs.Combat:AddToggle("ZigZagToggle", {
 })
 
 Tabs.Combat:AddParagraph({
-    Title = "Teclas de Selector",
-    Content = "• Presiona 'T' apuntando a un Zombie o Zona para fijarlo.\n• Presiona 'Y' para desmarcar el objetivo."
+    Title = "Controles de Teclas",
+    Content = "• Presiona 'E' apuntando a un Zombie o a la Carretera (StraightRoad) para fijarlo.\n• Presiona 'R' para desmarcar el objetivo."
 })
 
 Tabs.Combat:AddSlider("IntervalSlider", {
     Title = "Frecuencia de oscilación (Segundos)",
     Default = 1.2,
-    Min = 0.3,
+    Min = 0.4,
     Max = 3.0,
     Rounding = 1,
     Callback = function(Value)
@@ -91,10 +84,10 @@ Tabs.Combat:AddSlider("IntervalSlider", {
 })
 
 Tabs.Combat:AddSlider("DistSlider", {
-    Title = "Ancho de Atropello (Studs)",
-    Default = 14,
+    Title = "Amplitud / Ancho de pista (Studs)",
+    Default = 12,
     Min = 4,
-    Max = 35,
+    Max = 30,
     Rounding = 0,
     Callback = function(Value)
         Config.LateralDist = Value
@@ -102,90 +95,13 @@ Tabs.Combat:AddSlider("DistSlider", {
 })
 
 Tabs.Combat:AddSlider("SpeedSlider", {
-    Title = "Velocidad de Movimiento / Auto",
-    Default = 45,
+    Title = "Velocidad de Movimiento",
+    Default = 24,
     Min = 16,
-    Max = 120,
+    Max = 80,
     Rounding = 0,
     Callback = function(Value)
         Config.MoveSpeed = Value
-    end
-})
-
--- PESTAÑA 2: TELETRANSPORTE Y BASE PREVENT
-Tabs.Items:AddSection("Punto de Entrega (Trituradora / Base)")
-
-Tabs.Items:AddButton({
-    Title = "Poner Bolita de Destino Aquí",
-    Description = "Coloca el marcador en la posición exacta donde estás parado",
-    Callback = function()
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-
-        if DropPointMarker then
-            DropPointMarker:Destroy()
-        end
-
-        DropPointMarker = Instance.new("Part")
-        DropPointMarker.Name = "CustomDropPoint"
-        DropPointMarker.Shape = Enum.PartType.Ball
-        DropPointMarker.Size = Vector3.new(3, 3, 3)
-        DropPointMarker.Material = Enum.Material.Neon
-        DropPointMarker.Color = Color3.fromRGB(0, 255, 170)
-        DropPointMarker.Anchored = true
-        DropPointMarker.CanCollide = false
-        DropPointMarker.CFrame = root.CFrame - Vector3.new(0, 2, 0)
-        DropPointMarker.Parent = workspace
-
-        Fluent:Notify({
-            Title = "Destino Guardado",
-            Content = "Punto de entrega fijado con la esfera verde.",
-            Duration = 3
-        })
-    end
-})
-
-Tabs.Items:AddToggle("AutoSendToggle", {
-    Title = "Enviar Ítems al Pasar Sobre Ellos",
-    Default = false,
-    Callback = function(Value)
-        Config.AutoSendItems = Value
-    end
-})
-
-Tabs.Items:AddSection("Protección de Base (Base Prevent)")
-
-Tabs.Items:AddToggle("BasePreventToggle", {
-    Title = "Activar Base Prevent",
-    Description = "No mueve ningún ítem que ya se encuentre dentro del área de la base",
-    Default = true,
-    Callback = function(Value)
-        Config.BasePrevent = Value
-    end
-})
-
-Tabs.Items:AddSlider("BaseRadiusSlider", {
-    Title = "Radio Seguro de la Base (Studs)",
-    Description = "Distancia protegida alrededor del centro de tu base",
-    Default = 45,
-    Min = 20,
-    Max = 100,
-    Rounding = 0,
-    Callback = function(Value)
-        Config.BaseRadius = Value
-    end
-})
-
-Tabs.Items:AddSlider("SpreadSlider", {
-    Title = "Dispersión de Ítems al llegar (Studs)",
-    Description = "Evita que las cosas se apilen en el mismo punto y se bugeen",
-    Default = 4,
-    Min = 1,
-    Max = 10,
-    Rounding = 0,
-    Callback = function(Value)
-        Config.SpreadRadius = Value
     end
 })
 
@@ -219,18 +135,26 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- 3. SELECCIÓN CON TECLA 'T' Y CANCELACIÓN CON 'Y'
+-- 3. SELECCIÓN CON TECLA 'E' Y LIMPIEZA CON 'R'
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
-
-    if input.KeyCode == Enum.KeyCode.T then
+    
+    -- Tecla E: Fijar
+    if input.KeyCode == Enum.KeyCode.E then
         local target = mouse.Target
         if target then
+            -- Intentar detectar si es un Zombie
             local model = target:FindFirstAncestorOfClass("Model")
             local chosen = nil
 
-            if model and model ~= lp.Character and model ~= workspace then
-                chosen = model
+            if model and model ~= lp.Character then
+                -- Si es un zombie dentro de Characters o con Humanoid
+                if model.Parent and model.Parent.Name == "Characters" or model:FindFirstChildOfClass("Humanoid") then
+                    chosen = model
+                else
+                    -- Si es una pieza de pista/mapa (StraightRoad, TSection, etc.)
+                    chosen = target
+                end
             else
                 chosen = target
             end
@@ -238,35 +162,28 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
             if chosen then
                 CurrentTarget = chosen
                 applyHighlight(chosen)
-
-                local displayName = chosen.Name
-                if displayName == "Mesh" or displayName == "MeshPart" then
-                    if chosen.Parent and chosen.Parent ~= workspace then
-                        displayName = chosen.Parent.Name
-                    end
-                end
-
                 Fluent:Notify({
                     Title = "Objetivo Seleccionado",
-                    Content = "Fijado: " .. displayName,
+                    Content = "Fijado: " .. chosen.Name,
                     Duration = 3
                 })
             end
         end
     end
 
-    if input.KeyCode == Enum.KeyCode.Y then
+    -- Tecla R: Desmarcar
+    if input.KeyCode == Enum.KeyCode.R then
         CurrentTarget = nil
         clearHighlight()
         Fluent:Notify({
-            Title = "Objetivo Cancelado",
-            Content = "Se desmarcó el objetivo.",
+            Title = "Objetivo Limpiado",
+            Content = "Se canceló el objetivo actual.",
             Duration = 2
         })
     end
 end)
 
--- 4. BUCLE DE MOVIMIENTO (COMBATE / ATROPELLO)
+-- 4. BUCLE DE MOVIMIENTO FÍSICO (MOTOR POR VELOCIDAD)
 local side = 1
 local lastSwitch = tick()
 
@@ -278,6 +195,7 @@ RunService.Heartbeat:Connect(function()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not root or not hum or hum.Health <= 0 then return end
 
+    -- Obtener pieza física de referencia
     local targetPart = nil
     if CurrentTarget:IsA("BasePart") then
         targetPart = CurrentTarget
@@ -286,105 +204,33 @@ RunService.Heartbeat:Connect(function()
     end
 
     if targetPart and targetPart.Parent then
+        -- Alternar dirección cada N segundos
         if tick() - lastSwitch >= Config.SwitchInterval then
             side = -side
             lastSwitch = tick()
         end
 
+        -- Calcular punto lateral oscilante
         local cf = targetPart.CFrame
         local lateralOffset = cf.RightVector * (side * Config.LateralDist)
         local destination = targetPart.Position + lateralOffset
 
+        -- Vector de dirección hacia la meta
         local direction = (destination - root.Position)
         local horizontalDir = Vector3.new(direction.X, 0, direction.Z)
 
         if horizontalDir.Magnitude > 1.5 then
+            -- Mover usando velocidad física directa (empuja al muñeco o auto sin que el teclado estorbe)
             local targetVelocity = horizontalDir.Unit * Config.MoveSpeed
             root.AssemblyLinearVelocity = Vector3.new(targetVelocity.X, root.AssemblyLinearVelocity.Y, targetVelocity.Z)
         end
     end
 end)
 
--- 5. BUCLE DE TELETRANSPORTE CON BASE PREVENT Y DISPERSIÓN ANTI-BUG
-local overlapParams = OverlapParams.new()
-overlapParams.FilterType = Enum.RaycastFilterType.Exclude
-
--- Función auxiliar para verificar si un ítem está dentro de la base (Center)
-local function isInsideBase(itemPos)
-    local centerModel = workspace:FindFirstChild("Center")
-    if centerModel then
-        local centerPart = centerModel:FindFirstChildWhichIsA("BasePart") or centerModel.PrimaryPart
-        if centerPart then
-            local dist = (itemPos - centerPart.Position).Magnitude
-            if dist <= Config.BaseRadius then
-                return true
-            end
-        end
-    end
-    -- Respaldo con la posición de la bolita si no encuentra la pieza Center
-    if DropPointMarker and DropPointMarker.Parent then
-        local distToMarker = (itemPos - DropPointMarker.Position).Magnitude
-        if distToMarker <= (Config.BaseRadius * 0.4) then
-            return true
-        end
-    end
-    return false
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-        if Config.AutoSendItems and DropPointMarker and DropPointMarker.Parent then
-            local char = lp.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            if root then
-                overlapParams.FilterDescendantsInstances = {char}
-
-                local partsNearby = workspace:GetPartBoundsInRadius(root.Position, Config.CollectRadius, overlapParams)
-
-                for _, item in ipairs(partsNearby) do
-                    if not item.Anchored and not item:FindFirstAncestorOfClass("Humanoid") then
-                        -- Comprobar si Base Prevent está activo y si el ítem ya está en la base
-                        local skipItem = false
-                        if Config.BasePrevent and isInsideBase(item.Position) then
-                            skipItem = true
-                        end
-
-                        if not skipItem then
-                            -- 1. Calcular offset aleatorio en un círculo para que no choquen entre sí
-                            local angle = math.random() * math.pi * 2
-                            local distance = math.random() * Config.SpreadRadius
-                            local offsetX = math.cos(angle) * distance
-                            local offsetZ = math.sin(angle) * distance
-
-                            local destinationPos = DropPointMarker.Position + Vector3.new(offsetX, 1.5, offsetZ)
-
-                            -- 2. Limpieza de velocidades acumuladas (evita que rebote o salga disparado)
-                            item.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-                            item.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-
-                            -- 3. Asignar nueva posición sin colisión brusca
-                            item.CFrame = CFrame.new(destinationPos)
-
-                            -- Apagar colisiones brevemente para evitar efecto explosión
-                            item.CanCollide = false
-                            task.delay(0.15, function()
-                                if item and item.Parent then
-                                    item.CanCollide = true
-                                end
-                            end)
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
-
 Fluent:Notify({
-    Title = "ZOMBIE HUB LISTO",
-    Content = "Base Prevent y Dispersión Anti-Bug integradas.",
-    Duration = 4
+    Title = "ZOMBIE HUB CARGADO",
+    Content = "E: Seleccionar | R: Quitar marca | RightCtrl: Ocultar",
+    Duration = 5
 })
 
 Window:SelectTab(1)
