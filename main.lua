@@ -46,7 +46,7 @@ local State = {
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
-    DetectionRadius = 600,    -- 600 studs a la redonda del centro
+    DetectionRadius = 750,    -- 750 studs para alcanzar a los que escapen
     CenterCampTime = 0        -- 0 minutos por defecto (sin espera)
 }
 
@@ -407,6 +407,51 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
+-- ==============================================================================
+-- FILTRO ESTRICTO: DISTINGUIR ZOMBIES DEL REACTOR VS ZOMBIES COMUNES DEL BIOMA
+-- ==============================================================================
+local function isReactorRaidZombie(entity)
+    if not entity or not entity:IsA("Model") or entity == lp.Character or Players:GetPlayerFromCharacter(entity) then
+        return false, nil
+    end
+
+    -- 1. BLOQUEO DE SEGURIDAD: DRONES Y JUGADORES
+    if entity:GetAttribute("Player") == true or entity.Name:lower():find("drone") then
+        return false, nil
+    end
+
+    -- 2. DEBE TENER HUMANOID VIVO (Descarta mochilas, drones y piezas)
+    local eHum = entity:FindFirstChildOfClass("Humanoid")
+    if not eHum or eHum.Health <= 0 then
+        return false, nil
+    end
+
+    local name = entity.Name:lower()
+    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
+
+    -- 3. ESPECIALES DEL REACTOR (PRIORIDAD ALTA)
+    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
+    local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
+    local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
+
+    if isPhaser then return true, "phaser" end
+    if isScreamer then return true, "screamer" end
+    if isExperiment then return true, "experiment" end
+
+    -- 4. ZOMBIES RADIACTIVOS QUE SALIERON DEL REACTOR (TIENEN BUFF NUCLEAR O SON BOSS)
+    local dmgBoost = tonumber(entity:GetAttribute("DamageBoost")) or 0
+    local regen = tonumber(entity:GetAttribute("Regen")) or 0
+    local isBoss = entity:GetAttribute("Boss") == true or name:find("brute")
+    local isReactorAttr = (entity:GetAttribute("Reactor") == true) or (entity:GetAttribute("Raid") == true)
+
+    if dmgBoost > 0 or regen > 0 or isBoss or isReactorAttr then
+        return true, "reactor_common"
+    end
+
+    -- Si es un zombie común del bioma sin buff de radiación, se ignora
+    return false, nil
+end
+
 -- DETECCIÓN EXCLUSIVA DE PHASERS (PRIORIZA EL MÁS LEJANO EN EL RADIO)
 local function getPriorityPhaser(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
@@ -414,39 +459,25 @@ local function getPriorityPhaser(centerPos, maxDist)
     local bestRoot = nil
     local longestDist = -math.huge
 
-    local function checkEntity(entity)
-        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
+    for _, entity in ipairs(charFolder:GetChildren()) do
+        local isRaid, zType = isReactorRaidZombie(entity)
+        if isRaid and zType == "phaser" then
             local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-            local eHum = entity:FindFirstChildOfClass("Humanoid")
-
-            if eRoot and (not eHum or eHum.Health > 0) then
+            if eRoot then
                 local dist = (eRoot.Position - centerPos).Magnitude
-                if dist <= maxDist then
-                    local name = entity.Name:lower()
-                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
-                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
-
-                    if isPhaser then
-                        if dist > longestDist then
-                            longestDist = dist
-                            bestPhaser = entity
-                            bestRoot = eRoot
-                        end
-                    end
+                if dist <= maxDist and dist > longestDist then
+                    longestDist = dist
+                    bestPhaser = entity
+                    bestRoot = eRoot
                 end
             end
         end
     end
 
-    for _, entity in ipairs(charFolder:GetChildren()) do checkEntity(entity) end
-    if charFolder ~= workspace then
-        for _, entity in ipairs(workspace:GetChildren()) do checkEntity(entity) end
-    end
-
     return bestPhaser, bestRoot
 end
 
--- FILTRO DE ASALTO TOTAL DENTRO DEL RADIO DE 600 STUDS (1° PHASER | 2° SCREAMER | 3° OTROS ZOMBIES | 4° EXPERIMENT)
+-- FILTRO DE ASALTO TOTAL: 1° PHASER (LEJANO) | 2° SCREAMER | 3° ZOMBIES RADIACTIVOS | 4° EXPERIMENT
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityPhaser, priorityPhaserRoot = nil, nil
@@ -454,70 +485,59 @@ local function getAnyTargetZombie(centerPos, maxDist)
 
     local priorityScreamer, priorityScreamerRoot = nil, nil
 
-    local bestCommonTarget, bestCommonRoot = nil, nil
-    local bestCommonDist = math.huge
+    local bestRadioactiveTarget, bestRadioactiveRoot = nil, nil
+    local bestRadioactiveDist = math.huge
 
     local experimentTarget, experimentRoot = nil, nil
 
-    local function checkZombie(entity)
-        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
+    for _, entity in ipairs(charFolder:GetChildren()) do
+        local isRaid, zType = isReactorRaidZombie(entity)
+        if isRaid then
             local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-            local eHum = entity:FindFirstChildOfClass("Humanoid")
-
-            if eRoot and (not eHum or eHum.Health > 0) then
+            if eRoot then
                 local dist = (eRoot.Position - centerPos).Magnitude
                 if dist <= maxDist then
-                    local name = entity.Name:lower()
-                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
-
-                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
-                    local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
-                    local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
-
-                    -- 1. PRIORIDAD #1: PHASER (MÁS LEJANO)
-                    if isPhaser then
+                    -- 1. PHASER (EL MÁS LEJANO PRIMERO)
+                    if zType == "phaser" then
                         if dist > furthestPhaserDist then
                             furthestPhaserDist = dist
                             priorityPhaser = entity
                             priorityPhaserRoot = eRoot
                         end
 
-                    -- 2. PRIORIDAD #2: SCREAMER ("GATO")
-                    elseif isScreamer then
+                    -- 2. SCREAMER ("GATO")
+                    elseif zType == "screamer" then
                         if not priorityScreamer then
                             priorityScreamer = entity
                             priorityScreamerRoot = eRoot
                         end
 
-                    -- 4. ÚLTIMA PRIORIDAD: EXPERIMENT (JEFE FINAL)
-                    elseif isExperiment then
+                    -- 4. EXPERIMENT (JEFE FINAL)
+                    elseif zType == "experiment" then
                         if not experimentTarget then
                             experimentTarget = entity
                             experimentRoot = eRoot
                         end
 
-                    -- 3. PRIORIDAD #3: CUALQUIER OTRO ZOMBIE EN EL RADIO DE 600 STUDS (BRUTE, MUSCLE, SPITTER, ETC.)
-                    elseif dist < bestCommonDist then
-                        bestCommonDist = dist
-                        bestCommonTarget = entity
-                        bestCommonRoot = eRoot
+                    -- 3. ZOMBIES RADIACTIVOS DEL REACTOR (BRUTE, MUSCLE, HAZMAT, SPITTER, ETC.)
+                    elseif zType == "reactor_common" then
+                        if dist < bestRadioactiveDist then
+                            bestRadioactiveDist = dist
+                            bestRadioactiveTarget = entity
+                            bestRadioactiveRoot = eRoot
+                        end
                     end
                 end
             end
         end
     end
 
-    for _, entity in ipairs(charFolder:GetChildren()) do checkZombie(entity) end
-    if charFolder ~= workspace then
-        for _, entity in ipairs(workspace:GetChildren()) do checkZombie(entity) end
-    end
-
     if priorityPhaser then
         return priorityPhaser, priorityPhaserRoot, "phaser"
     elseif priorityScreamer then
         return priorityScreamer, priorityScreamerRoot, "screamer"
-    elseif bestCommonTarget then
-        return bestCommonTarget, bestCommonRoot, "glowing"
+    elseif bestRadioactiveTarget then
+        return bestRadioactiveTarget, bestRadioactiveRoot, "glowing"
     elseif experimentTarget then
         return experimentTarget, experimentRoot, "experiment"
     end
@@ -525,29 +545,21 @@ local function getAnyTargetZombie(centerPos, maxDist)
     return nil, nil, nil
 end
 
--- CONTEO Y CLASIFICACIÓN DE ZOMBIES EN EL RADIO DE 600 STUDS
+-- CONTEO Y CLASIFICACIÓN DE ZOMBIES DEL REACTOR
 local function countZombieTypes(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local screamers, phasers, others = 0, 0, 0
     for _, entity in ipairs(charFolder:GetChildren()) do
-        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
+        local isRaid, zType = isReactorRaidZombie(entity)
+        if isRaid then
             local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-            local eHum = entity:FindFirstChildOfClass("Humanoid")
-            if eRoot and (not eHum or eHum.Health > 0) then
-                if (eRoot.Position - centerPos).Magnitude <= maxDist then
-                    local name = entity.Name:lower()
-                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
-
-                    local isScreamer = name:find("scream") or name:find("gato") or variant:find("scream")
-                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
-
-                    if isScreamer then
-                        screamers = screamers + 1
-                    elseif isPhaser then
-                        phasers = phasers + 1
-                    else
-                        others = others + 1
-                    end
+            if eRoot and (eRoot.Position - centerPos).Magnitude <= maxDist then
+                if zType == "phaser" then
+                    phasers = phasers + 1
+                elseif zType == "screamer" then
+                    screamers = screamers + 1
+                else
+                    others = others + 1
                 end
             end
         end
@@ -555,18 +567,16 @@ local function countZombieTypes(centerPos, maxDist)
     return screamers, phasers, others
 end
 
--- CONTEO TOTAL DE ZOMBIES VIVOS DENTRO DE LOS 600 STUDS
+-- CONTEO TOTAL DE ZOMBIES DEL REACTOR VIVOS
 local function countLivingZombiesInReactor(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local count = 0
     for _, entity in ipairs(charFolder:GetChildren()) do
-        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
+        local isRaid = isReactorRaidZombie(entity)
+        if isRaid then
             local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-            local eHum = entity:FindFirstChildOfClass("Humanoid")
-            if eRoot and (not eHum or eHum.Health > 0) then
-                if (eRoot.Position - centerPos).Magnitude <= maxDist then
-                    count = count + 1
-                end
+            if eRoot and (eRoot.Position - centerPos).Magnitude <= maxDist then
+                count = count + 1
             end
         end
     end
@@ -910,8 +920,8 @@ task.spawn(function()
                     updateStatus("✅ Tiempo en centro completado. Iniciando cacería completa...")
                 end
 
-                -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 600)
-                updateStatus("[3/4] Cacería en Reactor (Radio 600)...")
+                -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 750)
+                updateStatus("[3/4] Cacería en Reactor (Radio 750)...")
                 local inCombat = true
                 local screamerPhaserStuckTimer = nil
 
@@ -986,9 +996,9 @@ task.spawn(function()
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
                             end
 
-                        -- CASO 3: RESTO DE ZOMBIES DEL REACTOR (RADIO 600)
+                        -- CASO 3: RESTO DE ZOMBIES RADIACTIVOS QUE SALIERON DEL REACTOR
                         else
-                            updateStatus("Rodeando a " .. name .. " [Reactor]...")
+                            updateStatus("⚔️ Atacando a " .. name .. " [Reactor]...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
                             orbitTarget(targetRoot, 7, 60.0, 3)
                             if targetModel.Parent and targetRoot.Parent then
@@ -1098,7 +1108,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V3 CALIBRADO",
-    Content = "Radio circular a 600 studs activo. Detecta a todos los zombies del reactor.",
+    Content = "Filtro nuclear exacto: Drones bloqueados y zombies de raid detectados.",
     Duration = 4
 })
 
