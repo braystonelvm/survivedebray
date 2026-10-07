@@ -18,15 +18,14 @@ local Config = {
     MoveSpeed = 45,
     AutoSendItems = false,
     CollectRadius = 25,
-    BasePrevent = true,
-    BaseRadius = 50,          -- Radio protegido alrededor de la bolita
-    SpreadRadius = 6          -- Separación para que no colisionen entre sí
+    BasePrevent = true,       -- Evita mover cosas que ya estén en la base
+    BaseRadius = 45,          -- Radio considerado "dentro de la base"
+    SpreadRadius = 4          -- Dispersión para que no se amontonen en un punto
 }
 
 local CurrentTarget = nil
 local TargetHighlight = nil
 local DropPointMarker = nil
-local TeleportedTracker = {} -- Guarda los ítems ya transportados para no volver a tocarlos
 
 local function clearHighlight()
     if TargetHighlight then
@@ -114,11 +113,11 @@ Tabs.Combat:AddSlider("SpeedSlider", {
 })
 
 -- PESTAÑA 2: TELETRANSPORTE Y BASE PREVENT
-Tabs.Items:AddSection("Punto de Entrega")
+Tabs.Items:AddSection("Punto de Entrega (Trituradora / Base)")
 
 Tabs.Items:AddButton({
-    Title = "Poner Bolita Aquí (Destino)",
-    Description = "Coloca el marcador donde estás parado (Base, Tolva del Auto o Trituradora)",
+    Title = "Poner Bolita de Destino Aquí",
+    Description = "Coloca el marcador en la posición exacta donde estás parado",
     Callback = function()
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -131,20 +130,17 @@ Tabs.Items:AddButton({
         DropPointMarker = Instance.new("Part")
         DropPointMarker.Name = "CustomDropPoint"
         DropPointMarker.Shape = Enum.PartType.Ball
-        DropPointMarker.Size = Vector3.new(2.5, 2.5, 2.5)
+        DropPointMarker.Size = Vector3.new(3, 3, 3)
         DropPointMarker.Material = Enum.Material.Neon
         DropPointMarker.Color = Color3.fromRGB(0, 255, 170)
         DropPointMarker.Anchored = true
         DropPointMarker.CanCollide = false
-        DropPointMarker.CFrame = root.CFrame - Vector3.new(0, 1.5, 0)
+        DropPointMarker.CFrame = root.CFrame - Vector3.new(0, 2, 0)
         DropPointMarker.Parent = workspace
 
-        -- Resetear el registro de teletransporte para la nueva posición
-        table.clear(TeleportedTracker)
-
         Fluent:Notify({
-            Title = "Destino Fijado",
-            Content = "Punto de entrega colocado correctamente.",
+            Title = "Destino Guardado",
+            Content = "Punto de entrega fijado con la esfera verde.",
             Duration = 3
         })
     end
@@ -155,17 +151,14 @@ Tabs.Items:AddToggle("AutoSendToggle", {
     Default = false,
     Callback = function(Value)
         Config.AutoSendItems = Value
-        if not Value then
-            table.clear(TeleportedTracker)
-        end
     end
 })
 
-Tabs.Items:AddSection("Protección Anti-Bugs")
+Tabs.Items:AddSection("Protección de Base (Base Prevent)")
 
 Tabs.Items:AddToggle("BasePreventToggle", {
     Title = "Activar Base Prevent",
-    Description = "No mueve ningún recurso que ya esté cerca de tu base/bolita",
+    Description = "No mueve ningún ítem que ya se encuentre dentro del área de la base",
     Default = true,
     Callback = function(Value)
         Config.BasePrevent = Value
@@ -173,10 +166,11 @@ Tabs.Items:AddToggle("BasePreventToggle", {
 })
 
 Tabs.Items:AddSlider("BaseRadiusSlider", {
-    Title = "Radio Protegido de la Base (Studs)",
-    Default = 50,
+    Title = "Radio Seguro de la Base (Studs)",
+    Description = "Distancia protegida alrededor del centro de tu base",
+    Default = 45,
     Min = 20,
-    Max = 120,
+    Max = 100,
     Rounding = 0,
     Callback = function(Value)
         Config.BaseRadius = Value
@@ -184,11 +178,11 @@ Tabs.Items:AddSlider("BaseRadiusSlider", {
 })
 
 Tabs.Items:AddSlider("SpreadSlider", {
-    Title = "Dispersión al caer (Studs)",
-    Description = "Distancia entre ítems para que no se traben",
-    Default = 6,
-    Min = 2,
-    Max = 15,
+    Title = "Dispersión de Ítems al llegar (Studs)",
+    Description = "Evita que las cosas se apilen en el mismo punto y se bugeen",
+    Default = 4,
+    Min = 1,
+    Max = 10,
     Rounding = 0,
     Callback = function(Value)
         Config.SpreadRadius = Value
@@ -253,8 +247,8 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
                 end
 
                 Fluent:Notify({
-                    Title = "Objetivo Fijado",
-                    Content = "Seleccionado: " .. displayName,
+                    Title = "Objetivo Seleccionado",
+                    Content = "Fijado: " .. displayName,
                     Duration = 3
                 })
             end
@@ -311,9 +305,31 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- 5. BUCLE DE TELETRANSPORTE (PIVOT LIMPIO + ANTI-FLOTACIÓN + BASE PREVENT)
+-- 5. BUCLE DE TELETRANSPORTE CON BASE PREVENT Y DISPERSIÓN ANTI-BUG
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+
+-- Función auxiliar para verificar si un ítem está dentro de la base (Center)
+local function isInsideBase(itemPos)
+    local centerModel = workspace:FindFirstChild("Center")
+    if centerModel then
+        local centerPart = centerModel:FindFirstChildWhichIsA("BasePart") or centerModel.PrimaryPart
+        if centerPart then
+            local dist = (itemPos - centerPart.Position).Magnitude
+            if dist <= Config.BaseRadius then
+                return true
+            end
+        end
+    end
+    -- Respaldo con la posición de la bolita si no encuentra la pieza Center
+    if DropPointMarker and DropPointMarker.Parent then
+        local distToMarker = (itemPos - DropPointMarker.Position).Magnitude
+        if distToMarker <= (Config.BaseRadius * 0.4) then
+            return true
+        end
+    end
+    return false
+end
 
 task.spawn(function()
     while true do
@@ -322,57 +338,41 @@ task.spawn(function()
             local char = lp.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             if root then
-                overlapParams.FilterDescendantsInstances = {char, DropPointMarker}
+                overlapParams.FilterDescendantsInstances = {char}
 
                 local partsNearby = workspace:GetPartBoundsInRadius(root.Position, Config.CollectRadius, overlapParams)
 
-                for _, hitPart in ipairs(partsNearby) do
-                    -- No tocar partes ancladas al mapa ni entidades vivas
-                    if not hitPart.Anchored and not hitPart:FindFirstAncestorOfClass("Humanoid") then
-                        -- Encontrar el objeto contenedor (Model) o la pieza suelta
-                        local itemModel = hitPart:FindFirstAncestorOfClass("Model")
-                        local targetEntity = (itemModel and itemModel.Parent ~= workspace.Characters and itemModel) or hitPart
-                        local rootPos = (targetEntity:IsA("Model") and targetEntity:GetPivot().Position) or targetEntity.Position
-
-                        -- 1. BASE PREVENT: Verificar si ya está dentro de la base/bolita
-                        local isSafe = false
-                        if Config.BasePrevent then
-                            local distToDrop = (rootPos - DropPointMarker.Position).Magnitude
-                            if distToDrop <= Config.BaseRadius then
-                                isSafe = true
-                            end
+                for _, item in ipairs(partsNearby) do
+                    if not item.Anchored and not item:FindFirstAncestorOfClass("Humanoid") then
+                        -- Comprobar si Base Prevent está activo y si el ítem ya está en la base
+                        local skipItem = false
+                        if Config.BasePrevent and isInsideBase(item.Position) then
+                            skipItem = true
                         end
 
-                        -- 2. Teletransportar solo si no está en la base y no se ha movido recientemente
-                        if not isSafe and not TeleportedTracker[targetEntity] then
-                            TeleportedTracker[targetEntity] = true
-
-                            -- Offset aleatorio en el piso
+                        if not skipItem then
+                            -- 1. Calcular offset aleatorio en un círculo para que no choquen entre sí
                             local angle = math.random() * math.pi * 2
                             local distance = math.random() * Config.SpreadRadius
                             local offsetX = math.cos(angle) * distance
                             local offsetZ = math.sin(angle) * distance
 
-                            -- Colocar a ras de suelo (+1 stud) para que caiga inmediatamente
-                            local destCFrame = CFrame.new(DropPointMarker.Position + Vector3.new(offsetX, 1.0, offsetZ))
+                            local destinationPos = DropPointMarker.Position + Vector3.new(offsetX, 1.5, offsetZ)
 
-                            if targetEntity:IsA("Model") then
-                                targetEntity:PivotTo(destCFrame)
-                            else
-                                targetEntity.CFrame = destCFrame
-                            end
+                            -- 2. Limpieza de velocidades acumuladas (evita que rebote o salga disparado)
+                            item.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                            item.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
 
-                            -- Reactivar gravedad y forzar caída limpia para evitar que quede flotando
-                            for _, p in ipairs(targetEntity:GetDescendants()) do
-                                if p:IsA("BasePart") then
-                                    p.AssemblyLinearVelocity = Vector3.new(0, -5, 0)
-                                    p.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+                            -- 3. Asignar nueva posición sin colisión brusca
+                            item.CFrame = CFrame.new(destinationPos)
+
+                            -- Apagar colisiones brevemente para evitar efecto explosión
+                            item.CanCollide = false
+                            task.delay(0.15, function()
+                                if item and item.Parent then
+                                    item.CanCollide = true
                                 end
-                            end
-                            if targetEntity:IsA("BasePart") then
-                                targetEntity.AssemblyLinearVelocity = Vector3.new(0, -5, 0)
-                                targetEntity.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-                            end
+                            end)
                         end
                     end
                 end
@@ -383,7 +383,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Teletransporte optimizado y Base Prevent fijado.",
+    Content = "Base Prevent y Dispersión Anti-Bug integradas.",
     Duration = 4
 })
 
