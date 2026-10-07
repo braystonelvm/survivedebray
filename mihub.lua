@@ -2,7 +2,25 @@
 -- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE
 -- ==============================================================================
 
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+-- 1. LIMPIEZA DE INTERFACES ANTERIORES PARA EVITAR CRASH
+if gethui then
+    local old = gethui():FindFirstChild("CustomHubFloatingBtn")
+    if old then old:Destroy() end
+elseif game:GetService("CoreGui"):FindFirstChild("CustomHubFloatingBtn") then
+    game:GetService("CoreGui").CustomHubFloatingBtn:Destroy()
+end
+
+-- 2. CARGA ULTRA SEGURA DE FLUENT UI
+local Fluent = nil
+local success, res = pcall(function()
+    return loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+end)
+
+if not success or not res then
+    Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/main.lua"))()
+else
+    Fluent = res
+end
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -23,13 +41,13 @@ local Config = {
     -- Combate / Atropello Constante
     AtropelloEnabled = false,
     AtropelloMode = "Embestida Frontal Continua",
-    MoveSpeed = 160,              -- Máximo por defecto
-    ChargeDistance = 25,          -- Distancia de embestida más amplia
+    MoveSpeed = 160,
+    ChargeDistance = 25,
     AntiBloaterPush = true,
 
-    -- Reparación por RemoteEvent nativo + Equip (Mantenido exactamente igual)
+    -- Reparación por RemoteEvent nativo
     FastAutoRepair = true,
-    RepairSpeed = 0.06,
+    RepairSpeed = 0.08,
     RepairRange = 35,
 
     -- Teletransporte Scrap
@@ -46,13 +64,13 @@ local Config = {
     AutoRecordScrap = false,
     ScrapStepDist = 35,
     AutoRecordYellow = false,
-    YellowStepDist = 40,          -- Más lejana por defecto (40 studs)
+    YellowStepDist = 40,
 
     -- Ruta
     PatrolEnabled = false,
     FlyPatrol = false,
     FlyHeight = 10,
-    WaypointWaitTime = 0,         -- Mínimo 0 segundos
+    WaypointWaitTime = 0,
 
     -- Utilidades
     InstantGasStation = true,
@@ -115,13 +133,13 @@ local function getCurrentVehicle()
     return nil, nil, nil
 end
 
--- 1. VENTANA PRINCIPAL
+-- 3. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
     Title = "ZOMBIE HUB | CUSTOM",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(610, 530),
-    Acrylic = true,
+    Acrylic = false, -- Desactivado para evitar cierres en ejecutores móviles
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
@@ -160,7 +178,6 @@ Tabs.Combat:AddDropdown("AtropelloModeSelect", {
 
 Tabs.Combat:AddSlider("ChargeDistSlider", {
     Title = "Distancia de Persecución (Studs)",
-    Description = "Radio de ataque hacia el zombie",
     Default = 25,
     Min = 10,
     Max = 60,
@@ -177,20 +194,20 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     Callback = function(Value) Config.MoveSpeed = Value end
 })
 
--- PESTAÑA 2: REPARACIÓN RÁPIDA (Dex: Repair Hammer -> Repair)
+-- PESTAÑA 2: REPARACIÓN RÁPIDA
 Tabs.Repair:AddSection("Auto-Reparación con Martillo")
 
 Tabs.Repair:AddToggle("FastRepairToggle", {
-    Title = "Reparación Instantánea Continua",
-    Description = "Repara tu auto y estructuras dañadas en ráfaga",
+    Title = "Reparación Continua",
+    Description = "Repara tu auto y estructuras dañadas",
     Default = true,
     Callback = function(Value) Config.FastAutoRepair = Value end
 })
 
 Tabs.Repair:AddSlider("RepairSpeedSlider", {
     Title = "Frecuencia de Disparo (Segundos)",
-    Default = 0.06,
-    Min = 0.02,
+    Default = 0.08,
+    Min = 0.03,
     Max = 0.3,
     Rounding = 2,
     Callback = function(Value) Config.RepairSpeed = Value end
@@ -310,7 +327,6 @@ Tabs.Patrol:AddToggle("AutoRecordYellowToggle", {
 
 Tabs.Patrol:AddSlider("YellowStepSlider", {
     Title = "Distancia entre Puntos Amarillos (Studs)",
-    Description = "Distancia de separación más amplia por defecto",
     Default = 40,
     Min = 15,
     Max = 80,
@@ -503,7 +519,7 @@ Tabs.Misc:AddToggle("InstantGasToggle", {
     Callback = function(Value) Config.InstantGasStation = Value end
 })
 
--- BOTÓN FLOTANTE CÍRCULAR (DRAGGABLE CON POSICIÓN BAJA)
+-- 4. BOTÓN FLOTANTE CÍRCULAR (DRAGGABLE CON PROTECCIÓN)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -519,7 +535,6 @@ end
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Name = "DraggableToggle"
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
--- Predeterminado más abajo (Y = 0.42)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.42, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
 FloatBtn.Image = "rbxassetid://10723415903"
@@ -529,14 +544,13 @@ local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(1, 0)
 UICorner.Parent = FloatBtn
 
--- Lógica de Arrastre Compatible con Móvil y PC
-local isDragging = false
+local dragging = false
 local dragStart = nil
 local startPos = nil
 
 FloatBtn.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        isDragging = true
+        dragging = true
         dragStart = input.Position
         startPos = FloatBtn.Position
     end
@@ -544,12 +558,12 @@ end)
 
 FloatBtn.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        isDragging = false
+        dragging = false
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
         local delta = input.Position - dragStart
         FloatBtn.Position = UDim2.new(
             startPos.X.Scale,
@@ -566,26 +580,19 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- BUCLE DE REPARACIÓN MULTI-OBJETIVO (TAL COMO ME LO PASASTE)
+-- BUCLE DE REPARACIÓN DIRECTA POR REMOTE
 task.spawn(function()
     while true do
         task.wait(Config.RepairSpeed)
         if Config.FastAutoRepair then
-            local char = lp.Character
-            local backpack = lp:FindFirstChild("Backpack")
-            local hammer = (char and char:FindFirstChild("Repair Hammer")) or (backpack and backpack:FindFirstChild("Repair Hammer"))
+            pcall(function()
+                local char = lp.Character
+                local backpack = lp:FindFirstChild("Backpack")
+                local hammer = (char and char:FindFirstChild("Repair Hammer")) or (backpack and backpack:FindFirstChild("Repair Hammer"))
 
-            if hammer then
-                if hammer.Parent == backpack and char then
-                    local hum = char:FindFirstChildOfClass("Humanoid")
-                    if hum then hum:EquipTool(hammer) end
-                end
-
-                local repairRemote = hammer:FindFirstChild("Repair")
-                local car, seat, mainPart = getCurrentVehicle()
-
-                pcall(function()
-                    hammer:Activate()
+                if hammer then
+                    local repairRemote = hammer:FindFirstChild("Repair")
+                    local car, seat, mainPart = getCurrentVehicle()
 
                     if repairRemote and repairRemote:IsA("RemoteEvent") then
                         if car then
@@ -596,7 +603,7 @@ task.spawn(function()
                             local root = char and char:FindFirstChild("HumanoidRootPart")
                             if root then
                                 for _, obj in ipairs(workspace:GetChildren()) do
-                                    if obj:IsA("Model") and obj ~= char then
+                                    if obj:IsA("Model") and obj ~= char and obj ~= car then
                                         local part = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
                                         if part and (part.Position - root.Position).Magnitude <= Config.RepairRange then
                                             repairRemote:FireServer(obj)
@@ -607,8 +614,8 @@ task.spawn(function()
                             end
                         end
                     end
-                end)
-            end
+                end
+            end)
         end
     end
 end)
@@ -664,7 +671,7 @@ task.spawn(function()
     end
 end)
 
--- BUCLE DE ATROPELLO FRONTAL CONSTANTE (SIN FRENOS NI PAUSAS)
+-- BUCLE DE ATROPELLO FRONTAL CONSTANTE (SIN FRENOS)
 RunService.Heartbeat:Connect(function()
     if not Config.AtropelloEnabled or not CurrentTarget or Config.ReactorFarmEnabled then return end
 
@@ -1078,7 +1085,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB LISTO",
-    Content = "Atropello continuo y widget arrastrable listos.",
+    Content = "Interfaz cargada con éxito.",
     Duration = 4
 })
 
