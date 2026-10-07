@@ -1,40 +1,62 @@
 -- ==============================================================================
--- AUTO-RADAR SILENCIOSO DE VEHÍCULOS (0% LAG / DETECCIÓN INSTANTÁNEA)
+-- RADAR EXCLUSIVO PARA TRUCK (0% LAG / FILTRO ESTRICTO)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
 local lp = Players.LocalPlayer
 
-local function tagVehicle(model)
+local function tagTruck(model)
     if not model:IsA("Model") then return end
-    
-    -- Verificar si es un camión o vehículo funcional
-    local name = model.Name:lower()
-    local isCar = name:find("truck") or name:find("car") or model:FindFirstChildWhichIsA("VehicleSeat")
 
-    if isCar and not model:FindFirstChild("RadarHighlight") then
-        local hl = Instance.new("Highlight")
-        hl.Name = "RadarHighlight"
-        hl.FillColor = Color3.fromRGB(0, 255, 120)
-        hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-        hl.FillTransparency = 0.5
-        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.Parent = model
+    -- Filtro estricto: solo el modelo exacto "Truck"
+    if model.Name:lower() ~= "truck" then return end
+    if model:FindFirstChild("TruckESP_Highlight") then return end
 
-        local seat = model:FindFirstChildWhichIsA("VehicleSeat") or model.PrimaryPart
-        local pos = seat and seat.Position or Vector3.zero
-        print(string.format("🚗 [RADAR]: ¡%s DETECTADO! Posición: (%.1f, %.1f, %.1f)", model.Name, pos.X, pos.Y, pos.Z))
+    -- 1. Resaltado visual en pantalla (Highlight a través de paredes)
+    local hl = Instance.new("Highlight")
+    hl.Name = "TruckESP_Highlight"
+    hl.FillColor = Color3.fromRGB(255, 160, 0)      -- Naranja llamativo
+    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.FillTransparency = 0.4
+    hl.OutlineTransparency = 0
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = model
+
+    -- 2. Etiqueta flotante con distancia
+    local anchorPart = model:FindFirstChild("DriveSeat") or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+    if anchorPart and not anchorPart:FindFirstChild("TruckESP_Tag") then
+        local bb = Instance.new("BillboardGui")
+        bb.Name = "TruckESP_Tag"
+        bb.Size = UDim2.new(0, 100, 0, 26)
+        bb.StudsOffset = Vector3.new(0, 4.5, 0)
+        bb.AlwaysOnTop = true
+        bb.Adornee = anchorPart
+        bb.Parent = anchorPart
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, 0, 1, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = "🚚 TRUCK"
+        lbl.TextColor3 = Color3.fromRGB(255, 180, 0)
+        lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        lbl.TextStrokeTransparency = 0.2
+        lbl.TextSize = 13
+        lbl.Font = Enum.Font.GothamBold
+        lbl.Parent = bb
     end
+
+    local pos = anchorPart and anchorPart.Position or Vector3.zero
+    print(string.format("🚚 [RADAR TRUCK]: Detectado en Vector3.new(%.1f, %.1f, %.1f)", pos.X, pos.Y, pos.Z))
 end
 
--- 1. Revisar los que ya existan descargados
+-- Escaneo de lo que ya esté cargado en Structures
 local container = workspace:FindFirstChild("Structures") or workspace
 for _, child in ipairs(container:GetChildren()) do
-    tagVehicle(child)
+    tagTruck(child)
 end
 
--- 2. Escuchar en tiempo real cuando el servidor te descargue uno nuevo al acercarte
+-- Listener en tiempo real cuando el servidor descargue un nuevo objeto al acercarte
 container.ChildAdded:Connect(function(child)
-    task.wait(0.2) -- Breve margen para que el servidor ensamble sus partes
-    tagVehicle(child)
+    task.wait(0.2)
+    tagTruck(child)
 end)
