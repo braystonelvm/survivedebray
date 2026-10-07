@@ -10,18 +10,29 @@ local RunService = game:GetService("RunService")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local lp = Players.LocalPlayer
 
--- COORDENADAS DE LA PARTIDA
-local DEFAULT_DOOR = Vector3.new(-54.2, 3.5, 1140.1)
-local DEFAULT_CENTER = Vector3.new(-1.4, 2.7, 1120.5)
+-- COORDENADAS DE LA PARTIDA (NUEVO MAPA)
+local DEFAULT_DOOR = Vector3.new(-1145.2, 5.5, -179.8)
+local DEFAULT_CENTER = Vector3.new(-1182.1, 5.2, -176.9)
 
--- 6 GASOLINERAS REGISTRADAS
+-- 7 COFRES REGISTRADOS
+local CHESTS = {
+    Vector3.new(-1212.8, -13.7, -219.0),
+    Vector3.new(-1233.2, -13.8, -212.6),
+    Vector3.new(-1240.7, -13.8, -212.3),
+    Vector3.new(-1255.0, -13.8, -192.4),
+    Vector3.new(-1255.4, -13.8, -185.3),
+    Vector3.new(-1254.9, -33.5, -114.4),
+    Vector3.new(-1241.2, -33.5, -109.0)
+}
+
+-- 6 GASOLINERAS REGISTRADAS (NUEVO MAPA)
 local GAS_STATIONS = {
-    Vector3.new(-581.7, 2.8, 1071.8),
-    Vector3.new(-177.8, 2.3, 800.0),
-    Vector3.new(-400.0, 2.4, 415.3),
-    Vector3.new(-161.0, 2.3, 176.3),
-    Vector3.new(421.0, 2.6, 438.9),
-    Vector3.new(341.2, 2.0, 782.3)
+    Vector3.new(-842.1, 3.8, -255.8),
+    Vector3.new(-834.3, 3.5, -281.8),
+    Vector3.new(-321.8, 5.5, -235.5),
+    Vector3.new(261.1, 5.3, -65.0),
+    Vector3.new(227.1, 3.5, 509.7),
+    Vector3.new(-321.1, 5.2, 244.0)
 }
 
 local State = {
@@ -29,14 +40,14 @@ local State = {
     Paused = false,
     NoclipEnabled = false,    -- Se activa 3 segundos después del Fly
     CurrentStatus = "Inactivo",
-    LootChests = false,       -- DESACTIVADO POR DEFECTO
+    LootChests = true,        -- ACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
     DetectionRadius = 750,    -- 750 studs a la redonda
-    CenterCampTime = 780      -- 10 minutos de espera en centro tras abrir puerta
+    CenterCampTime = 60       -- 1 minuto por defecto en centro tras abrir puerta
 }
 
 local Point2_Door = DEFAULT_DOOR
@@ -270,7 +281,7 @@ local function triggerPromptRobust(prompt)
     end
 end
 
--- APERTURA DIRECTA Y AGRESIVA DE LA PUERTA (DEVUELVE TRUE SI ACTIVÓ UN PROMPT VÁLIDO)
+-- APERTURA DIRECTA Y AGRESIVA DE LA PUERTA
 local function openNuclearDoorDirect()
     local entrance = getEntrancePart()
     local targetPos = entrance and entrance.Position or Point2_Door
@@ -340,7 +351,7 @@ local function getDoorTimerText()
     return nil
 end
 
--- INTERACCIÓN CON GASOLINERAS (MÉTODO EFECTIVO ORIGINAL)
+-- INTERACCIÓN CON GASOLINERAS
 local function interactWithGasPump(stationPos)
     for _, prompt in ipairs(workspace:GetDescendants()) do
         if prompt:IsA("ProximityPrompt") then
@@ -360,10 +371,33 @@ local function interactWithGasPump(stationPos)
     end
 end
 
+-- RUTINA PARA SAQUEAR LOS 7 COFRES
+local function lootAllChests()
+    if not State.LootChests then return end
+    updateStatus("📦 Saqueando cofres del reactor...")
+    for idx, chestPos in ipairs(CHESTS) do
+        if not State.Running or State.Paused then break end
+        updateStatus(string.format("📦 Yendo a Cofre [%d/%d]...", idx, #CHESTS))
+        flyMoveTo(chestPos, 48, 2.5, false)
+        task.wait(0.2)
+
+        for _, prompt in ipairs(workspace:GetDescendants()) do
+            if prompt:IsA("ProximityPrompt") and prompt.Enabled then
+                local pPart = prompt.Parent
+                local pPos = pPart and (pPart:IsA("BasePart") and pPart.Position or (pPart:IsA("Attachment") and pPart.WorldPosition))
+                if pPos and (pPos - chestPos).Magnitude <= 15 then
+                    triggerPromptRobust(prompt)
+                end
+            end
+        end
+        task.wait(State.ChestWaitTime)
+    end
+end
+
 -- RESPALDO AUTOMÁTICO PROXIMITY PROMPT
 ProximityPromptService.PromptShown:Connect(function(prompt)
     local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
-    if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") then
+    if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") or text:find("abrir") or text:find("open") or text:find("cofre") or text:find("chest") then
         prompt.HoldDuration = 0
         prompt.RequiresLineOfSight = false
         if fireproximityprompt then
@@ -373,12 +407,12 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- DETECCIÓN EXCLUSIVA Y PROFUNDA DE PHASERS (IGNORA HIBERNACIÓN COMPLETAMENTE)
+-- DETECCIÓN EXCLUSIVA DE PHASERS (PRIORIZA EL MÁS LEJANO)
 local function getPriorityPhaser(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local bestPhaser = nil
     local bestRoot = nil
-    local shortestDist = math.huge
+    local longestDist = -math.huge
 
     local function checkEntity(entity)
         if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
@@ -391,12 +425,11 @@ local function getPriorityPhaser(centerPos, maxDist)
                     local name = entity.Name:lower()
                     local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
 
-                    -- Detección de todas las variantes de Phaser (SIN importar si tiene Hibernating = true)
                     local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
 
                     if isPhaser then
-                        if dist < shortestDist then
-                            shortestDist = dist
+                        if dist > longestDist then
+                            longestDist = dist
                             bestPhaser = entity
                             bestRoot = eRoot
                         end
@@ -406,12 +439,10 @@ local function getPriorityPhaser(centerPos, maxDist)
         end
     end
 
-    -- 1. Revisar carpeta Characters
     for _, entity in ipairs(charFolder:GetChildren()) do
         checkEntity(entity)
     end
 
-    -- 2. Revisión de respaldo directo en Workspace por si se movieron
     if charFolder ~= workspace then
         for _, entity in ipairs(workspace:GetChildren()) do
             checkEntity(entity)
@@ -421,11 +452,12 @@ local function getPriorityPhaser(centerPos, maxDist)
     return bestPhaser, bestRoot
 end
 
--- FILTRO DE ASALTO COMPLETO (DETECCIÓN BASE ORIGINAL)
+-- FILTRO DE ASALTO COMPLETO (PHASER MÁS LEJANO EN PRIORIDAD)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
     local priorityPhaser, priorityPhaserRoot = nil, nil
+    local furthestPhaserDist = -math.huge
     local bestGlowingTarget, bestGlowingRoot = nil, nil
     local bestGlowingDist = math.huge
     local experimentTarget, experimentRoot = nil, nil
@@ -449,7 +481,6 @@ local function getAnyTargetZombie(centerPos, maxDist)
                     local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
                     local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
 
-                    -- Los zombies especiales (Phaser, Screamer, Experiment) son válidos siempre, incluso si están en reposo
                     local isSpecial = isScreamer or isPhaser or isExperiment
                     local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
                     local isReactorZombie = isSpecial or isGlowing
@@ -462,9 +493,10 @@ local function getAnyTargetZombie(centerPos, maxDist)
                                 priorityScreamerRoot = eRoot
                             end
 
-                        -- 2. PRIORIDAD 2: PHASER / GHOST
+                        -- 2. PRIORIDAD 2: PHASER / GHOST (ATACA AL MÁS LEJANO)
                         elseif isPhaser then
-                            if not priorityPhaser then
+                            if dist > furthestPhaserDist then
+                                furthestPhaserDist = dist
                                 priorityPhaser = entity
                                 priorityPhaserRoot = eRoot
                             end
@@ -657,7 +689,7 @@ Tabs.Main:AddButton({
 
 Tabs.Main:AddToggle("LootChestsQuickToggle", {
     Title = "Saquear Cofres tras Limpiar",
-    Default = false,
+    Default = true,
     Callback = function(Value) State.LootChests = Value end
 })
 
@@ -731,14 +763,14 @@ Tabs.Settings:AddSlider("WaveWaitSlider", {
 
 Tabs.Settings:AddSlider("CenterCampSlider", {
     Title = "Espera en Centro tras abrir puerta (Minutos)",
-    Default = 13,
+    Default = 1,
     Min = 1,
     Max = 20,
     Rounding = 0,
     Callback = function(Value) State.CenterCampTime = Value * 60 end
 })
 
--- BOTÓN FLOTANTE CÍRCULAR (Y = 0.40)
+-- BOTÓN FLOTANTE CIRCULAR (Y = 0.40)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "ReactorHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -780,7 +812,6 @@ task.spawn(function()
         task.wait(0.5)
 
         if State.Running and not State.Paused then
-            -- Esperar hasta que se cumplan los 3 segundos de Fly para activar Noclip
             if not State.NoclipEnabled then
                 task.wait(0.3)
                 continue
@@ -862,27 +893,25 @@ task.spawn(function()
                 updateStatus("[2/4] Accediendo al Centro del Reactor...")
                 flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                -- FASE 1: 10 MINUTOS EN EL CENTRO (CACERÍA ENCADENADA DE PHASERS)
+                -- FASE 1: 1 MINUTO EN EL CENTRO (CACERÍA ENCADENADA DE PHASERS, PRIORIZANDO LEJANOS)
                 if doorWasPressed then
                     local centerDefenseEnd = tick() + State.CenterCampTime
-                    updateStatus("🛡️ Puerta abierta confirmada: 10m en Centro (Caza Total de Phasers)...")
+                    updateStatus("🛡️ Puerta abierta confirmada: 1m en Centro (Caza de Phasers)...")
 
                     while State.Running and not State.Paused and tick() < centerDefenseEnd do
                         local timeLeft = math.max(0, math.floor(centerDefenseEnd - tick()))
                         local m = math.floor(timeLeft / 60)
                         local s = timeLeft % 60
 
-                        -- 1. Buscar al Phaser más cercano (ignora Hibernación para que no se escape ninguno)
+                        -- 1. Buscar al Phaser más lejano
                         local phaserTarget, phaserRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
                         if phaserTarget and phaserRoot then
                             local pName = phaserTarget.Name
-                            updateStatus(string.format("👻 Cazando PHASER [%s] (%02dm %02ds rest)...", pName, m, s))
+                            updateStatus(string.format("👻 Cazando PHASER MÁS LEJANO [%s] (%02dm %02ds rest)...", pName, m, s))
                             flyMoveTo(phaserRoot.Position, 45, 6, true)
                             orbitTarget(phaserRoot, 7, 25.0, 3)
-
-                            -- Nota: NO regresa al centro de inmediato, el bucle revisa si queda otro Phaser vivo
                         else
-                            -- 2. Si no hay ningún Phaser vivo en el radio de 750 studs, regresar/mantenerse en el centro
+                            -- 2. Si no hay Phaser en radar, permanecer en el centro
                             local myRoot = getRootPart()
                             local distToCenter = myRoot and (myRoot.Position - CalculatedCenter).Magnitude or 0
 
@@ -901,7 +930,7 @@ task.spawn(function()
                         end
                     end
 
-                    updateStatus("✅ 10 min completados. Iniciando cacería completa...")
+                    updateStatus("✅ 1 min completado. Iniciando cacería completa...")
                 end
 
                 -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 750)
@@ -942,14 +971,14 @@ task.spawn(function()
                             orbitTarget(targetRoot, 7, 25.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                        -- CASO 2: PHASER (PRIORIDAD #2)
+                        -- CASO 2: PHASER (PRIORIDAD #2 - MÁS LEJANO)
                         elseif targetType == "phaser" then
-                            updateStatus("👻 PRIORIDAD #2: Caza del PHASER...")
+                            updateStatus("👻 PRIORIDAD #2: Caza del PHASER más lejano...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
                             orbitTarget(targetRoot, 7, 25.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                        -- CASO 4: EXPERIMENT (JEFE FINAL - ANCLADO EN EL CENTRO SI ESTÁ CERCA)
+                        -- CASO 4: EXPERIMENT (JEFE FINAL)
                         elseif targetType == "experiment" then
                             local distToCenter = (targetRoot.Position - CalculatedCenter).Magnitude
 
@@ -992,7 +1021,6 @@ task.spawn(function()
                         end
 
                     else
-                        -- No hay zombies en la sala: ir al centro y esperar 40s a que aparezca la siguiente ronda
                         screamerPhaserStuckTimer = nil
                         flyMoveTo(CalculatedCenter, 45, 3, true)
                         local roundCleared = true
@@ -1016,10 +1044,15 @@ task.spawn(function()
                     end
                 end
 
-                -- TRAS COMPLETAR LAS RONDAS, INICIAR EL RECORRIDO DE LAS 6 GASOLINERAS
+                -- FASE 3: SAQUEO AUTOMÁTICO DE LOS 7 COFRES TRAS LIMPIAR
+                if State.LootChests and State.Running and not State.Paused then
+                    lootAllChests()
+                end
+
+                -- TRAS COMPLETAR LAS RONDAS Y COFRES, INICIAR EL RECORRIDO DE LAS 6 GASOLINERAS
                 if State.Running and not State.Paused then
                     local cooldownStart = tick()
-                    updateStatus("Reactor Despejado (3 Rondas). Iniciando 6 gasolineras...")
+                    updateStatus("Reactor Despejado y Cofres Saqueados. Iniciando 6 gasolineras...")
 
                     while State.Running and not State.Paused and (tick() - cooldownStart < State.BaseNuclearWait) do
                         for idx, gasPos in ipairs(GAS_STATIONS) do
@@ -1088,7 +1121,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Caza total de Phasers sin filtros de hibernación activada.",
+    Content = "Mapa actualizado, cofres por defecto y Phasers lejanos priorizados.",
     Duration = 4
 })
 
