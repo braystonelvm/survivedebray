@@ -968,14 +968,14 @@ task.spawn(function()
                         if targetType == "screamer" then
                             updateStatus("🚨 PRIORIDAD #1: Caza del SCREAMER para el dron...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
-                            orbitTarget(targetRoot, 7, 25.0, 3)
+                            orbitTarget(targetRoot, 7, 45.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
                         -- CASO 2: PHASER (PRIORIDAD #2)
                         elseif targetType == "phaser" then
                             updateStatus("👻 PRIORIDAD #2: Caza del PHASER...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
-                            orbitTarget(targetRoot, 7, 25.0, 3)
+                            orbitTarget(targetRoot, 7, 45.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
                         -- CASO 4: EXPERIMENT (JEFE FINAL)
@@ -1005,7 +1005,7 @@ task.spawn(function()
                             else
                                 updateStatus(string.format("👑 Buscando a EXPERIMENT (%d studs)...", math.floor(distToCenter)))
                                 flyMoveTo(targetRoot.Position, 45, 6, true)
-                                orbitTarget(targetRoot, 8, 14.0, 2.5)
+                                orbitTarget(targetRoot, 8, 400.0, 2.5)
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
                             end
 
@@ -1013,9 +1013,9 @@ task.spawn(function()
                         else
                             updateStatus("Rodeando a " .. name .. " [Resplandor]...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
-                            orbitTarget(targetRoot, 7, 25.0, 3)
+                            orbitTarget(targetRoot, 7, 60.0, 3)
                             if targetModel.Parent and targetRoot.Parent then
-                                orbitTarget(targetRoot, 14, 30.0, 2.5)
+                                orbitTarget(targetRoot, 14, 80.0, 2.5)
                             end
                             flyMoveTo(CalculatedCenter, 42, 3, true)
                         end
