@@ -222,24 +222,31 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     return false
 end
 
--- ATAQUE CIRCULAR (ALTURA ORIGINAL CONSERVADA)
+-- ATAQUE CIRCULAR (DESDE EL SUELO -2 STUDS HACIA ARRIBA)
 local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
 
-    local targetY = Point2_Door.Y + 4.0
-    local endTime = tick() + duration
+    local startTime = tick()
+    local endTime = startTime + duration
     local angle = 0
 
-    local bodyPos = getOrCreatePhysics(root, targetY)
+    local initialTPos = targetRoot.Position
+    local startY = initialTPos.Y - 2.0 -- Inicia pegado al suelo (-2 studs del torso)
+    local bodyPos = getOrCreatePhysics(root, startY)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
         RunService.Heartbeat:Wait()
         angle = angle + (speed * 0.010)
         local tPos = targetRoot.Position
+
+        -- Ascenso dinámico durante el giro: desde -2 studs (suelo) subiendo hasta +2.5 studs
+        local progress = math.clamp((tick() - startTime) / duration, 0, 1)
+        local currentY = (tPos.Y - 2.0) + (progress * 4.5)
+
         local orbitDest = Vector3.new(
             tPos.X + math.cos(angle) * radius,
-            targetY,
+            currentY,
             tPos.Z + math.sin(angle) * radius
         )
         bodyPos.Position = orbitDest
@@ -394,7 +401,7 @@ end
 -- RESPALDO AUTOMÁTICO PROXIMITY PROMPT
 ProximityPromptService.PromptShown:Connect(function(prompt)
     local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
-    if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") or text:find("abrir") or text:find("open") or text:find("cofre") or text:find("chest") then
+    if text:find("gasolina") or text:find("surtidor") or text:find("gas") or text:find("fuel") or text:find("usar") then
         prompt.HoldDuration = 0
         prompt.RequiresLineOfSight = false
         if fireproximityprompt then
@@ -422,6 +429,7 @@ local function getPriorityPhaser(centerPos, maxDist)
                     local name = entity.Name:lower()
                     local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
 
+                    -- Detección de todas las variantes de Phaser (SIN importar si tiene Hibernating = true)
                     local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
 
                     if isPhaser then
@@ -1120,7 +1128,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Coordenadas actualizadas, centro elevado +3 studs y ataque aumentado.",
+    Content = "Órbita al ras del suelo ascendente y centro elevado +3 studs activos.",
     Duration = 4
 })
 
