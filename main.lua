@@ -168,7 +168,7 @@ local function secureFlightStart()
     return true
 end
 
--- VUELO HACIA UN DESTINO (ALTURA ORIGINAL CONSERVADA)
+-- VUELO HACIA UN DESTINO (CON +3 STUDS DE ALTURA AL DIRIGIRSE AL CENTRO)
 local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     stopDistance = stopDistance or 3.0
     local root = getRootPart()
@@ -176,7 +176,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
 
     local targetY = targetPos.Y + 3.0
     if lockAltitudeToDoor and Point2_Door then
-        targetY = Point2_Door.Y + 3.0
+        targetY = Point2_Door.Y + 6.0 -- (+3 studs de elevación)
     end
 
     local finalDest = Vector3.new(targetPos.X, targetY, targetPos.Z)
@@ -422,7 +422,6 @@ local function getPriorityPhaser(centerPos, maxDist)
                     local name = entity.Name:lower()
                     local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
 
-                    -- Detección de todas las variantes de Phaser (SIN importar si tiene Hibernating = true)
                     local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
 
                     if isPhaser then
@@ -919,7 +918,7 @@ task.spawn(function()
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
                             else
                                 local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
-                                local targetY = Point2_Door.Y + 7.0
+                                local targetY = Point2_Door.Y + 6.0 -- (+3 studs de elevación en el centro)
                                 if bp then
                                     bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
                                 end
@@ -988,7 +987,7 @@ task.spawn(function()
 
                                 local myRoot = getRootPart()
                                 local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
-                                local targetY = Point2_Door.Y + 7.0
+                                local targetY = Point2_Door.Y + 3.0
 
                                 local holdStart = tick()
                                 while State.Running and not State.Paused and targetModel.Parent and (tick() - holdStart < 10) do
@@ -1121,7 +1120,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Coordenadas actualizadas y tiempo de ataque aumentado +30s.",
+    Content = "Coordenadas actualizadas, centro elevado +3 studs y ataque aumentado.",
     Duration = 4
 })
 
