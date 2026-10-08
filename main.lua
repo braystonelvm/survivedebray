@@ -919,7 +919,7 @@ task.spawn(function()
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
                             else
                                 local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
-                                local targetY = Point2_Door.Y + 3.0
+                                local targetY = Point2_Door.Y + 7.0
                                 if bp then
                                     bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
                                 end
@@ -988,7 +988,7 @@ task.spawn(function()
 
                                 local myRoot = getRootPart()
                                 local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
-                                local targetY = Point2_Door.Y + 3.0
+                                local targetY = Point2_Door.Y + 7.0
 
                                 local holdStart = tick()
                                 while State.Running and not State.Paused and targetModel.Parent and (tick() - holdStart < 10) do
