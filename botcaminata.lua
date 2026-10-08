@@ -6,18 +6,20 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 
--- LISTA DE COORDENADAS
+-- LISTA DE COORDENADAS (NUEVA RUTA)
 local RAW_COORDS = {
-    {-114.5, 2, -2}, {-148.5, 2.6, 1.2}, {-179.8, 3.2, 1.8}, {-214.1, 1.6, 1.9},
-    {-251.2, 2.4, 2.5}, {-291.9, 3.3, 5.4}, {-323.8, 2.2, 9.4}, {-355.2, 2.4, 14.5},
-    {-361.1, 2.1, 44.8}, {-363.2, 2.8, 79.1}, {-363.8, 2, 109.1}, {-364.3, 1.1, 155.2},
-    {-365, 1.9, 197.4}, {-365.7, 1.4, 233.8}, {-366.8, 1.7, 275.5}, {-394.9, 3.8, 300.7},
-    {-438.1, 2, 300.3}, {-479.4, 1.6, 301.9}, {-511.1, 2.2, 303}, {-534.6, 1.6, 338.6},
-    {-543.2, 1.8, 378}, {-541, 1.4, 417.9}, {-535.6, 1.5, 457.4}, {-530.4, 3.5, 488.1},
-    {-530, 2, 518.8}, {-529.2, 2.1, 556.2}, {-531.4, 2.1, 589.1}, {-535.3, 2.2, 624.7},
-    {-524.9, 1.3, 657.2}, {-487.3, 2.1, 660.3}, {-452.8, 1.9, 648.7}, {-459.6, 2.6, 618.2},
-    {-477.7, 43.3, 600.7}, -- Punto 33 (Inicio de ascenso en vuelo)
-    {-475.9, 76.2, 577.1}  -- Punto 34 (Meta / Zona del auto en altura)
+    {-103, 3.6, -30.1}, {-116.8, 3.4, 3.4}, {-117.9, 3.4, 40}, {-117.4, 3.4, 77.3},
+    {-98.2, 3.4, 109.1}, {-63.8, 3.4, 120.8}, {-27.3, 3.4, 127.7}, {-4.2, 3.4, 153},
+    {-2.6, 3.4, 191}, {-2.3, 3.4, 221.1}, {-3, 3.4, 257.6}, {-3.7, 3.4, 287.7},
+    {-2.5, 3.4, 323.3}, {-0.3, 3.4, 361.1}, {-1.6, 3.4, 397.5}, {-1.8, 3.4, 434},
+    {-0.7, 3.4, 470.2}, {1.9, 3.4, 506.6}, {0.2, 3.4, 541.3}, {-2.5, 3.4, 575.5},
+    {0.1, 3.4, 612.6}, {-1.4, 3.4, 645.6}, {-33.5, 3.4, 660}, {-71.7, 3.4, 658.1},
+    {-106.1, 3.4, 656.1}, {-142.3, 3.4, 653.8}, {-176.8, 3.4, 657}, {-212, 3.4, 662.3},
+    {-248.5, 3.4, 661}, {-278.6, 3.4, 673.6}, {-291, 3.4, 706.1}, {-279, 3.6, 740.2},
+    {-248.9, 3.4, 742.6}, -- Punto 33 (Fin de caminata terrestre / Base del ascenso)
+    {-249.6, 20.1, 742.5}, -- Punto 34 (Inicio de ascenso en vuelo)
+    {-249.6, 53.6, 742.5}, -- Punto 35 (Ascenso en vuelo)
+    {-225.9, 86.7, 742.3}  -- Punto 36 (Meta / Zona del auto en altura)
 }
 
 local PATH = {}
@@ -119,8 +121,8 @@ task.spawn(function()
         local char, hum, root = getCharElements()
         if not hum or not root then break end
 
-        -- PUNTOS 1 AL 32: CAMINATA TERRESTRE
-        if i <= 32 then
+        -- PUNTOS 1 AL 33: CAMINATA TERRESTRE
+        if i <= 33 then
             hum:MoveTo(target)
             local tStart = tick()
             local lastP = root.Position
@@ -143,7 +145,7 @@ task.spawn(function()
                 hum:MoveTo(target)
             end
 
-        -- PUNTOS 33 Y 34: VUELO DIRECTO HACIA LA ALTURA DEL AUTO
+        -- PUNTOS 34 AL 36: VUELO DIRECTO HACIA LA ALTURA DEL AUTO
         else
             -- Noclip para no colisionar con salientes al subir
             for _, p in ipairs(char:GetDescendants()) do
