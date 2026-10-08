@@ -37,7 +37,7 @@ local State = {
     Paused = false,
     NoclipEnabled = false,    -- Se activa 3 segundos después del Fly
     CurrentStatus = "Inactivo",
-    LootChests = false,       -- DESACTIVADO POR DEFECTO
+    LootChests = true,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
@@ -695,7 +695,7 @@ Tabs.Main:AddButton({
 
 Tabs.Main:AddToggle("LootChestsQuickToggle", {
     Title = "Saquear Cofres tras Limpiar",
-    Default = false,
+    Default = true,
     Callback = function(Value) State.LootChests = Value end
 })
 
