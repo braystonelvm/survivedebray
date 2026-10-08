@@ -1,52 +1,100 @@
 -- ==============================================================================
--- ESCÁNER PROFUNDO DE GASOLINERA Y REMOTES (A PIE)
+-- AUTO-SUBIR AL AUTO (ULTRA-LIGERO / CERO LAG EN BATALLA) | TECLA 'V'
 -- ==============================================================================
 
-local lp = game.Players.LocalPlayer
-local char = lp.Character
-local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-local pos = root and root.Position or Vector3.new(-182.2, 3.2, -258.9)
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local lp = Players.LocalPlayer
 
-local info = {}
-local function add(t) table.insert(info, t) end
+local MAX_DISTANCE = 150 -- Radio de 150 studs (óptimo para combate)
 
-add("=== INSPECCIÓN DE GASOLINERA EN EL MAPA ===")
-add(string.format("Posición de escaneo: Vector3.new(%.1f, %.1f, %.1f)", pos.X, pos.Y, pos.Z))
+local function mountClosestCar()
+    local char = lp.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum or hum.Health <= 0 then return end
 
--- 1. Buscar modelos de la gasolinera en Workspace
-add("\n[MODELOS Y PIEZAS EN 25 STUDS]:")
-for _, obj in ipairs(workspace:GetDescendants()) do
-    if obj:IsA("BasePart") and not obj:IsDescendantOf(char) and not (obj.Parent and obj.Parent.Name:find("Car")) then
-        local dist = (obj.Position - pos).Magnitude
-        if dist <= 25 then
-            local prompt = obj:FindFirstChildOfClass("ProximityPrompt")
-            local cd = obj:FindFirstChildOfClass("ClickDetector")
-            add(string.format("• Objeto: %s | Dist: %.1f studs | Prompt: %s | ClickDetector: %s | Ruta: %s",
-                obj.Name, dist, tostring(prompt ~= nil), tostring(cd ~= nil), obj:GetFullName()))
-            if prompt then
-                add(string.format("   -> Prompt Activo: %s | Texto: '%s %s'", tostring(prompt.Enabled), prompt.ObjectText, prompt.ActionText))
+    -- Si ya estás conduciendo, no hace nada
+    if hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then return end
+
+    local myPos = root.Position
+    local bestSeat = nil
+    local shortestDist = MAX_DISTANCE
+
+    -- Búsqueda directa en Structures (Cero lag: solo revisa modelos de vehículos)
+    local container = workspace:FindFirstChild("Structures") or workspace
+    for _, model in ipairs(container:GetChildren()) do
+        if model:IsA("Model") then
+            local seat = model:FindFirstChild("DriveSeat") or model:FindFirstChildWhichIsA("VehicleSeat")
+            if seat and seat.Occupant == nil then
+                local dist = (seat.Position - myPos).Magnitude
+                if dist < shortestDist then
+                    shortestDist = dist
+                    bestSeat = seat
+                end
             end
         end
     end
-end
 
--- 2. Buscar Remotes relacionados con combustible
-add("\n[REMOTES DE COMBUSTIBLE EN REPLICATEDSTORAGE]:")
-local rep = game:GetService("ReplicatedStorage")
-for _, r in ipairs(rep:GetDescendants()) do
-    if r:IsA("RemoteEvent") or r:IsA("RemoteFunction") then
-        local rName = r.Name:lower()
-        if rName:find("gas") or rName:find("fuel") or rName:find("vehicle") or rName:find("car") or rName:find("pump") then
-            add(string.format("• Remote: %s (%s) | Ruta: %s", r.Name, r.ClassName, r:GetFullName()))
+    -- Si encontró un auto a menos de 150 studs
+    if bestSeat then
+        local carModel = bestSeat:FindFirstAncestorOfClass("Model")
+
+        -- 1. Detener inercia y posicionar sobre el asiento
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        root.CFrame = bestSeat.CFrame * CFrame.new(0, 1.2, 0)
+
+        -- 2. Disparar prompt de entrada solo del auto seleccionado
+        if carModel then
+            for _, prompt in ipairs(carModel:GetDescendants()) do
+                if prompt:IsA("ProximityPrompt") then
+                    prompt.HoldDuration = 0
+                    prompt.RequiresLineOfSight = false
+                    if fireproximityprompt then
+                        pcall(function() fireproximityprompt(prompt, 0) end)
+                    end
+                end
+            end
         end
+
+        -- 3. Sentar instantáneamente
+        task.wait(0.03)
+        hum:ChangeState(Enum.HumanoidStateType.Seated)
+        pcall(function() bestSeat:Sit(hum) end)
     end
 end
 
-local res = table.concat(info, "\n")
-if setclipboard then setclipboard(res) elseif toclipboard then toclipboard(res) end
+-- ================= BOTÓN FLOTANTE MINIMALISTA =================
+local existing = lp.PlayerGui:FindFirstChild("FastMountGUI")
+if existing then existing:Destroy() end
 
-game:GetService("StarterGui"):SetCore("SendNotification", {
-    Title = "🔍 ESCANEO DE GASOLINERA LISTO",
-    Text = "Copiado al portapapeles. Pégalo aquí.",
-    Duration = 5
-})
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "FastMountGUI"
+ScreenGui.ResetOnSpawn = false
+if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
+
+local Btn = Instance.new("TextButton")
+Btn.Size = UDim2.new(0, 48, 0, 48)
+Btn.Position = UDim2.new(0.04, 0, 0.48, 0)
+Btn.BackgroundColor3 = Color3.fromRGB(0, 180, 120)
+Btn.Text = "🚗\n[V]"
+Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+Btn.TextSize = 12
+Btn.Font = Enum.Font.GothamBold
+Btn.Active = true
+Btn.Draggable = true
+Btn.Parent = ScreenGui
+
+local Corner = Instance.new("UICorner")
+Corner.CornerRadius = UDim.new(1, 0)
+Corner.Parent = Btn
+
+Btn.MouseButton1Click:Connect(mountClosestCar)
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.V then
+        mountClosestCar()
+    end
+end)
