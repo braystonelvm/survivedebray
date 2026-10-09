@@ -1,242 +1,139 @@
 -- ==============================================================================
--- VISUALIZADOR DE VIDA EN NÚMEROS GIGANTES (ESTRUCTURAS Y VEHÍCULOS)
+-- AUTOPSIA PROFUNDA DE ESTRUCTURAS Y AUTOS (EXTRACTOR TOTAL DE DATOS Y VARIABLES)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
 local StarterGui = game:GetService("StarterGui")
 local lp = Players.LocalPlayer
+local char = lp.Character or lp.CharacterAdded:Wait()
+local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
+local myPos = root and root.Position or Vector3.zero
 
-local VISUALS_FOLDER_NAME = "BigHPNumbersFolder"
-local VisualFolder = workspace:FindFirstChild(VISUALS_FOLDER_NAME)
-if not VisualFolder then
-    VisualFolder = Instance.new("Folder")
-    VisualFolder.Name = VISUALS_FOLDER_NAME
-    VisualFolder.Parent = workspace
-end
+local lines = {}
+local function log(t) table.insert(lines, t) end
 
-local Config = {
-    ScanRadius = 180, -- Radio a la redonda (studs)
-}
+log("==================================================")
+log("   EXTRACCIÓN FORENSE DE VARIABLES Y ESTRUCTURAS  ")
+log("==================================================")
+log(string.format("Posición Jugador: Vector3.new(%.1f, %.1f, %.1f)", myPos.X, myPos.Y, myPos.Z))
+log("Hora: " .. os.date("%X"))
+log("--------------------------------------------------")
 
-local IsActive = false
+-- 1. RECOLECTAR MODELOS CERCANOS (RADIO DE 70 STUDS)
+local targets = {}
+local function checkModel(m)
+    if not m or not m:IsA("Model") or m == char or Players:GetPlayerFromCharacter(m) then return end
+    if m.Name:lower():find("drone") or m.Name:lower():find("dropped") then return end
 
--- Formatear números con comas (ej: 15000 -> 15,000)
-local function formatNumber(n)
-    local formatted = tostring(math.floor(n))
-    while true do
-        local k
-        formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", '%1,%2')
-        if k == 0 then break end
+    local cf, size = m:GetBoundingBox()
+    local dist = (cf.Position - myPos).Magnitude
+    if dist <= 70 then
+        table.insert(targets, {Model = m, Dist = dist, Size = size, Pos = cf.Position})
     end
-    return formatted
 end
 
-local function getRootPos()
-    local char = lp.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-    return root and root.Position or Vector3.zero
+if workspace:FindFirstChild("Structures") then
+    for _, m in ipairs(workspace.Structures:GetChildren()) do checkModel(m) end
+end
+for _, m in ipairs(workspace:GetChildren()) do
+    if m ~= workspace:FindFirstChild("Structures") and m.Name ~= "Characters" then
+        checkModel(m)
+    end
 end
 
--- Extraer exclusivamente la vida numérica
-local function getHealth(model)
-    local curHP, maxHP = nil, nil
+-- Ordenar por cercanía (los más pegados a ti primero)
+table.sort(targets, function(a, b) return a.Dist < b.Dist end)
 
-    -- 1. Atributos
-    for k, v in pairs(model:GetAttributes()) do
-        local key = k:lower()
-        if (key == "maxhealth" or key == "maxhp" or key == "maxdurability") and type(v) == "number" then
-            maxHP = v
-        elseif (key == "health" or key == "hp" or key == "durability") and type(v) == "number" then
-            curHP = v
+-- Limitar a los 6 más cercanos para no saturar el texto
+local maxScan = math.min(#targets, 8)
+log(string.format("Total detectados en 70 studs: %d | Analizando a fondo los %d más cercanos:\n", #targets, maxScan))
+
+for i = 1, maxScan do
+    local item = targets[i]
+    local m = item.Model
+    log(string.format("══════════ OBJETO [%d/%d]: %s ══════════", i, maxScan, m.Name))
+    log(string.format("• Distancia: %.1f studs | Ubicación: %s", item.Dist, m:GetFullName()))
+    log(string.format("• BoundingBox: %.1f x %.1f x %.1f", item.Size.X, item.Size.Y, item.Size.Z))
+
+    -- A. ATRIBUTOS DEL MODELO RAÍZ
+    local rootAttrs = {}
+    for k, v in pairs(m:GetAttributes()) do
+        table.insert(rootAttrs, string.format("%s = %s (%s)", tostring(k), tostring(v), typeof(v)))
+    end
+    log("• Atributos en Modelo Raíz: " .. (#rootAttrs > 0 and table.concat(rootAttrs, " | ") or "NINGUNO"))
+
+    -- B. ETIQUETAS DE COLLECTION SERVICE (TAGS)
+    local tags = CollectionService:GetTags(m)
+    log("• Tags de CollectionService: " .. (#tags > 0 and table.concat(tags, ", ") or "NINGUNO"))
+
+    -- C. VALORES INTERNOS (IntValue, NumberValue, StringValue, ObjectValue)
+    local valuesFound = {}
+    for _, desc in ipairs(m:GetDescendants()) do
+        if desc:IsA("ValueBase") then
+            table.insert(valuesFound, string.format("%s (%s) = %s", desc.Name, desc.ClassName, tostring(desc.Value)))
         end
     end
+    log("• Values internos encontrados: " .. (#valuesFound > 0 and table.concat(valuesFound, " | ") or "NINGUNO"))
 
-    -- 2. Values internos
-    if not maxHP then
-        for _, desc in ipairs(model:GetDescendants()) do
-            if desc:IsA("ValueBase") and type(desc.Value) == "number" then
-                local dName = desc.Name:lower()
-                if (dName == "maxhealth" or dName == "maxhp") and not maxHP then
-                    maxHP = desc.Value
-                elseif (dName == "health" or dName == "hp") and not curHP then
-                    curHP = desc.Value
-                end
+    -- D. INTERFACES GRÁFICAS O TEXTOS FLOTANTES (Guis con vida, barras, números)
+    local guiTexts = {}
+    for _, desc in ipairs(m:GetDescendants()) do
+        if desc:IsA("TextLabel") or desc:IsA("TextButton") then
+            if desc.Text and desc.Text ~= "" then
+                table.insert(guiTexts, string.format("%s: '%s'", desc.Name, desc.Text))
             end
         end
     end
+    log("• Textos en Guis internos: " .. (#guiTexts > 0 and table.concat(guiTexts, " | ") or "NINGUNO"))
 
-    -- 3. Humanoid
-    if not maxHP then
-        local hum = model:FindFirstChildOfClass("Humanoid") or model:FindFirstChildWhichIsA("Humanoid", true)
-        if hum then
-            maxHP = hum.MaxHealth
-            curHP = hum.Health
-        end
-    end
-
-    if maxHP and not curHP then curHP = maxHP end
-    if curHP and not maxHP then maxHP = curHP end
-
-    return curHP, maxHP
-end
-
-local function clearVisuals()
-    if VisualFolder then
-        VisualFolder:ClearAllChildren()
-    end
-end
-
-local function renderBigNumbers()
-    clearVisuals()
-    local myPos = getRootPos()
-    local list = {}
-
-    local function inspect(model)
-        if not model or not model:IsA("Model") then return end
-        if model == lp.Character or Players:GetPlayerFromCharacter(model) then return end
-        if model.Name:lower():find("drone") or model.Name:lower():find("dropped") then return end
-
-        local cf, size = model:GetBoundingBox()
-        local dist = (cf.Position - myPos).Magnitude
-        if dist > Config.ScanRadius then return end
-
-        local curHP, maxHP = getHealth(model)
-        local isCar = model.Name:lower():find("car") or model.Name:lower():find("truck") or model:FindFirstChildWhichIsA("VehicleSeat", true) ~= nil
-        local isStruct = model.Parent and model.Parent.Name:lower():find("structure")
-
-        if maxHP or isCar or isStruct then
-            table.insert(list, {
-                Model = model,
-                Name = model.Name,
-                MaxHP = maxHP or 0,
-                CurHP = curHP or 0,
-                CFrame = cf,
-                Size = size,
-                IsCar = isCar,
-                Dist = dist
-            })
-        end
-    end
-
-    local structFolder = workspace:FindFirstChild("Structures")
-    if structFolder then
-        for _, m in ipairs(structFolder:GetChildren()) do inspect(m) end
-    end
-    for _, m in ipairs(workspace:GetChildren()) do
-        if m ~= structFolder then inspect(m) end
-    end
-
-    -- Dibujar en pantalla con números gigantes
-    for _, item in ipairs(list) do
-        local anchor = Instance.new("Part")
-        anchor.Name = "HP_" .. item.Name
-        anchor.Anchored = true
-        anchor.CanCollide = false
-        anchor.CanTouch = false
-        anchor.CanQuery = false
-        anchor.Transparency = 1
-        anchor.CFrame = item.CFrame
-        anchor.Size = Vector3.new(1, 1, 1)
-        anchor.Parent = VisualFolder
-
-        local bb = Instance.new("BillboardGui")
-        bb.Size = UDim2.new(0, 240, 0, 75)
-        bb.AlwaysOnTop = true -- Visible a través de paredes y estructuras
-        bb.Adornee = anchor
-        bb.StudsOffset = Vector3.new(0, (item.Size.Y / 2) + 2.5, 0)
-        bb.Parent = anchor
-
-        local lblName = Instance.new("TextLabel")
-        lblName.Size = UDim2.new(1, 0, 0, 20)
-        lblName.Position = UDim2.new(0, 0, 0, 0)
-        lblName.BackgroundTransparency = 1
-        lblName.TextColor3 = Color3.fromRGB(220, 220, 220)
-        lblName.TextStrokeTransparency = 0
-        lblName.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        lblName.TextSize = 13
-        lblName.Font = Enum.Font.GothamMedium
-        lblName.Text = item.Name
-        lblName.Parent = bb
-
-        -- NÚMERO GIGANTE DE VIDA
-        local lblHP = Instance.new("TextLabel")
-        lblHP.Size = UDim2.new(1, 0, 0, 50)
-        lblHP.Position = UDim2.new(0, 0, 0, 20)
-        lblHP.BackgroundTransparency = 1
-        lblHP.TextStrokeTransparency = 0
-        lblHP.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        lblHP.TextSize = 34
-        lblHP.Font = Enum.Font.GothamBlack
-
-        if item.MaxHP > 0 then
-            lblHP.Text = formatNumber(item.MaxHP) .. " HP"
-            if item.IsCar then
-                lblHP.TextColor3 = Color3.fromRGB(0, 230, 255)    -- Azul Neón para autos
-            elseif item.MaxHP >= 10000 then
-                lblHP.TextColor3 = Color3.fromRGB(255, 215, 0)    -- Dorado para torres / muros top
-            elseif item.MaxHP >= 3000 then
-                lblHP.TextColor3 = Color3.fromRGB(50, 255, 120)   -- Verde para defensas medias
-            else
-                lblHP.TextColor3 = Color3.fromRGB(255, 120, 50)   -- Naranja para vallas bajas
+    -- E. ATRIBUTOS EN PARTES INTERNAS (Muchos juegos ponen la vida en la 'MainPart' o 'Hitbox')
+    local partAttrs = {}
+    for _, desc in ipairs(m:GetDescendants()) do
+        if desc:IsA("BasePart") then
+            local pAttrs = desc:GetAttributes()
+            for k, v in pairs(pAttrs) do
+                table.insert(partAttrs, string.format("[%s].%s = %s", desc.Name, tostring(k), tostring(v)))
             end
-        else
-            lblHP.Text = "SIN HP"
-            lblHP.TextSize = 22
-            lblHP.TextColor3 = Color3.fromRGB(160, 160, 160)
         end
+    end
+    log("• Atributos en BaseParts hijas: " .. (#partAttrs > 0 and table.concat(partAttrs, " | ") or "NINGUNO"))
 
-        lblHP.Parent = bb
+    -- F. ESTRUCTURA DE CARPETAS / CONFIGURATION
+    local configs = {}
+    for _, desc in ipairs(m:GetChildren()) do
+        if desc:IsA("Configuration") or desc:IsA("Folder") then
+            table.insert(configs, string.format("%s (%s con %d hijos)", desc.Name, desc.ClassName, #desc:GetChildren()))
+        end
+    end
+    log("• Carpetas/Configuration raíz: " .. (#configs > 0 and table.concat(configs, ", ") or "NINGUNA"))
+
+    -- G. HUMANOID O SEATS
+    local hum = m:FindFirstChildOfClass("Humanoid") or m:FindFirstChildWhichIsA("Humanoid", true)
+    if hum then
+        log(string.format("• HUMANOID DETECTADO: Health=%.1f | MaxHealth=%.1f", hum.Health, hum.MaxHealth))
+    end
+    local seat = m:FindFirstChildWhichIsA("VehicleSeat", true)
+    if seat then
+        log(string.format("• ASIENTO DE VEHÍCULO: %s (Ocupante: %s)", seat.Name, tostring(seat.Occupant)))
     end
 
-    -- Copiar ranking al portapapeles
-    table.sort(list, function(a, b) return a.MaxHP > b.MaxHP end)
-    local report = {"=== RANKING DE VIDA MÁXIMA ==="}
-    for i, it in ipairs(list) do
-        table.insert(report, string.format("#%d %s: %s HP (Dist: %.1f)", i, it.Name, formatNumber(it.MaxHP), it.Dist))
-    end
-    local text = table.concat(report, "\n")
-    if setclipboard then setclipboard(text) elseif toclipboard then toclipboard(text) end
-
-    StarterGui:SetCore("SendNotification", {
-        Title = "VIDAS VISIBLES",
-        Text = string.format("%d objetos analizados. Ranking copiado.", #list),
-        Duration = 3
-    })
+    log("") -- Salto de línea
 end
 
--- ==============================================================================
--- BOTÓN FLOTANTE (ON / OFF)
--- ==============================================================================
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "BigHPToggleGUI"
-ScreenGui.ResetOnSpawn = false
-if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
+log("==================================================")
+log("             FIN DE LA AUTOPSIA                   ")
+log("==================================================")
 
-local Btn = Instance.new("TextButton")
-Btn.Size = UDim2.new(0, 140, 0, 38)
-Btn.Position = UDim2.new(0.04, 0, 0.40, 0)
-Btn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-Btn.Text = "VER VIDA: OFF"
-Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-Btn.TextSize = 12
-Btn.Font = Enum.Font.GothamBold
-Btn.Active = true
-Btn.Draggable = true
-Btn.Parent = ScreenGui
+local fullReport = table.concat(lines, "\n")
+if setclipboard then
+    setclipboard(fullReport)
+elseif toclipboard then
+    toclipboard(fullReport)
+end
 
-local UICorner = Instance.new("UICorner")
-UICorner.CornerRadius = UDim.new(0, 6)
-UICorner.Parent = Btn
-
-Btn.MouseButton1Click:Connect(function()
-    IsActive = not IsActive
-    if IsActive then
-        Btn.Text = "VER VIDA: ON"
-        Btn.BackgroundColor3 = Color3.fromRGB(30, 160, 80)
-        renderBigNumbers()
-    else
-        Btn.Text = "VER VIDA: OFF"
-        Btn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-        clearVisuals()
-    end
-end)
+StarterGui:SetCore("SendNotification", {
+    Title = "📋 AUTOPSIA COMPLETADA",
+    Text = string.format("Datos de %d objetos copiados al portapapeles.", maxScan),
+    Duration = 5
+})
