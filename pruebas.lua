@@ -1,22 +1,35 @@
 -- ==============================================================================
--- RADIOGRAFÍA DE VIDA: ESTRUCTURAS Y AUTOS (RANKING DE HP MÁXIMA EN VIVO)
+-- VISUALIZADOR DE VIDA EN NÚMEROS GIGANTES (ESTRUCTURAS Y VEHÍCULOS)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
 local StarterGui = game:GetService("StarterGui")
 local lp = Players.LocalPlayer
 
-local VISUALS_FOLDER_NAME = "HealthVisualsFolder"
-local VisualsFolder = workspace:FindFirstChild(VISUALS_FOLDER_NAME)
-if not VisualsFolder then
-    VisualsFolder = Instance.new("Folder")
-    VisualsFolder.Name = VISUALS_FOLDER_NAME
-    VisualsFolder.Parent = workspace
+local VISUALS_FOLDER_NAME = "BigHPNumbersFolder"
+local VisualFolder = workspace:FindFirstChild(VISUALS_FOLDER_NAME)
+if not VisualFolder then
+    VisualFolder = Instance.new("Folder")
+    VisualFolder.Name = VISUALS_FOLDER_NAME
+    VisualFolder.Parent = workspace
 end
 
 local Config = {
-    ScanRadius = 160, -- Radio alrededor de ti (studs)
+    ScanRadius = 180, -- Radio a la redonda (studs)
 }
+
+local IsActive = false
+
+-- Formatear números con comas (ej: 15000 -> 15,000)
+local function formatNumber(n)
+    local formatted = tostring(math.floor(n))
+    while true do
+        local k
+        formatted, k = string.gsub(formatted, "^(-?%d+)(%d%d%d)", '%1,%2')
+        if k == 0 then break end
+    end
+    return formatted
+end
 
 local function getRootPos()
     local char = lp.Character
@@ -24,63 +37,61 @@ local function getRootPos()
     return root and root.Position or Vector3.zero
 end
 
--- RASTREADOR UNIVERSAL DE VIDA (Lee Atributos, NumberValues o Humanoids)
-local function extractHealthData(model)
+-- Extraer exclusivamente la vida numérica
+local function getHealth(model)
     local curHP, maxHP = nil, nil
 
-    -- 1. Búsqueda en Atributos del Modelo
-    local attrs = model:GetAttributes()
-    for k, v in pairs(attrs) do
+    -- 1. Atributos
+    for k, v in pairs(model:GetAttributes()) do
         local key = k:lower()
-        if (key == "health" or key == "hp" or key == "vida" or key == "durability") and type(v) == "number" then
-            curHP = v
-        elseif (key == "maxhealth" or key == "maxhp" or key == "vidamaxima" or key == "maxdurability") and type(v) == "number" then
+        if (key == "maxhealth" or key == "maxhp" or key == "maxdurability") and type(v) == "number" then
             maxHP = v
+        elseif (key == "health" or key == "hp" or key == "durability") and type(v) == "number" then
+            curHP = v
         end
     end
 
-    -- 2. Búsqueda en Objetos Value (IntValue / NumberValue)
-    if not curHP or not maxHP then
+    -- 2. Values internos
+    if not maxHP then
         for _, desc in ipairs(model:GetDescendants()) do
             if desc:IsA("ValueBase") and type(desc.Value) == "number" then
                 local dName = desc.Name:lower()
-                if (dName == "health" or dName == "hp" or dName == "vida" or dName == "durability") and not curHP then
-                    curHP = desc.Value
-                elseif (dName == "maxhealth" or dName == "maxhp" or dName == "vidamaxima") and not maxHP then
+                if (dName == "maxhealth" or dName == "maxhp") and not maxHP then
                     maxHP = desc.Value
+                elseif (dName == "health" or dName == "hp") and not curHP then
+                    curHP = desc.Value
                 end
             end
         end
     end
 
-    -- 3. Búsqueda en Humanoid (si la estructura o el chasis usan uno)
-    if not curHP or not maxHP then
+    -- 3. Humanoid
+    if not maxHP then
         local hum = model:FindFirstChildOfClass("Humanoid") or model:FindFirstChildWhichIsA("Humanoid", true)
         if hum then
-            curHP = hum.Health
             maxHP = hum.MaxHealth
+            curHP = hum.Health
         end
     end
 
-    -- Si solo se encontró uno de los dos valores, igualar el faltante
-    if curHP and not maxHP then maxHP = curHP end
     if maxHP and not curHP then curHP = maxHP end
+    if curHP and not maxHP then maxHP = curHP end
 
     return curHP, maxHP
 end
 
--- Limpieza de etiquetas anteriores
 local function clearVisuals()
-    VisualsFolder:ClearAllChildren()
+    if VisualFolder then
+        VisualFolder:ClearAllChildren()
+    end
 end
 
--- ESCÁNER Y GENERADOR DE RANKING
-local function scanAndRankHealth()
+local function renderBigNumbers()
     clearVisuals()
     local myPos = getRootPos()
-    local results = {}
+    local list = {}
 
-    local function inspectCandidate(model)
+    local function inspect(model)
         if not model or not model:IsA("Model") then return end
         if model == lp.Character or Players:GetPlayerFromCharacter(model) then return end
         if model.Name:lower():find("drone") or model.Name:lower():find("dropped") then return end
@@ -89,60 +100,36 @@ local function scanAndRankHealth()
         local dist = (cf.Position - myPos).Magnitude
         if dist > Config.ScanRadius then return end
 
-        local curHP, maxHP = extractHealthData(model)
+        local curHP, maxHP = getHealth(model)
         local isCar = model.Name:lower():find("car") or model.Name:lower():find("truck") or model:FindFirstChildWhichIsA("VehicleSeat", true) ~= nil
+        local isStruct = model.Parent and model.Parent.Name:lower():find("structure")
 
-        -- Registrar objeto si tiene vida o si es una estructura/auto reconocido
-        if curHP or maxHP or isCar or model.Parent.Name:lower():find("structure") then
-            curHP = curHP or 0
-            maxHP = maxHP or 0
-
-            table.insert(results, {
+        if maxHP or isCar or isStruct then
+            table.insert(list, {
                 Model = model,
                 Name = model.Name,
-                IsCar = isCar,
-                CurrentHP = curHP,
-                MaxHP = maxHP,
-                Dist = dist,
+                MaxHP = maxHP or 0,
+                CurHP = curHP or 0,
                 CFrame = cf,
-                Size = size
+                Size = size,
+                IsCar = isCar,
+                Dist = dist
             })
         end
     end
 
-    -- Revisar Structures y Workspace
     local structFolder = workspace:FindFirstChild("Structures")
     if structFolder then
-        for _, m in ipairs(structFolder:GetChildren()) do inspectCandidate(m) end
+        for _, m in ipairs(structFolder:GetChildren()) do inspect(m) end
     end
     for _, m in ipairs(workspace:GetChildren()) do
-        if m ~= structFolder then inspectCandidate(m) end
+        if m ~= structFolder then inspect(m) end
     end
 
-    -- Ordenar de MAYOR a MENOR vida máxima
-    table.sort(results, function(a, b)
-        return a.MaxHP > b.MaxHP
-    end)
-
-    local lines = {}
-    local function log(t) table.insert(lines, t) end
-
-    log("==================================================")
-    log("     RANKING DE VIDA: ESTRUCTURAS Y VEHÍCULOS     ")
-    log("==================================================")
-    log(string.format("Escaneados en radio de %d studs. Ordenados por Vida Máxima:", Config.ScanRadius))
-    log("--------------------------------------------------")
-
-    for rank, item in ipairs(results) do
-        local tagType = item.IsCar and "🚗 VEHÍCULO" or "🏰 ESTRUCTURA"
-        local hpString = string.format("%.0f / %.0f HP", item.CurrentHP, item.MaxHP)
-        if item.MaxHP == 0 then hpString = "Sin dato de HP (Objeto estático)" end
-
-        log(string.format("#%d [%s] %s | %s | Dist: %.1f studs", rank, tagType, item.Name, hpString, item.Dist))
-
-        -- DIBUJAR ETIQUETA FLOTANTE (BILLBOARD) EN CADA UNO
+    -- Dibujar en pantalla con números gigantes
+    for _, item in ipairs(list) do
         local anchor = Instance.new("Part")
-        anchor.Name = "HP_Anchor_" .. item.Name
+        anchor.Name = "HP_" .. item.Name
         anchor.Anchored = true
         anchor.CanCollide = false
         anchor.CanTouch = false
@@ -150,87 +137,106 @@ local function scanAndRankHealth()
         anchor.Transparency = 1
         anchor.CFrame = item.CFrame
         anchor.Size = Vector3.new(1, 1, 1)
-        anchor.Parent = VisualsFolder
-
-        local box = Instance.new("SelectionBox")
-        box.Adornee = anchor
-        box.Color3 = item.IsCar and Color3.fromRGB(0, 200, 255) or (item.MaxHP >= 5000 and Color3.fromRGB(255, 215, 0) or Color3.fromRGB(80, 255, 100))
-        box.LineThickness = 0.04
-        box.Parent = anchor
+        anchor.Parent = VisualFolder
 
         local bb = Instance.new("BillboardGui")
-        bb.Size = UDim2.new(0, 170, 0, 45)
-        bb.AlwaysOnTop = true
+        bb.Size = UDim2.new(0, 240, 0, 75)
+        bb.AlwaysOnTop = true -- Visible a través de paredes y estructuras
         bb.Adornee = anchor
-        bb.StudsOffset = Vector3.new(0, (item.Size.Y / 2) + 1.8, 0)
+        bb.StudsOffset = Vector3.new(0, (item.Size.Y / 2) + 2.5, 0)
         bb.Parent = anchor
 
-        local lbl = Instance.new("TextLabel")
-        lbl.Size = UDim2.new(1, 0, 1, 0)
-        lbl.BackgroundTransparency = 1
-        lbl.TextColor3 = item.IsCar and Color3.fromRGB(100, 220, 255) or Color3.fromRGB(255, 255, 255)
-        lbl.TextStrokeTransparency = 0.2
-        lbl.TextSize = 11
-        lbl.Font = Enum.Font.GothamBold
-        lbl.Text = string.format("%s %s\n❤️ %s", item.IsCar and "🚗" or "🛡️", item.Name, hpString)
-        lbl.Parent = bb
+        local lblName = Instance.new("TextLabel")
+        lblName.Size = UDim2.new(1, 0, 0, 20)
+        lblName.Position = UDim2.new(0, 0, 0, 0)
+        lblName.BackgroundTransparency = 1
+        lblName.TextColor3 = Color3.fromRGB(220, 220, 220)
+        lblName.TextStrokeTransparency = 0
+        lblName.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        lblName.TextSize = 13
+        lblName.Font = Enum.Font.GothamMedium
+        lblName.Text = item.Name
+        lblName.Parent = bb
+
+        -- NÚMERO GIGANTE DE VIDA
+        local lblHP = Instance.new("TextLabel")
+        lblHP.Size = UDim2.new(1, 0, 0, 50)
+        lblHP.Position = UDim2.new(0, 0, 0, 20)
+        lblHP.BackgroundTransparency = 1
+        lblHP.TextStrokeTransparency = 0
+        lblHP.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+        lblHP.TextSize = 34
+        lblHP.Font = Enum.Font.GothamBlack
+
+        if item.MaxHP > 0 then
+            lblHP.Text = formatNumber(item.MaxHP) .. " HP"
+            if item.IsCar then
+                lblHP.TextColor3 = Color3.fromRGB(0, 230, 255)    -- Azul Neón para autos
+            elseif item.MaxHP >= 10000 then
+                lblHP.TextColor3 = Color3.fromRGB(255, 215, 0)    -- Dorado para torres / muros top
+            elseif item.MaxHP >= 3000 then
+                lblHP.TextColor3 = Color3.fromRGB(50, 255, 120)   -- Verde para defensas medias
+            else
+                lblHP.TextColor3 = Color3.fromRGB(255, 120, 50)   -- Naranja para vallas bajas
+            end
+        else
+            lblHP.Text = "SIN HP"
+            lblHP.TextSize = 22
+            lblHP.TextColor3 = Color3.fromRGB(160, 160, 160)
+        end
+
+        lblHP.Parent = bb
     end
 
-    log("--------------------------------------------------")
-    log(string.format("TOTAL REGISTRADOS: %d", #results))
-    log("==================================================")
-
-    local report = table.concat(lines, "\n")
-    if setclipboard then setclipboard(report) elseif toclipboard then toclipboard(report) end
+    -- Copiar ranking al portapapeles
+    table.sort(list, function(a, b) return a.MaxHP > b.MaxHP end)
+    local report = {"=== RANKING DE VIDA MÁXIMA ==="}
+    for i, it in ipairs(list) do
+        table.insert(report, string.format("#%d %s: %s HP (Dist: %.1f)", i, it.Name, formatNumber(it.MaxHP), it.Dist))
+    end
+    local text = table.concat(report, "\n")
+    if setclipboard then setclipboard(text) elseif toclipboard then toclipboard(text) end
 
     StarterGui:SetCore("SendNotification", {
-        Title = "📊 REPORTE DE VIDA LISTO",
-        Text = string.format("%d analizados. Ranking copiado al portapapeles.", #results),
-        Duration = 5
+        Title = "VIDAS VISIBLES",
+        Text = string.format("%d objetos analizados. Ranking copiado.", #list),
+        Duration = 3
     })
 end
 
 -- ==============================================================================
--- BOTÓN FLOTANTE (ON / OFF / RECARGAR)
+-- BOTÓN FLOTANTE (ON / OFF)
 -- ==============================================================================
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "HealthInspectorGUI"
+ScreenGui.Name = "BigHPToggleGUI"
 ScreenGui.ResetOnSpawn = false
 if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
-local Active = false
-
-local ToggleBtn = Instance.new("TextButton")
-ToggleBtn.Size = UDim2.new(0, 140, 0, 36)
-ToggleBtn.Position = UDim2.new(0.04, 0, 0.52, 0)
-ToggleBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-ToggleBtn.Text = "VIDAS: OFF"
-ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ToggleBtn.TextSize = 11
-ToggleBtn.Font = Enum.Font.GothamBold
-ToggleBtn.Active = true
-ToggleBtn.Draggable = true
-ToggleBtn.Parent = ScreenGui
+local Btn = Instance.new("TextButton")
+Btn.Size = UDim2.new(0, 140, 0, 38)
+Btn.Position = UDim2.new(0.04, 0, 0.40, 0)
+Btn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+Btn.Text = "VER VIDA: OFF"
+Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+Btn.TextSize = 12
+Btn.Font = Enum.Font.GothamBold
+Btn.Active = true
+Btn.Draggable = true
+Btn.Parent = ScreenGui
 
 local UICorner = Instance.new("UICorner")
 UICorner.CornerRadius = UDim.new(0, 6)
-UICorner.Parent = ToggleBtn
+UICorner.Parent = Btn
 
-ToggleBtn.MouseButton1Click:Connect(function()
-    Active = not Active
-    if Active then
-        ToggleBtn.Text = "VIDAS: ON"
-        ToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 80)
-        scanAndRankHealth()
+Btn.MouseButton1Click:Connect(function()
+    IsActive = not IsActive
+    if IsActive then
+        Btn.Text = "VER VIDA: ON"
+        Btn.BackgroundColor3 = Color3.fromRGB(30, 160, 80)
+        renderBigNumbers()
     else
-        ToggleBtn.Text = "VIDAS: OFF"
-        ToggleBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+        Btn.Text = "VER VIDA: OFF"
+        Btn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
         clearVisuals()
     end
 end)
-
-StarterGui:SetCore("SendNotification", {
-    Title = "INSPECTOR DE VIDA LISTO",
-    Text = "Presiona el botón para encender y copiar el ranking.",
-    Duration = 4
-})
