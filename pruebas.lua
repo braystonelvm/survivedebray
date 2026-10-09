@@ -1,68 +1,89 @@
 -- ==============================================================================
--- ESCÁNER PASIVO DE HERRAMIENTAS Y PREVISUALIZACIÓN DE PLANOS
+-- VISUALIZADOR DIRECTO DE PLACEMENT HITBOX (PRE-CONSTRUCCIÓN)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local StarterGui = game:GetService("StarterGui")
 local lp = Players.LocalPlayer
 
-local lines = {}
-local function log(t) table.insert(lines, t) end
+local ActiveBoxOutline = nil
+local ActiveBillboard = nil
+local ActiveLabel = nil
 
-log("=== DIAGNÓSTICO DE ELEMENTOS DE CONSTRUCCIÓN ===")
-log("Hora: " .. os.date("%X"))
-
-local char = lp.Character
-local tool = char and char:FindFirstChildOfClass("Tool")
-
-if tool then
-    log(string.format("• Herramienta equipada: %s (Clase: %s)", tool.Name, tool.ClassName))
-    for _, desc in ipairs(tool:GetDescendants()) do
-        if desc:IsA("BasePart") or desc:IsA("ValueBase") or desc:IsA("Configuration") then
-            log(string.format("   -> Contenido interno: %s (%s)", desc.Name, desc.ClassName))
-        end
-    end
-else
-    log("• No hay ninguna herramienta equipada en mano actualmente.")
+local function cleanupVisuals()
+    if ActiveBoxOutline then ActiveBoxOutline:Destroy() ActiveBoxOutline = nil end
+    if ActiveBillboard then ActiveBillboard:Destroy() ActiveBillboard = nil end
+    ActiveLabel = nil
 end
 
--- Rastrear piezas temporales creadas en la cámara o espacio de trabajo
-log("\n[BUSCANDO MODELOS TEMPORALES O CLONES RECIENTES]:")
-local foundPreview = false
+local function attachVisualsToHitbox(hitboxPart, toolName)
+    cleanupVisuals()
 
-local function checkContainer(parent, parentName)
-    for _, child in ipairs(parent:GetChildren()) do
-        if child:IsA("Model") and child ~= char and not Players:GetPlayerFromCharacter(child) then
-            local primary = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
-            if primary and (primary.Transparency > 0.1 or not primary.CanCollide) then
-                foundPreview = true
-                log(string.format("• Objeto sospechoso en %s: %s (Partes: %d, Transparencia base: %.2f)",
-                    parentName, child.Name, #child:GetChildren(), primary.Transparency))
+    -- 1. Forzar visibilidad física de la caja invisible
+    hitboxPart.Transparency = 0.65
+    hitboxPart.Color = Color3.fromRGB(0, 255, 160)
+    hitboxPart.Material = Enum.Material.ForceField
+
+    -- 2. Contorno neón para marcar los bordes exactos
+    ActiveBoxOutline = Instance.new("SelectionBox")
+    ActiveBoxOutline.Name = "HitboxVisualBorder"
+    ActiveBoxOutline.Color3 = Color3.fromRGB(0, 255, 160)
+    ActiveBoxOutline.LineThickness = 0.05
+    ActiveBoxOutline.Adornee = hitboxPart
+    ActiveBoxOutline.Parent = hitboxPart
+
+    -- 3. Etiqueta con medidas exactas en studs
+    ActiveBillboard = Instance.new("BillboardGui")
+    ActiveBillboard.Name = "HitboxInfoGui"
+    ActiveBillboard.Size = UDim2.new(0, 200, 0, 50)
+    ActiveBillboard.AlwaysOnTop = true
+    ActiveBillboard.Adornee = hitboxPart
+    ActiveBillboard.StudsOffset = Vector3.new(0, (hitboxPart.Size.Y / 2) + 1.2, 0)
+    ActiveBillboard.Parent = hitboxPart
+
+    ActiveLabel = Instance.new("TextLabel")
+    ActiveLabel.Size = UDim2.new(1, 0, 1, 0)
+    ActiveLabel.BackgroundTransparency = 1
+    ActiveLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ActiveLabel.TextStrokeTransparency = 0
+    ActiveLabel.TextSize = 13
+    ActiveLabel.Font = Enum.Font.GothamBold
+    ActiveLabel.Text = string.format("📐 [%s]\nAncho: %.1f | Alto: %.1f | Fondo: %.1f", 
+        toolName, hitboxPart.Size.X, hitboxPart.Size.Y, hitboxPart.Size.Z
+    )
+    ActiveLabel.Parent = ActiveBillboard
+end
+
+-- Monitor en tiempo real para cuando equipes o cambies de plano
+RunService.RenderStepped:Connect(function()
+    local char = lp.Character
+    local tool = char and char:FindFirstChildOfClass("Tool")
+
+    if tool then
+        local hitbox = tool:FindFirstChild("PlacementHitbox")
+        if hitbox and hitbox:IsA("BasePart") then
+            if not ActiveBoxOutline or ActiveBoxOutline.Adornee ~= hitbox then
+                attachVisualsToHitbox(hitbox, tool.Name)
+            else
+                -- Actualizar etiqueta si el juego redimensiona dinámicamente la pieza
+                if ActiveLabel then
+                    local s = hitbox.Size
+                    ActiveLabel.Text = string.format("📐 [%s]\nAncho: %.1f | Alto: %.1f | Fondo: %.1f", tool.Name, s.X, s.Y, s.Z)
+                end
             end
+            return
         end
     end
-end
 
-if workspace.CurrentCamera then
-    checkContainer(workspace.CurrentCamera, "CurrentCamera")
-end
-checkContainer(workspace, "Workspace")
-
-if not foundPreview then
-    log(">> No se encontraron modelos temporales transparentes en Workspace ni Camera.")
-end
-
-log("=== FIN DEL REPORTE ===")
-
-local result = table.concat(lines, "\n")
-if setclipboard then
-    setclipboard(result)
-elseif toclipboard then
-    toclipboard(result)
-end
+    -- Si no hay plano equipado o no tiene hitbox, limpiar
+    if ActiveBoxOutline then
+        cleanupVisuals()
+    end
+end)
 
 StarterGui:SetCore("SendNotification", {
-    Title = "📋 REPORTE COPIADO",
-    Text = "Diagnóstico copiado al portapapeles.",
+    Title = "HITBOX TRACKER ACTIVO",
+    Text = "Equipa la valla o cualquier plano para ver su volumen.",
     Duration = 4
 })
