@@ -1,139 +1,179 @@
 -- ==============================================================================
--- AUTOPSIA PROFUNDA DE ESTRUCTURAS Y AUTOS (EXTRACTOR TOTAL DE DATOS Y VARIABLES)
+-- EXTRACTOR MAESTRO DE VIDA MÁXIMA (TORRES, AUTOS Y ESTRUCTURAS)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
-local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local StarterGui = game:GetService("StarterGui")
 local lp = Players.LocalPlayer
 local char = lp.Character or lp.CharacterAdded:Wait()
 local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
 local myPos = root and root.Position or Vector3.zero
 
+local VISUALS_FOLDER_NAME = "StructureHPViewer"
+local VisualFolder = workspace:FindFirstChild(VISUALS_FOLDER_NAME)
+if VisualFolder then VisualFolder:ClearAllChildren() else
+    VisualFolder = Instance.new("Folder")
+    VisualFolder.Name = VISUALS_FOLDER_NAME
+    VisualFolder.Parent = workspace
+end
+
 local lines = {}
 local function log(t) table.insert(lines, t) end
 
 log("==================================================")
-log("   EXTRACCIÓN FORENSE DE VARIABLES Y ESTRUCTURAS  ")
+log("       TABLA MAESTRA DE VIDA (HP MÁXIMO)          ")
 log("==================================================")
-log(string.format("Posición Jugador: Vector3.new(%.1f, %.1f, %.1f)", myPos.X, myPos.Y, myPos.Z))
 log("Hora: " .. os.date("%X"))
 log("--------------------------------------------------")
 
--- 1. RECOLECTAR MODELOS CERCANOS (RADIO DE 70 STUDS)
-local targets = {}
-local function checkModel(m)
+-- 1. RASTREAR BASE DE DATOS EN REPLICATEDSTORAGE (CONFIGURACIONES DE PLANOS)
+local MasterHP = {}
+
+local function scanDatabase(parent)
+    for _, obj in ipairs(parent:GetDescendants()) do
+        local name = obj.Name:lower()
+        -- Si encontramos módulos, configuraciones o carpetas con nombres de estructuras
+        if obj:IsA("Configuration") or obj:IsA("Folder") or obj:IsA("Model") then
+            for k, v in pairs(obj:GetAttributes()) do
+                local key = k:lower()
+                if (key:find("health") or key:find("hp") or key:find("durability") or key:find("vida")) and type(v) == "number" then
+                    MasterHP[obj.Name] = v
+                end
+            end
+            for _, val in ipairs(obj:GetChildren()) do
+                if val:IsA("ValueBase") and type(val.Value) == "number" then
+                    local vName = val.Name:lower()
+                    if vName:find("health") or vName:find("hp") or vName:find("durability") or vName:find("vida") then
+                        MasterHP[obj.Name] = val.Value
+                    end
+                end
+            end
+        end
+    end
+end
+
+scanDatabase(ReplicatedStorage)
+
+-- 2. ESCANEO ESPECÍFICO DE OBJETOS EN WORKSPACE (FILTRANDO REPETIDOS)
+local uniqueFound = {}
+local scannedList = {}
+
+local function inspect(m)
     if not m or not m:IsA("Model") or m == char or Players:GetPlayerFromCharacter(m) then return end
-    if m.Name:lower():find("drone") or m.Name:lower():find("dropped") then return end
+    local mName = m.Name
 
-    local cf, size = m:GetBoundingBox()
-    local dist = (cf.Position - myPos).Magnitude
-    if dist <= 70 then
-        table.insert(targets, {Model = m, Dist = dist, Size = size, Pos = cf.Position})
-    end
-end
+    local isCar = mName:lower():find("car") or mName:lower():find("truck") or mName:lower():find("vehicle") or m:FindFirstChildWhichIsA("VehicleSeat", true) ~= nil
+    local isTower = mName:lower():find("tower") or mName:lower():find("torre") or mName:lower():find("turret")
+    local isStruct = m.Parent and m.Parent.Name == "Structures"
 
-if workspace:FindFirstChild("Structures") then
-    for _, m in ipairs(workspace.Structures:GetChildren()) do checkModel(m) end
-end
-for _, m in ipairs(workspace:GetChildren()) do
-    if m ~= workspace:FindFirstChild("Structures") and m.Name ~= "Characters" then
-        checkModel(m)
-    end
-end
+    if isCar or isTower or isStruct then
+        local cf, size = m:GetBoundingBox()
+        local dist = (cf.Position - myPos).Magnitude
+        if dist > 140 then return end
 
--- Ordenar por cercanía (los más pegados a ti primero)
-table.sort(targets, function(a, b) return a.Dist < b.Dist end)
-
--- Limitar a los 6 más cercanos para no saturar el texto
-local maxScan = math.min(#targets, 8)
-log(string.format("Total detectados en 70 studs: %d | Analizando a fondo los %d más cercanos:\n", #targets, maxScan))
-
-for i = 1, maxScan do
-    local item = targets[i]
-    local m = item.Model
-    log(string.format("══════════ OBJETO [%d/%d]: %s ══════════", i, maxScan, m.Name))
-    log(string.format("• Distancia: %.1f studs | Ubicación: %s", item.Dist, m:GetFullName()))
-    log(string.format("• BoundingBox: %.1f x %.1f x %.1f", item.Size.X, item.Size.Y, item.Size.Z))
-
-    -- A. ATRIBUTOS DEL MODELO RAÍZ
-    local rootAttrs = {}
-    for k, v in pairs(m:GetAttributes()) do
-        table.insert(rootAttrs, string.format("%s = %s (%s)", tostring(k), tostring(v), typeof(v)))
-    end
-    log("• Atributos en Modelo Raíz: " .. (#rootAttrs > 0 and table.concat(rootAttrs, " | ") or "NINGUNO"))
-
-    -- B. ETIQUETAS DE COLLECTION SERVICE (TAGS)
-    local tags = CollectionService:GetTags(m)
-    log("• Tags de CollectionService: " .. (#tags > 0 and table.concat(tags, ", ") or "NINGUNO"))
-
-    -- C. VALORES INTERNOS (IntValue, NumberValue, StringValue, ObjectValue)
-    local valuesFound = {}
-    for _, desc in ipairs(m:GetDescendants()) do
-        if desc:IsA("ValueBase") then
-            table.insert(valuesFound, string.format("%s (%s) = %s", desc.Name, desc.ClassName, tostring(desc.Value)))
-        end
-    end
-    log("• Values internos encontrados: " .. (#valuesFound > 0 and table.concat(valuesFound, " | ") or "NINGUNO"))
-
-    -- D. INTERFACES GRÁFICAS O TEXTOS FLOTANTES (Guis con vida, barras, números)
-    local guiTexts = {}
-    for _, desc in ipairs(m:GetDescendants()) do
-        if desc:IsA("TextLabel") or desc:IsA("TextButton") then
-            if desc.Text and desc.Text ~= "" then
-                table.insert(guiTexts, string.format("%s: '%s'", desc.Name, desc.Text))
+        -- Buscar vida en MockHumanoid
+        local hpVal = nil
+        local mock = m:FindFirstChild("MockHumanoid")
+        if mock then
+            for k, v in pairs(mock:GetAttributes()) do
+                if (k:lower():find("health") or k:lower():find("hp") or k:lower():find("max")) and type(v) == "number" then
+                    hpVal = v
+                end
+            end
+            for _, val in ipairs(mock:GetChildren()) do
+                if val:IsA("ValueBase") and type(val.Value) == "number" then hpVal = val.Value end
             end
         end
-    end
-    log("• Textos en Guis internos: " .. (#guiTexts > 0 and table.concat(guiTexts, " | ") or "NINGUNO"))
 
-    -- E. ATRIBUTOS EN PARTES INTERNAS (Muchos juegos ponen la vida en la 'MainPart' o 'Hitbox')
-    local partAttrs = {}
-    for _, desc in ipairs(m:GetDescendants()) do
-        if desc:IsA("BasePart") then
-            local pAttrs = desc:GetAttributes()
-            for k, v in pairs(pAttrs) do
-                table.insert(partAttrs, string.format("[%s].%s = %s", desc.Name, tostring(k), tostring(v)))
+        -- Si no está en MockHumanoid, buscar en el modelo o en la base maestra
+        if not hpVal then
+            for k, v in pairs(m:GetAttributes()) do
+                if (k:lower():find("hp") or k:lower():find("health") or k:lower():find("max")) and type(v) == "number" then hpVal = v end
             end
         end
-    end
-    log("• Atributos en BaseParts hijas: " .. (#partAttrs > 0 and table.concat(partAttrs, " | ") or "NINGUNO"))
-
-    -- F. ESTRUCTURA DE CARPETAS / CONFIGURATION
-    local configs = {}
-    for _, desc in ipairs(m:GetChildren()) do
-        if desc:IsA("Configuration") or desc:IsA("Folder") then
-            table.insert(configs, string.format("%s (%s con %d hijos)", desc.Name, desc.ClassName, #desc:GetChildren()))
+        if not hpVal and MasterHP[mName] then
+            hpVal = MasterHP[mName]
         end
-    end
-    log("• Carpetas/Configuration raíz: " .. (#configs > 0 and table.concat(configs, ", ") or "NINGUNA"))
 
-    -- G. HUMANOID O SEATS
-    local hum = m:FindFirstChildOfClass("Humanoid") or m:FindFirstChildWhichIsA("Humanoid", true)
-    if hum then
-        log(string.format("• HUMANOID DETECTADO: Health=%.1f | MaxHealth=%.1f", hum.Health, hum.MaxHealth))
-    end
-    local seat = m:FindFirstChildWhichIsA("VehicleSeat", true)
-    if seat then
-        log(string.format("• ASIENTO DE VEHÍCULO: %s (Ocupante: %s)", seat.Name, tostring(seat.Occupant)))
-    end
+        -- Si es un auto, revisar chasis y asientos
+        if isCar and not hpVal then
+            local driveSeat = m:FindFirstChildWhichIsA("VehicleSeat", true)
+            if driveSeat then
+                hpVal = driveSeat:GetAttribute("Health") or driveSeat:GetAttribute("MaxHealth") or m:GetAttribute("Health")
+            end
+            -- Valor habitual de chasis si el juego usa script de carrocería
+            hpVal = hpVal or m:GetAttribute("EngineHealth") or m:GetAttribute("BodyHealth")
+        end
 
-    log("") -- Salto de línea
+        table.insert(scannedList, {
+            Name = mName,
+            Model = m,
+            HP = hpVal,
+            IsCar = isCar,
+            IsTower = isTower,
+            Dist = dist,
+            CFrame = cf,
+            Size = size
+        })
+    end
+end
+
+for _, m in ipairs(workspace.Structures and workspace.Structures:GetChildren() or {}) do inspect(m) end
+for _, m in ipairs(workspace:GetChildren()) do inspect(m) end
+
+-- 3. PROCESAR RESULTADOS Y COLOCAR ETIQUETAS GIGANTES
+log("[VALORES EXTRAÍDOS]:")
+for _, item in ipairs(scannedList) do
+    local displayText = item.HP and string.format("%.0f HP", item.HP) or "Desconocido (En Servidor)"
+    log(string.format("• %s [%s] -> %s | Dist: %.1f studs", 
+        item.IsCar and "🚗" or (item.IsTower and "🗼" or "🛡️"), item.Name, displayText, item.Dist))
+
+    -- Dibujar en pantalla con Billboard gigante
+    local anchor = Instance.new("Part")
+    anchor.Name = "HPAnchor_" .. item.Name
+    anchor.Anchored = true
+    anchor.CanCollide = false
+    anchor.Transparency = 1
+    anchor.CFrame = item.CFrame
+    anchor.Size = Vector3.new(1, 1, 1)
+    anchor.Parent = VisualFolder
+
+    local bb = Instance.new("BillboardGui")
+    bb.Size = UDim2.new(0, 240, 0, 75)
+    bb.AlwaysOnTop = true
+    bb.Adornee = anchor
+    bb.StudsOffset = Vector3.new(0, (item.Size.Y / 2) + 2.5, 0)
+    bb.Parent = anchor
+
+    local lblName = Instance.new("TextLabel")
+    lblName.Size = UDim2.new(1, 0, 0, 20)
+    lblName.BackgroundTransparency = 1
+    lblName.TextColor3 = Color3.fromRGB(255, 255, 255)
+    lblName.TextStrokeTransparency = 0
+    lblName.TextSize = 14
+    lblName.Font = Enum.Font.GothamBold
+    lblName.Text = (item.IsCar and "🚗 " or "🛡️ ") .. item.Name
+    lblName.Parent = bb
+
+    local lblHP = Instance.new("TextLabel")
+    lblHP.Size = UDim2.new(1, 0, 0, 50)
+    lblHP.Position = UDim2.new(0, 0, 0, 20)
+    lblHP.BackgroundTransparency = 1
+    lblHP.TextStrokeTransparency = 0
+    lblHP.TextSize = 36
+    lblHP.Font = Enum.Font.GothamBlack
+    lblHP.TextColor3 = item.IsCar and Color3.fromRGB(0, 240, 255) or (item.IsTower and Color3.fromRGB(255, 215, 0) or Color3.fromRGB(50, 255, 120))
+    lblHP.Text = displayText
+    lblHP.Parent = bb
 end
 
 log("==================================================")
-log("             FIN DE LA AUTOPSIA                   ")
-log("==================================================")
-
-local fullReport = table.concat(lines, "\n")
-if setclipboard then
-    setclipboard(fullReport)
-elseif toclipboard then
-    toclipboard(fullReport)
-end
+local report = table.concat(lines, "\n")
+if setclipboard then setclipboard(report) elseif toclipboard then toclipboard(report) end
 
 StarterGui:SetCore("SendNotification", {
-    Title = "📋 AUTOPSIA COMPLETADA",
-    Text = string.format("Datos de %d objetos copiados al portapapeles.", maxScan),
+    Title = "EXTRACCIÓN MAESTRA LISTA",
+    Text = "Datos de vida extraídos y copiados al portapapeles.",
     Duration = 5
 })
