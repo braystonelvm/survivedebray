@@ -1,100 +1,136 @@
 -- ==============================================================================
--- AUTO-SUBIR AL AUTO (ULTRA-LIGERO / CERO LAG EN BATALLA) | TECLA 'V'
+-- VISUALIZADOR Y RADIOGRAFÍA DE HITBOXES / ESPACIO DE ESTRUCTURAS
 -- ==============================================================================
 
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
 local lp = Players.LocalPlayer
+local char = lp.Character or lp.CharacterAdded:Wait()
+local root = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
+local myPos = root and root.Position or Vector3.zero
 
-local MAX_DISTANCE = 150 -- Radio de 150 studs (óptimo para combate)
+-- Carpeta temporal para las cajas visuales
+local VisualFolder = workspace:FindFirstChild("StructureHitboxVisuals")
+if VisualFolder then
+    VisualFolder:ClearAllChildren()
+else
+    VisualFolder = Instance.new("Folder")
+    VisualFolder.Name = "StructureHitboxVisuals"
+    VisualFolder.Parent = workspace
+end
 
-local function mountClosestCar()
-    local char = lp.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if not root or not hum or hum.Health <= 0 then return end
+local lines = {}
+local function log(t) table.insert(lines, t) end
 
-    -- Si ya estás conduciendo, no hace nada
-    if hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then return end
+log("==================================================")
+log("  ANÁLISIS DE ESPACIO Y HITBOXES DE ESTRUCTURAS   ")
+log("==================================================")
+log(string.format("Posición del Jugador: Vector3.new(%.1f, %.1f, %.1f)", myPos.X, myPos.Y, myPos.Z))
+log("Radio de análisis: 120 studs a la redonda")
+log("--------------------------------------------------")
 
-    local myPos = root.Position
-    local bestSeat = nil
-    local shortestDist = MAX_DISTANCE
+local count = 0
+local structuresFolder = workspace:FindFirstChild("Structures") or workspace
 
-    -- Búsqueda directa en Structures (Cero lag: solo revisa modelos de vehículos)
-    local container = workspace:FindFirstChild("Structures") or workspace
-    for _, model in ipairs(container:GetChildren()) do
-        if model:IsA("Model") then
-            local seat = model:FindFirstChild("DriveSeat") or model:FindFirstChildWhichIsA("VehicleSeat")
-            if seat and seat.Occupant == nil then
-                local dist = (seat.Position - myPos).Magnitude
-                if dist < shortestDist then
-                    shortestDist = dist
-                    bestSeat = seat
-                end
-            end
-        end
-    end
+-- Función para dibujar el espacio invisible
+local function drawVisualBounds(cf, size, name, hasHiddenParts)
+    local box = Instance.new("Part")
+    box.Name = "VisualBounds_" .. name
+    box.Size = size
+    box.CFrame = cf
+    box.Anchored = true
+    box.CanCollide = false
+    box.CanTouch = false
+    box.CanQuery = false
+    box.Material = Enum.Material.ForceField -- Visual holográfico limpio
+    box.Color = hasHiddenParts and Color3.fromRGB(255, 30, 30) or Color3.fromRGB(255, 140, 0)
+    box.Transparency = 0.65
+    box.Parent = VisualFolder
 
-    -- Si encontró un auto a menos de 150 studs
-    if bestSeat then
-        local carModel = bestSeat:FindFirstAncestorOfClass("Model")
+    -- Borde exterior para ver los límites con precisión milimétrica
+    local sel = Instance.new("SelectionBox")
+    sel.Adornee = box
+    sel.Color3 = hasHiddenParts and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(255, 200, 0)
+    sel.LineThickness = 0.05
+    sel.SurfaceTransparency = 0.9
+    sel.Parent = box
 
-        -- 1. Detener inercia y posicionar sobre el asiento
-        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-        root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-        root.CFrame = bestSeat.CFrame * CFrame.new(0, 1.2, 0)
+    -- Etiqueta con el nombre y medidas
+    local bb = Instance.new("BillboardGui")
+    bb.Size = UDim2.new(0, 140, 0, 35)
+    bb.AlwaysOnTop = true
+    bb.Adornee = box
+    bb.StudsOffset = Vector3.new(0, (size.Y / 2) + 1.2, 0)
+    bb.Parent = box
 
-        -- 2. Disparar prompt de entrada solo del auto seleccionado
-        if carModel then
-            for _, prompt in ipairs(carModel:GetDescendants()) do
-                if prompt:IsA("ProximityPrompt") then
-                    prompt.HoldDuration = 0
-                    prompt.RequiresLineOfSight = false
-                    if fireproximityprompt then
-                        pcall(function() fireproximityprompt(prompt, 0) end)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    lbl.TextStrokeTransparency = 0.2
+    lbl.TextSize = 11
+    lbl.Font = Enum.Font.GothamBold
+    lbl.Text = string.format("%s\n[%.1f x %.1f x %.1f]", name, size.X, size.Y, size.Z)
+    lbl.Parent = bb
+end
+
+-- Escanear exclusivamente modelos dentro de Structures
+local candidates = structuresFolder:GetChildren()
+for _, model in ipairs(candidates) do
+    -- Filtrar solo modelos que sean estructuras (ignorar autos, jugadores y NPCs)
+    if model:IsA("Model") and model ~= char and not Players:GetPlayerFromCharacter(model) then
+        local mName = model.Name:lower()
+        local isCar = mName:find("car") or mName:find("truck") or mName:find("vehicle") or model:FindFirstChildWhichIsA("VehicleSeat", true)
+        
+        if not isCar then
+            local cf, size = model:GetBoundingBox()
+            local dist = (cf.Position - myPos).Magnitude
+
+            -- Solo estructuras dentro de 120 studs de tu base
+            if dist <= 120 then
+                count = count + 1
+                log(string.format("\n[%d] ESTRUCTURA: %s | Distancia: %.1f studs", count, model.Name, dist))
+                log(string.format("   • Medidas Totales (BoundingBox): X=%.2f | Y=%.2f | Z=%.2f", size.X, size.Y, size.Z))
+                log(string.format("   • Centro: Vector3.new(%.1f, %.1f, %.1f)", cf.Position.X, cf.Position.Y, cf.Position.Z))
+
+                -- Revisar si tiene piezas invisibles infladas en su interior
+                local invisibleParts = {}
+                for _, part in ipairs(model:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        if part.Transparency >= 0.8 or not part.CastShadow then
+                            table.insert(invisibleParts, string.format("%s (Tamaño: %.1fx%.1fx%.1f | Colisión: %s)", 
+                                part.Name, part.Size.X, part.Size.Y, part.Size.Z, tostring(part.CanCollide)))
+                        end
                     end
                 end
+
+                if #invisibleParts > 0 then
+                    log("   ⚠️ PIEZAS INVISIBLES DETECTADAS:")
+                    for _, pInfo in ipairs(invisibleParts) do
+                        log("      -> " .. pInfo)
+                    end
+                else
+                    log("   • No contiene piezas invisibles individuales (usa colisión del modelo).")
+                end
+
+                -- Dibujar la caja tridimensional en pantalla
+                drawVisualBounds(cf, size, model.Name, #invisibleParts > 0)
             end
         end
-
-        -- 3. Sentar instantáneamente
-        task.wait(0.03)
-        hum:ChangeState(Enum.HumanoidStateType.Seated)
-        pcall(function() bestSeat:Sit(hum) end)
     end
 end
 
--- ================= BOTÓN FLOTANTE MINIMALISTA =================
-local existing = lp.PlayerGui:FindFirstChild("FastMountGUI")
-if existing then existing:Destroy() end
+log("--------------------------------------------------")
+log(string.format("TOTAL DE ESTRUCTURAS ANALIZADAS: %d", count))
+log("==================================================")
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "FastMountGUI"
-ScreenGui.ResetOnSpawn = false
-if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
+local reportText = table.concat(lines, "\n")
+if setclipboard then setclipboard(reportText) elseif toclipboard then toclipboard(reportText) end
 
-local Btn = Instance.new("TextButton")
-Btn.Size = UDim2.new(0, 48, 0, 48)
-Btn.Position = UDim2.new(0.04, 0, 0.48, 0)
-Btn.BackgroundColor3 = Color3.fromRGB(0, 180, 120)
-Btn.Text = "🚗\n[V]"
-Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-Btn.TextSize = 12
-Btn.Font = Enum.Font.GothamBold
-Btn.Active = true
-Btn.Draggable = true
-Btn.Parent = ScreenGui
-
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(1, 0)
-Corner.Parent = Btn
-
-Btn.MouseButton1Click:Connect(mountClosestCar)
-
-UserInputService.InputBegan:Connect(function(input, gpe)
-    if gpe then return end
-    if input.KeyCode == Enum.KeyCode.V then
-        mountClosestCar()
-    end
+pcall(function()
+    StarterGui:SetCore("SendNotification", {
+        Title = "📐 HITBOXES VISIBLES",
+        Text = string.format("%d estructuras proyectadas en neón. Reporte copiado.", count),
+        Duration = 5
+    })
 end)
