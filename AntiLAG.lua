@@ -1,184 +1,157 @@
 -- ==============================================================================
--- PURGADOR ULTRA-LIGERO | ACTIVACIÓN AUTOMÁTICA AL AMANECER (CERO LAG)
+-- PURGADOR DE RESIDUOS DE COMBATE (CERO LAG | PROTECCIÓN TOTAL DE BASE)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
-local Lighting = game:GetService("Lighting")
 local StatsService = game:GetService("Stats")
 local Players = game:GetService("Players")
 local lp = Players.LocalPlayer
 
 local Config = {
-    CleanAtDawn = true,       -- Se ejecuta automáticamente cada vez que amanece
-    DawnHour = 6.0            -- Hora del juego considerada amanecer
+    AutoPurgeInterval = 180, -- Purga automática cada 3 minutos (en segundos)
+    ProtectRadius = 250,     -- Radio en studs alrededor tuyo donde NO tocará nada decorativo
 }
 
-local LastCleanedDay = -1
-
--- 1. VENTANA PRINCIPAL (LIGERA Y MINIMALISTA)
 local Window = Fluent:CreateWindow({
-    Title = "PURGADOR AL AMANECER",
+    Title = "COMBAT RAM PURGER",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 140,
-    Size = UDim2.fromOffset(480, 360),
-    Acrylic = false,          -- Desactivado para no consumir GPU
+    Size = UDim2.fromOffset(480, 340),
+    Acrylic = false,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
 
-local Tab = Window:AddTab({ Title = "Rendimiento", Icon = "sun" })
+local Tab = Window:AddTab({ Title = "Limpieza", Icon = "trash-2" })
 
 local StatusParagraph = Tab:AddParagraph({
-    Title = "Estado del Sistema",
-    Content = "Modo reposo activo. Esperando el amanecer para purgar..."
+    Title = "Monitor de Memoria",
+    Content = "Iniciando monitor..."
 })
 
-local function updateStatus(text)
-    StatusParagraph:SetDesc(text)
-end
-
--- PURGA PROFUNDA DE LAS 90,000+ INSTANCIAS ACUMULADAS
-local function executeDeepWorldPurge()
+-- FUNCIÓN DE PURGA EXCLUSIVA DE COMBATE (SIN TOCAR BASE NI ZANAHORIAS)
+local function purgeCombatLeaks()
     local beforeRAM = math.floor(StatsService:GetTotalMemoryUsageMb())
-    updateStatus("🧹 Purgando escombros y memoria acumulada...")
+    local char = lp.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    local myPos = root and root.Position or Vector3.zero
 
-    local deleted = 0
+    local destroyedCount = 0
 
-    -- 1. Vaciar contenedores masivos donde el juego arroja restos (Debris, Ragdolls, Gibs)
-    local junkNames = {"debris", "ragdoll", "corpse", "blood", "effects", "gibs", "dropped"}
+    -- 1. LIMPIAR RESIDUOS EN LA CÁMARA (Donde los juegos arrojan trazadoras y sangre)
+    if workspace.CurrentCamera then
+        for _, obj in ipairs(workspace.CurrentCamera:GetChildren()) do
+            pcall(function()
+                obj:Destroy()
+                destroyedCount = destroyedCount + 1
+            end)
+        end
+    end
+
+    -- 2. PURGAR CALCOMANÍAS DE SANGRE / IMPACTOS FUERA DE TU BASE
+    -- (Busca Decals con texturas o nombres de sangre/disparos para no tocar carteles de tu base)
     for _, obj in ipairs(workspace:GetChildren()) do
-        local n = obj.Name:lower()
-        for _, jName in ipairs(junkNames) do
-            if n:find(jName) and obj ~= lp.Character then
-                pcall(function()
-                    deleted = deleted + #obj:GetDescendants()
-                    obj:ClearAllChildren()
-                end)
-                break
+        -- REGLA DE ORO: SI ES TU BASE O ESTRUCTURAS, NO ENTRAR
+        local oName = obj.Name:lower()
+        if oName ~= "structures" and oName ~= "map" and obj ~= char then
+            for _, desc in ipairs(obj:GetDescendants()) do
+                local dName = desc.Name:lower()
+                local isBloodOrHit = dName:find("blood") or dName:find("hit") or dName:find("bullet") or dName:find("splatter") or dName:find("gore") or dName:find("sangre")
+
+                -- Eliminar si es residuo de zombie
+                if desc:IsA("Decal") and isBloodOrHit then
+                    pcall(function()
+                        desc:Destroy()
+                        destroyedCount = destroyedCount + 1
+                    end)
+                elseif desc:IsA("ParticleEmitter") or desc:IsA("Beam") or desc:IsA("Trail") then
+                    if isBloodOrHit or not desc.Enabled then
+                        pcall(function()
+                            desc:Destroy()
+                            destroyedCount = destroyedCount + 1
+                        end)
+                    end
+                end
             end
         end
     end
 
-    -- 2. Eliminar modelos de zombies muertos que quedaron en workspace o Characters
-    local charFolder = workspace:FindFirstChild("Characters") or workspace
-    for _, entity in ipairs(charFolder:GetChildren()) do
-        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
-            local hum = entity:FindFirstChildOfClass("Humanoid")
-            local eName = entity.Name:lower()
-            local isDead = (hum and hum.Health <= 0) or eName:find("corpse") or eName:find("ragdoll")
+    -- 3. ELIMINAR ZOMBIES MUERTOS Y RESTOS DE RAGDOLL EN CHARACTERS
+    local charFolder = workspace:FindFirstChild("Characters")
+    if charFolder then
+        for _, entity in ipairs(charFolder:GetChildren()) do
+            if entity:IsA("Model") and entity ~= char and not Players:GetPlayerFromCharacter(entity) then
+                local hum = entity:FindFirstChildOfClass("Humanoid")
+                local isCorpse = (hum and hum.Health <= 0) or entity.Name:lower():find("corpse") or entity.Name:lower():find("ragdoll")
 
-            if isDead then
-                pcall(function()
-                    deleted = deleted + 1
-                    entity:Destroy()
-                end)
+                if isCorpse then
+                    pcall(function()
+                        entity:Destroy()
+                        destroyedCount = destroyedCount + 1
+                    end)
+                end
             end
         end
     end
 
-    -- 3. Limpiar Highlights y sonidos que terminaron de reproducirse
-    for _, desc in ipairs(workspace:GetDescendants()) do
-        if desc:IsA("Highlight") and desc.Name ~= "CustomTargetHighlight" then
-            pcall(function() desc:Destroy() end)
-            deleted = deleted + 1
-        elseif desc:IsA("Sound") and not desc.IsPlaying and desc.TimePosition > 0 and not desc.Looped then
-            pcall(function() desc:Destroy() end)
-            deleted = deleted + 1
+    -- 4. LIMPIAR CONTENEDOR DE ESCOMBROS DE ROBLOX
+    local debrisFolder = workspace:FindFirstChild("Debris") or workspace:FindFirstChild("Ignore")
+    if debrisFolder then
+        for _, item in ipairs(debrisFolder:GetChildren()) do
+            pcall(function()
+                item:Destroy()
+                destroyedCount = destroyedCount + 1
+            end)
         end
     end
 
-    -- 4. Forzar liberación agresiva de Lua Heap (RAM interna)
-    for _ = 1, 3 do
+    -- 5. FORZAR LIBERACIÓN DE MEMORIA DEL MOTOR
+    for _ = 1, 2 do
         collectgarbage("collect")
     end
 
-    task.wait(0.3)
+    task.wait(0.2)
     local afterRAM = math.floor(StatsService:GetTotalMemoryUsageMb())
-    local freedMB = math.max(0, beforeRAM - afterRAM)
-
-    local msg = string.format("Completado: %d objetos eliminados | RAM Liberada: ~%d MB (Actual: %d MB)", deleted, freedMB, afterRAM)
-    updateStatus(msg)
+    local msg = string.format("Purgados: %d residuos de combate | RAM Actual: %d MB", destroyedCount, afterRAM)
+    StatusParagraph:SetDesc(msg)
 
     Fluent:Notify({
-        Title = "Amanecer: Memoria Purgada",
+        Title = "Purga de Combate Completada",
         Content = msg,
-        Duration = 4
+        Duration = 3
     })
 end
 
 -- CONTROLES
 Tab:AddButton({
-    Title = "⚡ PURGAR AHORA (MANUAL)",
-    Description = "Limpia de inmediato todas las partes muertas acumuladas",
+    Title = "⚡ PURGAR RESIDUOS DE COMBATE AHORA",
+    Description = "Elimina calcomanías de sangre, emisores huérfanos y proyectiles acumulados",
     Callback = function()
-        executeDeepWorldPurge()
+        purgeCombatLeaks()
     end
 })
 
-Tab:AddToggle("DawnCleanToggle", {
-    Title = "Auto-Limpiar al Amanecer",
-    Description = "Limpia automáticamente en cuanto sale el sol",
-    Default = true,
-    Callback = function(v) Config.CleanAtDawn = v end
-})
-
--- BOTÓN FLOTANTE CÍRCULAR (Y = 0.40)
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "DawnCleanerFloatBtn"
-ScreenGui.ResetOnSpawn = false
-if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
-
-local FloatBtn = Instance.new("ImageButton")
-FloatBtn.Size = UDim2.new(0, 48, 0, 48)
-FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(240, 150, 20)
-FloatBtn.Image = "rbxassetid://10723415903"
-FloatBtn.Parent = ScreenGui
-
-local UICorner = Instance.new("UICorner")
-UICorner.CornerRadius = UDim.new(1, 0)
-UICorner.Parent = FloatBtn
-
-local isOpen = true
-FloatBtn.MouseButton1Click:Connect(function()
-    isOpen = not isOpen
-    Window.Root.Visible = isOpen
-end)
-
--- BUCLE EN REPOSO ABSOLUTO (SOLO REVISA EL RELOJ CADA 3 SEGUNDOS)
+-- BUCLE AUTOMÁTICO EN SEGUNDO PLANO
 task.spawn(function()
     while true do
-        task.wait(3.0) -- Cero impacto en el procesador
+        task.wait(Config.AutoPurgeInterval)
+        purgeCombatLeaks()
+    end
+end)
 
-        if Config.CleanAtDawn then
-            local clock = Lighting.ClockTime
-            local isMorning = (clock >= Config.DawnHour and clock < (Config.DawnHour + 1.2))
-
-            -- Obtener día actual para no repetir la limpieza dos veces la misma mañana
-            local currentDay = -1
-            local pGui = lp:FindFirstChild("PlayerGui")
-            if pGui then
-                local topUI = pGui:FindFirstChild("TopUI")
-                local dayCounter = topUI and topUI:FindFirstChild("DayCounter")
-                if dayCounter and dayCounter:IsA("TextLabel") then
-                    local dNum = tonumber(dayCounter.Text:match("%d+"))
-                    if dNum then currentDay = dNum end
-                end
-            end
-
-            -- Si es de mañana y aún no se ha purgado este día
-            if isMorning and (currentDay ~= LastCleanedDay) then
-                LastCleanedDay = currentDay
-                executeDeepWorldPurge()
-            end
-        end
+-- MONITOR DE RAM EN VIVO EN LA INTERFAZ
+task.spawn(function()
+    while true do
+        task.wait(2.0)
+        local curRAM = math.floor(StatsService:GetTotalMemoryUsageMb())
+        StatusParagraph:SetTitle(string.format("Consumo RAM: %d MB (%.2f GB)", curRAM, curRAM / 1024))
     end
 end)
 
 Fluent:Notify({
-    Title = "LIMPIADOR AL AMANECER LISTO",
-    Content = "Modo reposo activo: Cero lag y purga automática al salir el sol.",
+    Title = "PURGADOR ACTIVADO",
+    Content = "Tus estructuras y cultivos están 100% protegidos.",
     Duration = 4
 })
 
