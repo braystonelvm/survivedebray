@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- REACTOR NUCLEAR HUB - APERTURA PRIORITARIA, RONDAS (10s), GAS 128 Y EXPERIMENT
--- V10 MASTER: CAJAS ESTRICTAS + PARADAS INMÓVILES + PHASER READY + COFRES
+-- V11 MASTER: CAJAS ESTRICTAS + LIBERACIÓN DE MOVIMIENTO + PHASER READY + COFRES
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -69,7 +69,7 @@ local RangeVisuals = {}
 
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
-    Title = "REACTOR HUB | NUCLEAR V10",
+    Title = "REACTOR HUB | NUCLEAR V11",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(560, 500),
@@ -120,7 +120,7 @@ local function copyCurrentCoords()
     end
 end
 
--- LIMPIEZA AL DETENER
+-- LIMPIEZA TOTAL DE FÍSICAS (DESBLOQUEA AL PERSONAJE)
 local function removePhysicsHelpers()
     local root = getRootPart()
     if root then
@@ -303,6 +303,11 @@ local function isValidZombieModel(entity)
         return false
     end
 
+    -- Descarta muertos marcados por atributos del juego
+    if entity:GetAttribute("Dead") == true or entity:GetAttribute("Downed") == true then
+        return false
+    end
+
     local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
     if not eRoot then
         return false
@@ -383,7 +388,7 @@ local function updateRangeVisuals()
     createBoxVisual("Visual_Center2_Range", Center2_Pos, State.Center2Radius, Color3.fromRGB(255, 170, 0))
 end
 
--- DETECCIÓN ESTRICTA DENTRO DEL VOLUMEN DE LA CAJA (IGNORA CUALQUIERA FUERA DEL RANGO)
+-- DETECCIÓN ESTRICTA DENTRO DEL VOLUMEN DE LA CAJA (IGNORA AFUERA, OTROS PISOS Y DORMIDOS)
 local function getZombiesInBox(centerPos, radius)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local targets = {}
@@ -391,13 +396,18 @@ local function getZombiesInBox(centerPos, radius)
     local function checkEntity(entity)
         local valid, eRoot = isValidZombieModel(entity)
         if valid then
+            -- Ignorar zombies hibernando o durmiendo para no congelar el avance
+            if entity:GetAttribute("Hibernating") == true or entity:GetAttribute("Sleeping") == true then
+                return
+            end
+
             local dx = math.abs(eRoot.Position.X - centerPos.X)
             local dz = math.abs(eRoot.Position.Z - centerPos.Z)
             local dy = math.abs(eRoot.Position.Y - centerPos.Y)
             local distHorizontal = math.sqrt(dx * dx + dz * dz)
 
-            -- Medición matemática estricta: solo si está dentro del radio horizontal Y dentro de la altura
-            if distHorizontal <= radius and dy <= radius then
+            -- Medición matemática estricta: radio horizontal exacto y altura de piso máxima (5.5 studs)
+            if distHorizontal <= radius and dy <= 5.5 then
                 table.insert(targets, {Model = entity, Root = eRoot, Dist = distHorizontal})
             end
         end
@@ -447,7 +457,7 @@ local function executeThreeInitialStops()
             if #inRange == 0 then
                 -- Caja vacía: completó la misión en Centro 1
                 updateStatus("✅ Centro 1 limpio (caja vacía). Avanzando a Centro 2...")
-                task.wait(0.5)
+                task.wait(0.4)
                 break
             else
                 updateStatus(string.format("Centro 1: Quieto esperando (%d en caja)...", #inRange))
@@ -890,7 +900,13 @@ Tabs.Main:AddButton({
     Callback = function()
         if State.Running then
             State.Paused = not State.Paused
-            updateStatus(State.Paused and "Pausado manualmente" or "Reanudado")
+            if State.Paused then
+                removePhysicsHelpers()
+                restoreCollisions()
+                updateStatus("Pausado manualmente (Movimiento libre)")
+            else
+                updateStatus("Reanudado")
+            end
         end
     end
 })
@@ -1360,13 +1376,14 @@ task.spawn(function()
             end
         else
             removePhysicsHelpers()
+            restoreCollisions()
         end
     end
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB V10 LISTO",
-    Content = "Cajas estrictas, paradas 100% inmóviles y cacería intacta.",
+    Title = "REACTOR HUB V11 LISTO",
+    Content = "Cajas estrictas, movimiento libre al pausar/detener y cacería intacta.",
     Duration = 4
 })
 
