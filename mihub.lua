@@ -42,6 +42,54 @@ local function applyHighlight(obj)
     end
 end
 
+-- FUNCIÓN PARA EXTRAER EL OBJETO COMPLETO (MODELO RAÍZ)
+local function getCompleteObject(target)
+    if not target or target == lp.Character or target:IsDescendantOf(lp.Character) then 
+        return nil 
+    end
+
+    -- 1. Si es un Zombie o Jugador con Humanoid
+    local humModel = target:FindFirstAncestorOfClass("Model")
+    while humModel and not humModel:FindFirstChildOfClass("Humanoid") and humModel.Parent ~= workspace do
+        local higherModel = humModel.Parent:FindFirstAncestorOfClass("Model")
+        if higherModel then
+            humModel = higherModel
+        else
+            break
+        end
+    end
+    if humModel and humModel:FindFirstChildOfClass("Humanoid") then
+        return humModel
+    end
+
+    -- 2. Escalar ancestros buscando el Modelo contenedor principal (Carretera, Auto, Estructura)
+    local current = target
+    local topModel = nil
+
+    while current and current ~= workspace do
+        if current:IsA("Model") then
+            topModel = current
+            local parentName = current.Parent and current.Parent.Name:lower() or ""
+            -- Si el contenedor padre es una carpeta principal del juego o el Workspace
+            if current.Parent == workspace or parentName == "characters" or parentName == "structures" or parentName == "tiles" or parentName == "map" then
+                return current
+            end
+        end
+        current = current.Parent
+    end
+
+    if topModel then
+        return topModel
+    end
+
+    -- 3. Si no tiene Model pero es una pieza llamada "Mesh", buscar el contenedor
+    if target.Name:lower():find("mesh") and target.Parent and target.Parent ~= workspace then
+        return target.Parent
+    end
+
+    return target
+end
+
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
     Title = "ZOMBIE HUB | CUSTOM",
@@ -141,23 +189,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     
     -- Tecla E: Fijar
     if input.KeyCode == Enum.KeyCode.E then
-        local target = mouse.Target
-        if target then
-            -- Intentar detectar si es un Zombie
-            local model = target:FindFirstAncestorOfClass("Model")
-            local chosen = nil
-
-            if model and model ~= lp.Character then
-                -- Si es un zombie dentro de Characters o con Humanoid
-                if model.Parent and model.Parent.Name == "Characters" or model:FindFirstChildOfClass("Humanoid") then
-                    chosen = model
-                else
-                    -- Si es una pieza de pista/mapa (StraightRoad, TSection, etc.)
-                    chosen = target
-                end
-            else
-                chosen = target
-            end
+        local rawTarget = mouse.Target
+        if rawTarget then
+            local chosen = getCompleteObject(rawTarget)
 
             if chosen then
                 CurrentTarget = chosen
@@ -195,12 +229,15 @@ RunService.Heartbeat:Connect(function()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not root or not hum or hum.Health <= 0 then return end
 
-    -- Obtener pieza física de referencia
+    -- Obtener pieza física de referencia del Modelo completo
     local targetPart = nil
     if CurrentTarget:IsA("BasePart") then
         targetPart = CurrentTarget
     elseif CurrentTarget:IsA("Model") then
-        targetPart = CurrentTarget:FindFirstChild("HumanoidRootPart") or CurrentTarget:FindFirstChild("Torso") or CurrentTarget.PrimaryPart or CurrentTarget:FindFirstChildWhichIsA("BasePart")
+        targetPart = CurrentTarget:FindFirstChild("HumanoidRootPart") 
+            or CurrentTarget:FindFirstChild("Torso") 
+            or CurrentTarget.PrimaryPart 
+            or CurrentTarget:FindFirstChildWhichIsA("BasePart", true)
     end
 
     if targetPart and targetPart.Parent then
@@ -220,7 +257,7 @@ RunService.Heartbeat:Connect(function()
         local horizontalDir = Vector3.new(direction.X, 0, direction.Z)
 
         if horizontalDir.Magnitude > 1.5 then
-            -- Mover usando velocidad física directa (empuja al muñeco o auto sin que el teclado estorbe)
+            -- Mover usando velocidad física directa
             local targetVelocity = horizontalDir.Unit * Config.MoveSpeed
             root.AssemblyLinearVelocity = Vector3.new(targetVelocity.X, root.AssemblyLinearVelocity.Y, targetVelocity.Z)
         end
