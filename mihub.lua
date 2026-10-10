@@ -1,5 +1,5 @@
 -- ==============================================================================
--- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE
+-- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE (ANTI-BLOATERS V2)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -13,13 +13,16 @@ local mouse = lp:GetMouse()
 -- Variables de configuración
 local Config = {
     ZigZagEnabled = false,
-    SwitchInterval = 1.2,   -- Tiempo hacia cada lado
-    LateralDist = 12,       -- Amplitud del zigzag en studs
-    MoveSpeed = 24          -- Velocidad forzada de desplazamiento
+    SwitchInterval = 0.0,   -- Frecuencia cero por defecto (movimiento continuo)
+    LateralDist = 25,       -- Amplitud de 25 studs por defecto
+    MoveSpeed = 80,         -- Velocidad de 80 por defecto (máximo 200)
+    EvadeBloaters = true,   -- Esquivar explosiones activado
+    BloaterDangerDist = 30  -- Radio de peligro del Bloater en studs
 }
 
 local CurrentTarget = nil
 local TargetHighlight = nil
+local ZigZagToggleInstance = nil
 
 -- Crear o limpiar Highlight visual
 local function clearHighlight()
@@ -42,7 +45,7 @@ local function applyHighlight(obj)
     end
 end
 
--- FUNCIÓN PARA EXTRAER EL OBJETO COMPLETO (MODELO RAÍZ)
+-- EXTRAER EL MODELO COMPLETO (EVITA SELECCIONAR SOLO "MESH")
 local function getCompleteObject(target)
     if not target or target == lp.Character or target:IsDescendantOf(lp.Character) then 
         return nil 
@@ -62,7 +65,7 @@ local function getCompleteObject(target)
         return humModel
     end
 
-    -- 2. Escalar ancestros buscando el Modelo contenedor principal (Carretera, Auto, Estructura)
+    -- 2. Escalar ancestros buscando el Modelo contenedor principal
     local current = target
     local topModel = nil
 
@@ -70,7 +73,6 @@ local function getCompleteObject(target)
         if current:IsA("Model") then
             topModel = current
             local parentName = current.Parent and current.Parent.Name:lower() or ""
-            -- Si el contenedor padre es una carpeta principal del juego o el Workspace
             if current.Parent == workspace or parentName == "characters" or parentName == "structures" or parentName == "tiles" or parentName == "map" then
                 return current
             end
@@ -82,7 +84,6 @@ local function getCompleteObject(target)
         return topModel
     end
 
-    -- 3. Si no tiene Model pero es una pieza llamada "Mesh", buscar el contenedor
     if target.Name:lower():find("mesh") and target.Parent and target.Parent ~= workspace then
         return target.Parent
     end
@@ -90,12 +91,44 @@ local function getCompleteObject(target)
     return target
 end
 
+-- RASTREO Y DETECCIÓN DE EXPLOSIONES DE BLOATERS
+local function getBloaterDangerZones()
+    local dangers = {}
+    local charFolder = workspace:FindFirstChild("Characters") or workspace
+
+    local function checkEntity(entity)
+        if entity:IsA("Model") and entity ~= lp.Character then
+            local name = entity.Name:lower()
+            local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
+            local isBloater = name:find("bloat") or name:find("boom") or name:find("explod") or variant:find("bloat") or variant:find("boom")
+
+            if isBloater then
+                local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
+                local hum = entity:FindFirstChildOfClass("Humanoid")
+                local isDowned = (hum and hum.Health <= 0) or entity:GetAttribute("Exploding") == true or entity:GetAttribute("Dead") == true or name:find("corpse") or name:find("ragdoll")
+
+                -- Si está caído esperando explotar o en secuencia crítica
+                if eRoot and (isDowned or (hum and hum.Health <= 50)) then
+                    table.insert(dangers, eRoot.Position)
+                end
+            end
+        end
+    end
+
+    for _, entity in ipairs(charFolder:GetChildren()) do checkEntity(entity) end
+    if charFolder ~= workspace then
+        for _, entity in ipairs(workspace:GetChildren()) do checkEntity(entity) end
+    end
+
+    return dangers
+end
+
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | CUSTOM",
+    Title = "ZOMBIE HUB | CUSTOM V2",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(580, 430),
+    Size = UDim2.fromOffset(580, 440),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
@@ -105,9 +138,9 @@ local Tabs = {
     Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" })
 }
 
-Tabs.Combat:AddSection("Controles de Zigzag")
+Tabs.Combat:AddSection("Controles de Movimiento y Evasión")
 
-Tabs.Combat:AddToggle("ZigZagToggle", {
+ZigZagToggleInstance = Tabs.Combat:AddToggle("ZigZagToggle", {
     Title = "Activar Movimiento Automático",
     Default = false,
     Callback = function(Value)
@@ -115,15 +148,24 @@ Tabs.Combat:AddToggle("ZigZagToggle", {
     end
 })
 
+Tabs.Combat:AddToggle("BloaterEvadeToggle", {
+    Title = "🛡️ Evasión Activa de Bloaters",
+    Description = "Detecta bloaters caídos y los esquiva automáticamente",
+    Default = true,
+    Callback = function(Value)
+        Config.EvadeBloaters = Value
+    end
+})
+
 Tabs.Combat:AddParagraph({
-    Title = "Controles de Teclas",
-    Content = "• Presiona 'E' apuntando a un Zombie o a la Carretera (StraightRoad) para fijarlo.\n• Presiona 'R' para desmarcar el objetivo."
+    Title = "Controles Rápidos de Teclado",
+    Content = "• Presiona 'T': Apunta a la zona/carretera para fijar y ACTIVAR el movimiento automáticamente.\n• Presiona '0': Quita el objetivo y APAGA el movimiento."
 })
 
 Tabs.Combat:AddSlider("IntervalSlider", {
-    Title = "Frecuencia de oscilación (Segundos)",
-    Default = 1.2,
-    Min = 0.4,
+    Title = "Frecuencia de oscilación (0 = Continuo)",
+    Default = 0.0,
+    Min = 0.0,
     Max = 3.0,
     Rounding = 1,
     Callback = function(Value)
@@ -133,9 +175,9 @@ Tabs.Combat:AddSlider("IntervalSlider", {
 
 Tabs.Combat:AddSlider("DistSlider", {
     Title = "Amplitud / Ancho de pista (Studs)",
-    Default = 12,
+    Default = 25,
     Min = 4,
-    Max = 30,
+    Max = 60,
     Rounding = 0,
     Callback = function(Value)
         Config.LateralDist = Value
@@ -144,16 +186,16 @@ Tabs.Combat:AddSlider("DistSlider", {
 
 Tabs.Combat:AddSlider("SpeedSlider", {
     Title = "Velocidad de Movimiento",
-    Default = 24,
+    Default = 80,
     Min = 16,
-    Max = 80,
+    Max = 200,
     Rounding = 0,
     Callback = function(Value)
         Config.MoveSpeed = Value
     end
 })
 
--- 2. BOTÓN FLOTANTE
+-- 2. BOTÓN FLOTANTE (ARRASTRABLE Y MÁS ABAJO EN PANTALLA)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
@@ -168,9 +210,11 @@ end
 
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
-FloatBtn.Position = UDim2.new(0.04, 0, 0.22, 0)
+FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0) -- Ubicado más abajo
 FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
 FloatBtn.Image = "rbxassetid://10723415903"
+FloatBtn.Active = true
+FloatBtn.Draggable = true -- Arrastrable con el ratón
 FloatBtn.Parent = ScreenGui
 
 local UICorner = Instance.new("UICorner")
@@ -183,41 +227,46 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- 3. SELECCIÓN CON TECLA 'E' Y LIMPIEZA CON 'R'
+-- 3. SELECCIÓN CON 'T' Y DESELECCIÓN CON '0'
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
-    
-    -- Tecla E: Fijar
-    if input.KeyCode == Enum.KeyCode.E then
+
+    -- Tecla T: Fijar y ACTIVAR automáticamente
+    if input.KeyCode == Enum.KeyCode.T then
         local rawTarget = mouse.Target
         if rawTarget then
             local chosen = getCompleteObject(rawTarget)
-
             if chosen then
                 CurrentTarget = chosen
                 applyHighlight(chosen)
+                Config.ZigZagEnabled = true
+                pcall(function() ZigZagToggleInstance:SetValue(true) end)
+
                 Fluent:Notify({
-                    Title = "Objetivo Seleccionado",
-                    Content = "Fijado: " .. chosen.Name,
-                    Duration = 3
+                    Title = "Objetivo Fijado [T]",
+                    Content = string.format("Fijado: %s | Auto-Movimiento ACTIVADO", chosen.Name),
+                    Duration = 2.5
                 })
             end
         end
     end
 
-    -- Tecla R: Desmarcar
-    if input.KeyCode == Enum.KeyCode.R then
+    -- Tecla 0: Desmarcar y APAGAR automáticamente
+    if input.KeyCode == Enum.KeyCode.Zero or input.KeyCode == Enum.KeyCode.KeypadZero then
         CurrentTarget = nil
         clearHighlight()
+        Config.ZigZagEnabled = false
+        pcall(function() ZigZagToggleInstance:SetValue(false) end)
+
         Fluent:Notify({
-            Title = "Objetivo Limpiado",
-            Content = "Se canceló el objetivo actual.",
+            Title = "Objetivo Limpiado [0]",
+            Content = "Auto-Movimiento DESACTIVADO",
             Duration = 2
         })
     end
 end)
 
--- 4. BUCLE DE MOVIMIENTO FÍSICO (MOTOR POR VELOCIDAD)
+-- 4. MOTOR DE DESPLAZAMIENTO FÍSICO CON ESQUIVE DE BLOATERS
 local side = 1
 local lastSwitch = tick()
 
@@ -229,7 +278,7 @@ RunService.Heartbeat:Connect(function()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not root or not hum or hum.Health <= 0 then return end
 
-    -- Obtener pieza física de referencia del Modelo completo
+    -- Obtener pieza física de referencia
     local targetPart = nil
     if CurrentTarget:IsA("BasePart") then
         targetPart = CurrentTarget
@@ -241,23 +290,47 @@ RunService.Heartbeat:Connect(function()
     end
 
     if targetPart and targetPart.Parent then
-        -- Alternar dirección cada N segundos
-        if tick() - lastSwitch >= Config.SwitchInterval then
-            side = -side
-            lastSwitch = tick()
+        local cf = targetPart.CFrame
+        local destination = nil
+
+        -- A. CÁLCULO DE OSCILACIÓN (CONTINUA O POR INTERVALOS)
+        if Config.SwitchInterval <= 0.05 then
+            -- Frecuencia cero: oscilación senoidal suave que nunca se detiene
+            local wave = math.sin(tick() * 3.8)
+            local lateralOffset = cf.RightVector * (wave * Config.LateralDist)
+            destination = targetPart.Position + lateralOffset
+        else
+            -- Por intervalos fijos
+            if tick() - lastSwitch >= Config.SwitchInterval then
+                side = -side
+                lastSwitch = tick()
+            end
+            local lateralOffset = cf.RightVector * (side * Config.LateralDist)
+            destination = targetPart.Position + lateralOffset
         end
 
-        -- Calcular punto lateral oscilante
-        local cf = targetPart.CFrame
-        local lateralOffset = cf.RightVector * (side * Config.LateralDist)
-        local destination = targetPart.Position + lateralOffset
+        -- B. ESCUDO EVASOR DE BLOATERS
+        if Config.EvadeBloaters then
+            local dangerZones = getBloaterDangerZones()
+            for _, bombPos in ipairs(dangerZones) do
+                local distToBomb = (root.Position - bombPos).Magnitude
+                if distToBomb <= Config.BloaterDangerDist then
+                    -- Vector de repulsión que aleja al carro de la explosión
+                    local avoidDir = (root.Position - bombPos).Unit
+                    if avoidDir.Magnitude == 0 or avoidDir ~= avoidDir then
+                        avoidDir = cf.RightVector * side
+                    end
+                    -- Desvío forzado de emergencia
+                    destination = destination + Vector3.new(avoidDir.X, 0, avoidDir.Z) * 26
+                end
+            end
+        end
 
-        -- Vector de dirección hacia la meta
+        -- C. APLICACIÓN DE FUERZA CINÉTICA
         local direction = (destination - root.Position)
         local horizontalDir = Vector3.new(direction.X, 0, direction.Z)
 
-        if horizontalDir.Magnitude > 1.5 then
-            -- Mover usando velocidad física directa
+        if horizontalDir.Magnitude > 1.2 then
             local targetVelocity = horizontalDir.Unit * Config.MoveSpeed
             root.AssemblyLinearVelocity = Vector3.new(targetVelocity.X, root.AssemblyLinearVelocity.Y, targetVelocity.Z)
         end
@@ -265,9 +338,9 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB CARGADO",
-    Content = "E: Seleccionar | R: Quitar marca | RightCtrl: Ocultar",
-    Duration = 5
+    Title = "ZOMBIE HUB V2 ACTIVO",
+    Content = "T: Fijar y Activar | 0: Cancelar | Widget arrastrable",
+    Duration = 4
 })
 
 Window:SelectTab(1)
