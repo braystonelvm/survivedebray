@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- REACTOR NUCLEAR HUB - APERTURA PRIORITARIA, RONDAS (10s), GAS 128 Y EXPERIMENT
--- V12 MASTER: PARADAS ESTRICTAS + LIBERACIÓN FÍSICA + PHASER + COFRES
+-- V12 MASTER: CAJAS ESTRICTAS + PARADAS INMÓVILES + FLY/NOCLIP PERMANENTE
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -37,7 +37,7 @@ local GAS_STATIONS = {
 local State = {
     Running = false,
     Paused = false,
-    NoclipEnabled = false,    -- Se activa 3 segundos después del Fly
+    NoclipEnabled = false,    -- Se activa 3 segundos después del Fly y se mantiene siempre activo
     CurrentStatus = "Inactivo",
     LootChests = true,        -- ACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
@@ -120,7 +120,7 @@ local function copyCurrentCoords()
     end
 end
 
--- LIMPIEZA TOTAL DE FÍSICAS (DESBLOQUEA AL PERSONAJE PARA WASD)
+-- LIMPIEZA TOTAL DE FÍSICAS AL DETENER O PAUSAR
 local function removePhysicsHelpers()
     local root = getRootPart()
     if root then
@@ -141,7 +141,7 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP ACTIVO SOLO TRAS 3 SEGUNDOS DE FLY
+-- NOCLIP ACTIVO CONSTANTE DESDE EL SEGUNDO 3
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused and State.NoclipEnabled then
         local char = lp.Character
@@ -255,7 +255,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     local angle = 0
 
     local initialTPos = targetRoot.Position
-    local startY = initialTPos.Y - 4.0 -- Comienza a -4 studs por debajo
+    local startY = initialTPos.Y - 4.0 -- Inicia a -4 studs por debajo
     local bodyPos = getOrCreatePhysics(root, startY)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
@@ -267,7 +267,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
         angle = angle + (speed * 0.010)
         local tPos = targetRoot.Position
 
-        -- Ascenso dinámico durante el giro: desde -4 studs hasta +5 studs (recorrido de 9 studs)
+        -- Ascenso dinámico durante el giro: desde -4 studs hasta +5 studs (recorrido total de 9 studs)
         local progress = math.clamp((tick() - startTime) / duration, 0, 1)
         local currentY = (tPos.Y - 4.0) + (progress * 9.0)
 
@@ -293,7 +293,7 @@ local function isValidZombieModel(entity)
     if name:find("dropped") or name:find("bag") or name:find("item") or name:find("loot") 
        or name:find("crate") or name:find("debris") or name:find("corpse") or name:find("drone")
        or name:find("turret") or name:find("sentry") or name:find("car") or name:find("vehicle")
-       or name:find("structure") or name:find("door") or name:find("fence") then
+       or name:find("structure") or name:find("door") or name:find("fence") or name:find("ragdoll") then
         return false
     end
 
@@ -303,7 +303,7 @@ local function isValidZombieModel(entity)
         return false
     end
 
-    if entity:GetAttribute("Dead") == true or entity:GetAttribute("Downed") == true then
+    if entity:GetAttribute("Dead") == true or entity:GetAttribute("Downed") == true or entity:GetAttribute("Exploding") == true then
         return false
     end
 
@@ -363,7 +363,7 @@ local function updateRangeVisuals()
     local function createBoxVisual(name, pos, rad, color)
         local part = Instance.new("Part")
         part.Name = name
-        part.Size = Vector3.new(rad * 2, rad * 2, rad * 2)
+        part.Size = Vector3.new(rad * 2, 11, rad * 2)
         part.CFrame = CFrame.new(pos)
         part.Anchored = true
         part.CanCollide = false
@@ -395,12 +395,13 @@ local function getZombiesInBox(centerPos, radius)
     local function checkEntity(entity)
         local valid, eRoot = isValidZombieModel(entity)
         if valid then
+            -- Ignorar zombies hibernando o durmiendo para no congelar el avance
             if entity:GetAttribute("Hibernating") == true or entity:GetAttribute("Sleeping") == true then
                 return
             end
 
-            local dx = math.abs(eRoot.Position.X - centerPos.X)
-            local dz = math.abs(eRoot.Position.Z - centerPos.Z)
+            local dx = eRoot.Position.X - centerPos.X
+            local dz = eRoot.Position.Z - centerPos.Z
             local dy = math.abs(eRoot.Position.Y - centerPos.Y)
             local distHorizontal = math.sqrt(dx * dx + dz * dz)
 
@@ -421,29 +422,29 @@ local function getZombiesInBox(centerPos, radius)
 end
 
 -- ==============================================================================
--- RUTINA AÑADIDA: LAS 3 PARADAS 100% INMÓVILES (SUSPENDIDO EN EL AIRE SIN ORBITAR)
+-- RUTINA AÑADIDA: LAS 3 PARADAS 100% INMÓVILES (FLY PERMANENTE Y CAZA DE PHASER)
 -- ==============================================================================
 local function executeThreeInitialStops()
     local root = getRootPart()
     local bp = root and root:FindFirstChild("ReactorFloatBP")
     local targetY = Point2_Door.Y + 6.0
 
-    -- Interrupción: si aparece un Phaser en el reactor, salir a eliminarlo y volver a suspenderse quieto
+    -- Si aparece un Phaser en el reactor, salir a eliminarlo y volver a la posición quieta
     local function checkPhaserInterrupt(returnPos)
         local phaserTarget, phaserRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
         if phaserTarget and phaserRoot then
             updateStatus(string.format("👻 INTERRUPCIÓN: Caza prioritaria de PHASER [%s]...", phaserTarget.Name))
             flyMoveTo(phaserRoot.Position, 45, 6, true)
             orbitTarget(phaserRoot, 7, 55.0, 3)
-            updateStatus("Phaser eliminado. Volviendo a suspenderse quieto...")
+            updateStatus("Phaser eliminado. Volviendo al centro...")
             flyMoveTo(returnPos, 45, 2.5, true)
             return true
         end
         return false
     end
 
-    -- PARADA 1: CENTRO 1 (SUSPENDIDO QUIETO HASTA QUE LA CAJA DE 10 STUDS ESTÉ VACÍA)
-    updateStatus("🛑 Parada 1/3: Centro 1 (Suspendido quieto hasta limpiar 10 studs)...")
+    -- PARADA 1: CENTRO 1 (QUIETO HASTA QUE LA CAJA DE 10 STUDS ESTÉ VACÍA)
+    updateStatus("🛑 Parada 1/3: Centro 1 (Quieto hasta limpiar caja 10 studs)...")
     flyMoveTo(CalculatedCenter, 45, 2.5, true)
     if bp then bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z) end
 
@@ -457,7 +458,7 @@ local function executeThreeInitialStops()
                 task.wait(0.4)
                 break
             else
-                updateStatus(string.format("Centro 1: Suspendido esperando (%d en caja)...", #inRange))
+                updateStatus(string.format("Centro 1: Quieto esperando (%d en caja)...", #inRange))
             end
         end
         task.wait(0.25)
@@ -465,8 +466,8 @@ local function executeThreeInitialStops()
 
     if not State.Running or State.Paused then return end
 
-    -- PARADA 2: CENTRO 2 (SUSPENDIDO QUIETO VERIFICANDO 10s EN CAJA DE 8 STUDS)
-    updateStatus("🛑 Parada 2/3: Centro 2 (Suspendido quieto verificando 10s en 8 studs)...")
+    -- PARADA 2: CENTRO 2 (QUIETO VERIFICANDO 10s EN CAJA DE 8 STUDS)
+    updateStatus("🛑 Parada 2/3: Centro 2 (Quieto verificando 10s en caja 8 studs)...")
     flyMoveTo(Center2_Pos, 45, 2.5, true)
     if bp then bp.Position = Vector3.new(Center2_Pos.X, targetY, Center2_Pos.Z) end
     local verify2Start = tick()
@@ -495,8 +496,8 @@ local function executeThreeInitialStops()
 
     if not State.Running or State.Paused then return end
 
-    -- PARADA 3: CENTRO 1 SEGUNDA VEZ (SUSPENDIDO QUIETO RE-VERIFICANDO 10s EN CAJA DE 10 STUDS)
-    updateStatus("🛑 Parada 3/3: Centro 1 (Suspendido quieto re-verificando 10s en 10 studs)...")
+    -- PARADA 3: CENTRO 1 SEGUNDA VEZ (QUIETO RE-VERIFICANDO 10s EN CAJA DE 10 STUDS)
+    updateStatus("🛑 Parada 3/3: Centro 1 (Quieto re-verificando 10s en caja 10 studs)...")
     flyMoveTo(CalculatedCenter, 45, 2.5, true)
     if bp then bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z) end
     local verify3Start = tick()
@@ -899,8 +900,9 @@ Tabs.Main:AddButton({
             if State.Paused then
                 removePhysicsHelpers()
                 restoreCollisions()
-                updateStatus("Pausado manualmente (Movimiento libre WASD)")
+                updateStatus("Pausado manualmente (Movimiento libre)")
             else
+                secureFlightStart()
                 updateStatus("Reanudado")
             end
         end
@@ -1379,7 +1381,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V12 LISTO",
-    Content = "Cajas estrictas, suspensión quieta sin bloqueos y cacería intacta.",
+    Content = "Cajas estrictas, Noclip/Fly continuo y cacería intacta.",
     Duration = 4
 })
 
