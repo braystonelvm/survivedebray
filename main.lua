@@ -245,7 +245,8 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     return false
 end
 
--- ATAQUE CIRCULAR EN CACERÍA (DESDE -2 STUDS BAJO EL SUELO HASTA +5 STUDS DE ALTURA)
+
+-- ATAQUE CIRCULAR EN CACERÍA (DESDE -4 STUDS BAJO EL SUELO HASTA +5 STUDS DE ALTURA)
 local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
@@ -255,7 +256,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     local angle = 0
 
     local initialTPos = targetRoot.Position
-    local startY = initialTPos.Y - 2.0 -- Inicia pegado al suelo (-2 studs)
+    local startY = initialTPos.Y - 4.0 -- << [1] CAMBIAR AQUÍ A -4.0 (Inicio bajo tierra)
     local bodyPos = getOrCreatePhysics(root, startY)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
@@ -267,9 +268,9 @@ local function orbitTarget(targetRoot, radius, duration, speed)
         angle = angle + (speed * 0.010)
         local tPos = targetRoot.Position
 
-        -- Ascenso dinámico durante el giro: desde -2 studs hasta +5 studs
+        -- Ascenso dinámico durante el giro: inicia en -4 y sube 7 studs para terminar en +5
         local progress = math.clamp((tick() - startTime) / duration, 0, 1)
-        local currentY = (tPos.Y - 2.0) + (progress * 7.0)
+        local currentY = (tPos.Y - 4.0) + (progress * 7.0) -- << [2] CAMBIAR AQUÍ (-4.0 y * 9.0)
 
         local orbitDest = Vector3.new(
             tPos.X + math.cos(angle) * radius,
