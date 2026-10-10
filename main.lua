@@ -1,5 +1,6 @@
 -- ==============================================================================
 -- REACTOR NUCLEAR HUB - APERTURA PRIORITARIA, RONDAS (40s), GAS 128 Y EXPERIMENT
+-- V5: DEFENSOR INTELIGENTE (CON CAZA PRIORITARIA DE PHASERS), HORARIOS Y VISUALES
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -13,6 +14,7 @@ local lp = Players.LocalPlayer
 -- COORDENADAS DE LA PARTIDA (NUEVO MAPA)
 local DEFAULT_DOOR = Vector3.new(-1140.6, 5.5, -230.0)
 local DEFAULT_CENTER = Vector3.new(-1123.2, 5.2, -176.4)
+local DEFAULT_CENTER_2 = Vector3.new(-1100.9, 5.4, -174.5) -- NUEVO PUNTO (CENTRO 2)
 
 -- 7 COFRES REGISTRADOS (NUEVO MAPA)
 local CHESTS = {
@@ -37,28 +39,42 @@ local State = {
     Paused = false,
     NoclipEnabled = false,    -- Se activa 3 segundos después del Fly
     CurrentStatus = "Inactivo",
-    LootChests = true,       -- DESACTIVADO POR DEFECTO
+    LootChests = true,        -- ACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
     GasFlySpeed = 128,        -- Velocidad aumentada (+20 extra)
     WaveWaitTime = 40,        -- Espera de 40 segundos entre rondas
     DetectionRadius = 950,    -- 950 studs a la redonda
-    CenterCampTime = 780      -- 10 minutos de espera en centro tras abrir puerta
+    CenterCampTime = 780,     -- 13 minutos de espera manual tradicional
+    
+    -- MODO INTELIGENTE DE CENTROS (ACTIVO POR DEFECTO)
+    IntelligentCenter = true,
+    Center1RadiusXZ = 12,
+    Center1HeightY = 12,
+    Center2RadiusXZ = 12,
+    Center2HeightY = 12,
+    ShowRangeVisuals = true,
+    
+    -- REGISTRO DE HORARIOS
+    ButtonSuccessTime = "Pendiente",
+    CycleFinishTime = "Pendiente"
 }
 
 local Point2_Door = DEFAULT_DOOR
 local CalculatedCenter = DEFAULT_CENTER
+local Center2_Pos = DEFAULT_CENTER_2
 local DoorForwardDir = Vector3.new(DEFAULT_CENTER.X - DEFAULT_DOOR.X, 0, DEFAULT_CENTER.Z - DEFAULT_DOOR.Z).Unit
 
 local Markers = {}
+local RangeVisuals = {}
 
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
-    Title = "REACTOR HUB | NUCLEAR V3",
+    Title = "REACTOR HUB | NUCLEAR V5",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(560, 490),
+    Size = UDim2.fromOffset(560, 500),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
@@ -76,9 +92,18 @@ local StatusParagraph = Tabs.Main:AddParagraph({
     Content = "Inactivo. Presiona PLAY para iniciar el ciclo infinito."
 })
 
+local TimestampsParagraph = Tabs.Main:AddParagraph({
+    Title = "⏱️ Horarios de Operación",
+    Content = "Última apertura botón: Pendiente\nÚltimo fin de ciclo: Pendiente"
+})
+
 local function updateStatus(text)
     State.CurrentStatus = text
     StatusParagraph:SetDesc(text)
+end
+
+local function updateTimestampsUI()
+    TimestampsParagraph:SetDesc(string.format("Última apertura botón: %s\nÚltimo fin de ciclo: %s", State.ButtonSuccessTime, State.CycleFinishTime))
 end
 
 local function getRootPart()
@@ -168,7 +193,7 @@ local function secureFlightStart()
     return true
 end
 
--- VUELO HACIA UN DESTINO (CON +3 STUDS DE ALTURA AL DIRIGIRSE AL CENTRO)
+-- VUELO HACIA UN DESTINO (CON ELEVACIÓN SEGURA)
 local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     stopDistance = stopDistance or 3.0
     local root = getRootPart()
@@ -222,7 +247,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     return false
 end
 
--- ATAQUE CIRCULAR (DESDE EL SUELO -2 STUDS HACIA ARRIBA)
+-- ATAQUE CIRCULAR (DESDE EL SUELO -2 STUDS HACIA ARRIBA CON SALIDA INMEDIATA AL MORIR)
 local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
@@ -232,15 +257,19 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     local angle = 0
 
     local initialTPos = targetRoot.Position
-    local startY = initialTPos.Y - 2.0 -- Inicia pegado al suelo (-2 studs del torso)
+    local startY = initialTPos.Y - 2.0
     local bodyPos = getOrCreatePhysics(root, startY)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
         RunService.Heartbeat:Wait()
+        
+        -- Si el zombie ya murió, salir de inmediato sin esperar el final del temporizador
+        local eHum = targetRoot.Parent:FindFirstChildOfClass("Humanoid")
+        if eHum and eHum.Health <= 0 then break end
+
         angle = angle + (speed * 0.010)
         local tPos = targetRoot.Position
 
-        -- Ascenso dinámico durante el giro: desde -2 studs (suelo) subiendo hasta +2.5 studs
         local progress = math.clamp((tick() - startTime) / duration, 0, 1)
         local currentY = (tPos.Y - 2.0) + (progress * 4.5)
 
@@ -250,6 +279,170 @@ local function orbitTarget(targetRoot, radius, duration, speed)
             tPos.Z + math.sin(angle) * radius
         )
         bodyPos.Position = orbitDest
+    end
+end
+
+-- DETECCIÓN EXCLUSIVA Y PROFUNDA DE PHASERS (IGNORA HIBERNACIÓN COMPLETAMENTE)
+local function getPriorityPhaser(centerPos, maxDist)
+    local charFolder = workspace:FindFirstChild("Characters") or workspace
+    local bestPhaser = nil
+    local bestRoot = nil
+    local shortestDist = math.huge
+
+    local function checkEntity(entity)
+        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
+            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
+            local eHum = entity:FindFirstChildOfClass("Humanoid")
+
+            if eRoot and (not eHum or eHum.Health > 0) then
+                local dist = (eRoot.Position - centerPos).Magnitude
+                if dist <= maxDist then
+                    local name = entity.Name:lower()
+                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
+
+                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
+
+                    if isPhaser then
+                        if dist < shortestDist then
+                            shortestDist = dist
+                            bestPhaser = entity
+                            bestRoot = eRoot
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for _, entity in ipairs(charFolder:GetChildren()) do checkEntity(entity) end
+    if charFolder ~= workspace then
+        for _, entity in ipairs(workspace:GetChildren()) do checkEntity(entity) end
+    end
+
+    return bestPhaser, bestRoot
+end
+
+-- ILUMINACIÓN VISUAL DE LOS RANGOS DE CADA CENTRO (SIN LAG)
+local function updateRangeVisuals()
+    for _, v in pairs(RangeVisuals) do
+        if v and v.Parent then v:Destroy() end
+    end
+    table.clear(RangeVisuals)
+
+    if not State.ShowRangeVisuals then return end
+
+    local function createBoxVisual(name, pos, radXZ, radY, color)
+        local part = Instance.new("Part")
+        part.Name = name
+        part.Size = Vector3.new(radXZ * 2, radY * 2, radXZ * 2)
+        part.CFrame = CFrame.new(pos)
+        part.Anchored = true
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+        part.Material = Enum.Material.ForceField
+        part.Color = color
+        part.Transparency = 0.82
+        part.Parent = workspace
+
+        local box = Instance.new("SelectionBox")
+        box.Adornee = part
+        box.Color3 = color
+        box.LineThickness = 0.04
+        box.Parent = part
+
+        table.insert(RangeVisuals, part)
+    end
+
+    createBoxVisual("Visual_Center1_Range", CalculatedCenter, State.Center1RadiusXZ, State.Center1HeightY, Color3.fromRGB(0, 255, 170))
+    createBoxVisual("Visual_Center2_Range", Center2_Pos, State.Center2RadiusXZ, State.Center2HeightY, Color3.fromRGB(255, 170, 0))
+end
+
+-- DETECTOR CÚBICO EXACTO DE ZOMBIES DENTRO DE LOS STUDS (XZ Y ALTURA Y)
+local function getZombiesInArea(centerPos, radiusXZ, radiusY)
+    local charFolder = workspace:FindFirstChild("Characters") or workspace
+    local targets = {}
+
+    local function checkEntity(entity)
+        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
+            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
+            local eHum = entity:FindFirstChildOfClass("Humanoid")
+
+            if eRoot and (not eHum or eHum.Health > 0) then
+                local dx = math.abs(eRoot.Position.X - centerPos.X)
+                local dz = math.abs(eRoot.Position.Z - centerPos.Z)
+                local dy = math.abs(eRoot.Position.Y - centerPos.Y)
+
+                if dx <= radiusXZ and dz <= radiusXZ and dy <= radiusY then
+                    table.insert(targets, {Model = entity, Root = eRoot, Dist = (eRoot.Position - centerPos).Magnitude})
+                end
+            end
+        end
+    end
+
+    for _, entity in ipairs(charFolder:GetChildren()) do checkEntity(entity) end
+    if charFolder ~= workspace then
+        for _, entity in ipairs(workspace:GetChildren()) do checkEntity(entity) end
+    end
+
+    table.sort(targets, function(a, b) return a.Dist < b.Dist end)
+    return targets
+end
+
+-- LIMPIEZA INTELIGENTE DE CADA PUNTO (CON INTERRUPCIÓN Y CAZA PRIORITARIA DE PHASERS)
+local function clearAreaIntelligently(pointPos, radiusXZ, radiusY, minVerificationSeconds, pointLabel)
+    updateStatus(string.format("Yendo a %s...", pointLabel))
+    flyMoveTo(pointPos, 45, 2.5, true)
+    
+    local root = getRootPart()
+    local bp = root and root:FindFirstChild("ReactorFloatBP")
+    local targetY = Point2_Door.Y + 6.0
+    
+    local verifyStart = tick()
+    
+    while State.Running and not State.Paused do
+        -- 1. PRIORIDAD ABSOLUTA: SI HAY UN PHASER EN CUALQUIER PARTE DEL REACTOR, SALIR A CAZARLO
+        local phaserTarget, phaserRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
+        if phaserTarget and phaserRoot then
+            local pName = phaserTarget.Name
+            updateStatus(string.format("[%s] 🚨 PHASER DETECTADO: Saliendo a cazar a [%s]...", pointLabel, pName))
+            flyMoveTo(phaserRoot.Position, 45, 6, true)
+            orbitTarget(phaserRoot, 7, 55.0, 3)
+            
+            -- Regresar de inmediato al centro exacto donde estábamos patrullando
+            updateStatus(string.format("[%s] Phaser eliminado. Regresando a %s...", pointLabel, pointLabel))
+            flyMoveTo(pointPos, 45, 2.5, true)
+            verifyStart = tick() -- Reiniciar verificación tras la interrupción
+        else
+            -- 2. SI NO HAY PHASERS, REVISAR EL ÁREA LOCAL DE 12 STUDS
+            local inRange = getZombiesInArea(pointPos, radiusXZ, radiusY)
+            
+            if #inRange > 0 then
+                local targetData = inRange[1]
+                updateStatus(string.format("[%s] Atacando %s (en radio %d studs)...", pointLabel, targetData.Model.Name, radiusXZ))
+                orbitTarget(targetData.Root, 7, 18.0, 3)
+                flyMoveTo(pointPos, 45, 2.5, true)
+                verifyStart = tick()
+            else
+                if bp then
+                    bp.Position = Vector3.new(pointPos.X, targetY, pointPos.Z)
+                end
+                
+                local elapsed = tick() - verifyStart
+                
+                if minVerificationSeconds and minVerificationSeconds > 0 then
+                    updateStatus(string.format("[%s] Limpio. Verificando (%ds/%ds)...", pointLabel, math.floor(elapsed), minVerificationSeconds))
+                    if elapsed >= minVerificationSeconds then
+                        break
+                    end
+                else
+                    updateStatus(string.format("[%s] Despejado sin zombies en rango.", pointLabel))
+                    task.wait(0.5)
+                    break
+                end
+                task.wait(0.5)
+            end
+        end
     end
 end
 
@@ -411,55 +604,7 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- DETECCIÓN EXCLUSIVA Y PROFUNDA DE PHASERS (IGNORA HIBERNACIÓN COMPLETAMENTE)
-local function getPriorityPhaser(centerPos, maxDist)
-    local charFolder = workspace:FindFirstChild("Characters") or workspace
-    local bestPhaser = nil
-    local bestRoot = nil
-    local shortestDist = math.huge
-
-    local function checkEntity(entity)
-        if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
-            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-            local eHum = entity:FindFirstChildOfClass("Humanoid")
-
-            if eRoot and (not eHum or eHum.Health > 0) then
-                local dist = (eRoot.Position - centerPos).Magnitude
-                if dist <= maxDist then
-                    local name = entity.Name:lower()
-                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
-
-                    -- Detección de todas las variantes de Phaser (SIN importar si tiene Hibernating = true)
-                    local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
-
-                    if isPhaser then
-                        if dist < shortestDist then
-                            shortestDist = dist
-                            bestPhaser = entity
-                            bestRoot = eRoot
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- 1. Revisar carpeta Characters
-    for _, entity in ipairs(charFolder:GetChildren()) do
-        checkEntity(entity)
-    end
-
-    -- 2. Revisión de respaldo directo en Workspace por si se movieron
-    if charFolder ~= workspace then
-        for _, entity in ipairs(workspace:GetChildren()) do
-            checkEntity(entity)
-        end
-    end
-
-    return bestPhaser, bestRoot
-end
-
--- FILTRO DE ASALTO COMPLETO (DETECCIÓN BASE ORIGINAL)
+-- FILTRO DE ASALTO COMPLETO (DETECCIÓN BASE ORIGINAL CON TODAS LAS PRIORIDADES)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
@@ -487,34 +632,26 @@ local function getAnyTargetZombie(centerPos, maxDist)
                     local isPhaser = name:find("phaser") or name:find("ghost") or name:find("fantasma") or name:find("phase") or variant:find("phaser") or variant:find("ghost") or variant:find("phase")
                     local isExperiment = name:find("experiment") or variant:find("experiment") or name:find("experimento") or variant:find("experimento")
 
-                    -- Los zombies especiales (Phaser, Screamer, Experiment) son válidos siempre, incluso si están en reposo
                     local isSpecial = isScreamer or isPhaser or isExperiment
                     local isGlowing = (hasHighlight or isReactorAttr) and not isHibernating
                     local isReactorZombie = isSpecial or isGlowing
 
                     if isReactorZombie then
-                        -- 1. PRIORIDAD MÁXIMA: SCREAMER ("GATO")
                         if isScreamer then
                             if not priorityScreamer then
                                 priorityScreamer = entity
                                 priorityScreamerRoot = eRoot
                             end
-
-                        -- 2. PRIORIDAD 2: PHASER / GHOST
                         elseif isPhaser then
                             if not priorityPhaser then
                                 priorityPhaser = entity
                                 priorityPhaserRoot = eRoot
                             end
-
-                        -- 4. ÚLTIMA PRIORIDAD: EXPERIMENT (JEFE FINAL)
                         elseif isExperiment then
                             if not experimentTarget then
                                 experimentTarget = entity
                                 experimentRoot = eRoot
                             end
-
-                        -- 3. PRIORIDAD 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES
                         elseif dist < bestGlowingDist then
                             bestGlowingDist = dist
                             bestGlowingTarget = entity
@@ -626,13 +763,29 @@ local function refreshVisualMarkers()
         cMarker.Shape = Enum.PartType.Ball
         cMarker.Size = Vector3.new(3, 3, 3)
         cMarker.Material = Enum.Material.Neon
-        cMarker.Color = Color3.fromRGB(255, 170, 0)
+        cMarker.Color = Color3.fromRGB(0, 255, 170)
         cMarker.Anchored = true
         cMarker.CanCollide = false
         cMarker.Position = CalculatedCenter
         cMarker.Parent = workspace
-        Markers["Center"] = cMarker
+        Markers["Center1"] = cMarker
     end
+
+    if Center2_Pos then
+        local c2Marker = Instance.new("Part")
+        c2Marker.Name = "NuclearCenter2Marker"
+        c2Marker.Shape = Enum.PartType.Ball
+        c2Marker.Size = Vector3.new(3, 3, 3)
+        c2Marker.Material = Enum.Material.Neon
+        c2Marker.Color = Color3.fromRGB(255, 170, 0)
+        c2Marker.Anchored = true
+        c2Marker.CanCollide = false
+        c2Marker.Position = Center2_Pos
+        c2Marker.Parent = workspace
+        Markers["Center2"] = c2Marker
+    end
+
+    updateRangeVisuals()
 end
 
 refreshVisualMarkers()
@@ -707,6 +860,7 @@ Tabs.Setup:AddButton({
     Callback = function()
         Point2_Door = DEFAULT_DOOR
         CalculatedCenter = DEFAULT_CENTER
+        Center2_Pos = DEFAULT_CENTER_2
         DoorForwardDir = Vector3.new(DEFAULT_CENTER.X - DEFAULT_DOOR.X, 0, DEFAULT_CENTER.Z - DEFAULT_DOOR.Z).Unit
         refreshVisualMarkers()
         Fluent:Notify({ Title = "Restaurado", Content = "Valores de tu partida fijados.", Duration = 2 })
@@ -738,7 +892,82 @@ Tabs.Coords:AddButton({
 })
 
 -- PESTAÑA 4: AJUSTES
-Tabs.Settings:AddSection("Tiempos de Espera")
+Tabs.Settings:AddSection("Patrullaje Inteligente de Centros")
+
+Tabs.Settings:AddToggle("IntelligentCenterToggle", {
+    Title = "Defensa Inteligente de Centros (Auto)",
+    Description = "Limpia Centro 1, verifica Centro 2 y re-limpia Centro 1 (Prioriza siempre cazar Phasers). Si se desactiva, usará el modo manual de tiempo fijo.",
+    Default = true,
+    Callback = function(Value) State.IntelligentCenter = Value end
+})
+
+Tabs.Settings:AddToggle("VisualRangeToggle", {
+    Title = "Iluminar Rangos de Studs en Pantalla",
+    Default = true,
+    Callback = function(v)
+        State.ShowRangeVisuals = v
+        updateRangeVisuals()
+    end
+})
+
+Tabs.Settings:AddSlider("Center1RadiusSlider", {
+    Title = "Centro 1 - Rango Horizontal (Studs)",
+    Default = 12,
+    Min = 6,
+    Max = 30,
+    Rounding = 0,
+    Callback = function(v)
+        State.Center1RadiusXZ = v
+        updateRangeVisuals()
+    end
+})
+
+Tabs.Settings:AddSlider("Center1HeightSlider", {
+    Title = "Centro 1 - Rango de Altura (Studs)",
+    Default = 12,
+    Min = 6,
+    Max = 30,
+    Rounding = 0,
+    Callback = function(v)
+        State.Center1HeightY = v
+        updateRangeVisuals()
+    end
+})
+
+Tabs.Settings:AddSlider("Center2RadiusSlider", {
+    Title = "Centro 2 - Rango Horizontal (Studs)",
+    Default = 12,
+    Min = 6,
+    Max = 30,
+    Rounding = 0,
+    Callback = function(v)
+        State.Center2RadiusXZ = v
+        updateRangeVisuals()
+    end
+})
+
+Tabs.Settings:AddSlider("Center2HeightSlider", {
+    Title = "Centro 2 - Rango de Altura (Studs)",
+    Default = 12,
+    Min = 6,
+    Max = 30,
+    Rounding = 0,
+    Callback = function(v)
+        State.Center2HeightY = v
+        updateRangeVisuals()
+    end
+})
+
+Tabs.Settings:AddSection("Tiempos de Espera Manuales y Cooldown")
+
+Tabs.Settings:AddSlider("CenterCampSlider", {
+    Title = "Espera en Centro (Modo Manual - Minutos)",
+    Default = 13,
+    Min = 1,
+    Max = 20,
+    Rounding = 0,
+    Callback = function(Value) State.CenterCampTime = Value * 60 end
+})
 
 Tabs.Settings:AddSlider("BaseWaitSlider", {
     Title = "Tiempo de enfriamiento en Base (Minutos)",
@@ -765,15 +994,6 @@ Tabs.Settings:AddSlider("WaveWaitSlider", {
     Max = 60,
     Rounding = 0,
     Callback = function(Value) State.WaveWaitTime = Value end
-})
-
-Tabs.Settings:AddSlider("CenterCampSlider", {
-    Title = "Espera en Centro tras abrir puerta (Minutos)",
-    Default = 13,
-    Min = 1,
-    Max = 20,
-    Rounding = 0,
-    Callback = function(Value) State.CenterCampTime = Value * 60 end
 })
 
 -- BOTÓN FLOTANTE CÍRCULAR (Y = 0.40)
@@ -835,6 +1055,17 @@ task.spawn(function()
                 task.wait(0.2)
             end
             task.wait(0.5)
+
+            -- REGISTRO DE HORARIO DE APERTURA SATISFACTORIA
+            if doorWasPressed then
+                State.ButtonSuccessTime = os.date("%H:%M:%S")
+                updateTimestampsUI()
+                Fluent:Notify({
+                    Title = "🔘 Botón Activado",
+                    Content = "Apertura confirmada: " .. State.ButtonSuccessTime,
+                    Duration = 3
+                })
+            end
 
             -- PASO 2: VERIFICAR SI ESTÁ EN COOLDOWN O LIBRE
             local cdText = getDoorTimerText()
@@ -900,47 +1131,59 @@ task.spawn(function()
                 updateStatus("[2/4] Accediendo al Centro del Reactor...")
                 flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                -- FASE 1: 10 MINUTOS EN EL CENTRO (CACERÍA ENCADENADA DE PHASERS)
+                -- FASE 1: DEFENSIVA DEL CENTRO TRAS APERTURA (MODO INTELIGENTE O MODO MANUAL)
                 if doorWasPressed then
-                    local centerDefenseEnd = tick() + State.CenterCampTime
-                    updateStatus("🛡️ Puerta abierta confirmada: 10m en Centro (Caza Total de Phasers)...")
+                    if State.IntelligentCenter then
+                        -- MODO INTELIGENTE: 3 FASES CON CAZA PRIORITARIA DE PHASERS Y RANGOS EXACTOS
+                        updateStatus("🛡️ Modo Inteligente: Fase 1 (Centro 1 con Caza de Phasers)...")
+                        clearAreaIntelligently(CalculatedCenter, State.Center1RadiusXZ, State.Center1HeightY, 0, "Centro 1 (Apertura)")
 
-                    while State.Running and not State.Paused and tick() < centerDefenseEnd do
-                        local timeLeft = math.max(0, math.floor(centerDefenseEnd - tick()))
-                        local m = math.floor(timeLeft / 60)
-                        local s = timeLeft % 60
+                        updateStatus("🛡️ Modo Inteligente: Fase 2 (Centro 2 con Caza de Phasers)...")
+                        clearAreaIntelligently(Center2_Pos, State.Center2RadiusXZ, State.Center2HeightY, 10, "Centro 2")
 
-                        -- 1. Buscar al Phaser más cercano (ignora Hibernación para que no se escape ninguno)
-                        local phaserTarget, phaserRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
-                        if phaserTarget and phaserRoot then
-                            local pName = phaserTarget.Name
-                            updateStatus(string.format("👻 Cazando PHASER [%s] (%02dm %02ds rest)...", pName, m, s))
-                            flyMoveTo(phaserRoot.Position, 45, 6, true)
-                            orbitTarget(phaserRoot, 7, 55.0, 3) -- Aumentado +30s (de 25s a 55s)
-                        else
-                            -- 2. Si no hay ningún Phaser vivo en el radio de 950 studs, regresar/mantenerse en el centro
-                            local myRoot = getRootPart()
-                            local distToCenter = myRoot and (myRoot.Position - CalculatedCenter).Magnitude or 0
+                        updateStatus("🛡️ Modo Inteligente: Fase 3 (Centro 1 Segunda Vez con Caza de Phasers)...")
+                        clearAreaIntelligently(CalculatedCenter, State.Center1RadiusXZ, State.Center1HeightY, 10, "Centro 1 (Segunda Vez)")
+                        
+                        updateStatus("✅ Centros inteligentes despejados. Iniciando asalto general...")
+                    else
+                        -- MODO MANUAL TRADICIONAL (13 MINUTOS CAZANDO PHASERS EN CENTRO)
+                        local centerDefenseEnd = tick() + State.CenterCampTime
+                        updateStatus("🛡️ Modo Manual: Esperando en Centro (Caza Total de Phasers)...")
 
-                            if distToCenter > 6 then
-                                flyMoveTo(CalculatedCenter, 42, 3, true)
+                        while State.Running and not State.Paused and tick() < centerDefenseEnd do
+                            local timeLeft = math.max(0, math.floor(centerDefenseEnd - tick()))
+                            local m = math.floor(timeLeft / 60)
+                            local s = timeLeft % 60
+
+                            local phaserTarget, phaserRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
+                            if phaserTarget and phaserRoot then
+                                local pName = phaserTarget.Name
+                                updateStatus(string.format("👻 Cazando PHASER [%s] (%02dm %02ds rest)...", pName, m, s))
+                                flyMoveTo(phaserRoot.Position, 45, 6, true)
+                                orbitTarget(phaserRoot, 7, 55.0, 3)
                             else
-                                local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
-                                local targetY = Point2_Door.Y + 6.0 -- (+3 studs de elevación en el centro)
-                                if bp then
-                                    bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
+                                local myRoot = getRootPart()
+                                local distToCenter = myRoot and (myRoot.Position - CalculatedCenter).Magnitude or 0
+
+                                if distToCenter > 6 then
+                                    flyMoveTo(CalculatedCenter, 42, 3, true)
+                                else
+                                    local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
+                                    local targetY = Point2_Door.Y + 6.0
+                                    if bp then
+                                        bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
+                                    end
                                 end
+
+                                updateStatus(string.format("🛡️ Guardia Centro: %02dm %02ds | Sin Phasers en radar...", m, s))
+                                task.wait(0.5)
                             end
-
-                            updateStatus(string.format("🛡️ Guardia Centro: %02dm %02ds | Sin Phasers en radar...", m, s))
-                            task.wait(0.5)
                         end
+                        updateStatus("✅ Tiempo manual completado. Iniciando cacería completa...")
                     end
-
-                    updateStatus("✅ 10 min completados. Iniciando cacería completa...")
                 end
 
-                -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 950)
+                -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 950) CONSERVADA AL 100%
                 updateStatus("[3/4] Cacería en Reactor (Radio 950)...")
                 local inCombat = true
                 local screamerPhaserStuckTimer = nil
@@ -971,14 +1214,14 @@ task.spawn(function()
                     if targetModel and targetRoot then
                         local name = targetModel.Name
 
-                        -- CASO 1: SCREAMER (PRIORIDAD #1) -> Aumentado +30s (de 25s a 55s)
+                        -- CASO 1: SCREAMER (PRIORIDAD #1)
                         if targetType == "screamer" then
                             updateStatus("🚨 PRIORIDAD #1: Caza del SCREAMER para el dron...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
                             orbitTarget(targetRoot, 7, 55.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                        -- CASO 2: PHASER (PRIORIDAD #2) -> Aumentado +30s (de 25s a 55s)
+                        -- CASO 2: PHASER (PRIORIDAD #2)
                         elseif targetType == "phaser" then
                             updateStatus("👻 PRIORIDAD #2: Caza del PHASER...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
@@ -1012,17 +1255,17 @@ task.spawn(function()
                             else
                                 updateStatus(string.format("👑 Buscando a EXPERIMENT (%d studs)...", math.floor(distToCenter)))
                                 flyMoveTo(targetRoot.Position, 45, 6, true)
-                                orbitTarget(targetRoot, 8, 44.0, 2.5) -- Aumentado +30s (de 14s a 44s)
+                                orbitTarget(targetRoot, 8, 44.0, 2.5)
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
                             end
 
-                        -- CASO 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES -> Aumentado +30s
+                        -- CASO 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES
                         else
                             updateStatus("Rodeando a " .. name .. " [Resplandor]...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
-                            orbitTarget(targetRoot, 7, 55.0, 3) -- Aumentado +30s (de 25s a 55s)
+                            orbitTarget(targetRoot, 7, 55.0, 3)
                             if targetModel.Parent and targetRoot.Parent then
-                                orbitTarget(targetRoot, 14, 60.0, 2.5) -- Aumentado +30s (de 30s a 60s)
+                                orbitTarget(targetRoot, 14, 60.0, 2.5)
                             end
                             flyMoveTo(CalculatedCenter, 42, 3, true)
                         end
@@ -1059,7 +1302,7 @@ task.spawn(function()
                 -- TRAS COMPLETAR LAS RONDAS, INICIAR EL RECORRIDO DE LAS 3 GASOLINERAS
                 if State.Running and not State.Paused then
                     local cooldownStart = tick()
-                    updateStatus(string.format("Reactor Despejado (3 Rondas). Iniciando %d gasolineras...", #GAS_STATIONS))
+                    updateStatus(string.format("Reactor Despejado. Iniciando %d gasolineras...", #GAS_STATIONS))
 
                     while State.Running and not State.Paused and (tick() - cooldownStart < State.BaseNuclearWait) do
                         for idx, gasPos in ipairs(GAS_STATIONS) do
@@ -1114,8 +1357,16 @@ task.spawn(function()
                 end
             end
 
-            -- RETORNO A LA PUERTA TRAS LOS 15 MINUTOS PARA REINICIAR EL BUCLE
+            -- RETORNO A LA PUERTA Y REGISTRO DE HORARIO DE FINALIZACIÓN
             if State.Running and not State.Paused then
+                State.CycleFinishTime = os.date("%H:%M:%S")
+                updateTimestampsUI()
+                Fluent:Notify({
+                    Title = "✅ Ciclo Completado",
+                    Content = "Finalizado con éxito a las: " .. State.CycleFinishTime,
+                    Duration = 4
+                })
+
                 updateStatus("15 min completados. Regresando a la Puerta del Reactor...")
                 flyMoveTo(Point2_Door, State.GasFlySpeed, 3.0, true)
                 task.wait(1.5)
@@ -1127,8 +1378,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Órbita al ras del suelo ascendente y centro elevado +3 studs activos.",
+    Title = "REACTOR HUB V5 ACTIVO",
+    Content = "Caza prioritaria de Phasers en centros, 3 fases inteligentes y rangos listos.",
     Duration = 4
 })
 
