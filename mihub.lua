@@ -1,5 +1,5 @@
 -- ==============================================================================
--- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE (ANTI-BLOATERS V3)
+-- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE (V4 MULTI-PATRÓN & RADAR)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -13,16 +13,19 @@ local mouse = lp:GetMouse()
 -- Variables de configuración
 local Config = {
     ZigZagEnabled = false,
-    SwitchInterval = 0.5,   -- Frecuencia por defecto ajustada a 0.5s
-    LateralDist = 25,       -- Amplitud por defecto de 25 studs
-    MoveSpeed = 80,         -- Velocidad por defecto de 80 studs/s
-    EvadeBloaters = true,   -- Esquivar explosiones activado
-    BloaterDangerDist = 30  -- Radio de peligro del Bloater en studs
+    AttackMode = "Zigzag Clásico", -- Opciones: "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico"
+    SwitchInterval = 0.5,          -- Frecuencia por defecto a 0.5s
+    LateralDist = 25,              -- Amplitud por defecto de 25 studs
+    MoveSpeed = 80,                -- Velocidad por defecto de 80 studs/s
+    EvadeBloaters = true,          -- Esquivar explosiones activado
+    BloaterDangerDist = 30,        -- Radio de peligro del Bloater en studs
+    AutoDetectHorde = true         -- Escaneo de anuncios de dirección de oleada
 }
 
 local CurrentTarget = nil
 local TargetHighlight = nil
 local ZigZagToggleInstance = nil
+local DetectedHordeSide = "Desconocido"
 
 -- FRENADO FÍSICO TEMPORAL (AUTO Y PERSONAJE)
 local function applyBrake(duration)
@@ -34,7 +37,7 @@ local function applyBrake(duration)
             local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
             local hum = char and char:FindFirstChildOfClass("Humanoid")
 
-            -- Si estás montado en un auto, frenar el chasis completo
+            -- Si estás en un auto, frenar el chasis
             if hum and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
                 local seat = hum.SeatPart
                 local carModel = seat:FindFirstAncestorOfClass("Model") or seat.Parent
@@ -45,7 +48,6 @@ local function applyBrake(duration)
                 end
             end
 
-            -- Frenar al personaje
             if root then
                 root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y, 0)
             end
@@ -54,7 +56,7 @@ local function applyBrake(duration)
     end)
 end
 
--- Crear o limpiar Highlight visual
+-- Limpieza o aplicación de Highlight
 local function clearHighlight()
     if TargetHighlight then
         TargetHighlight:Destroy()
@@ -81,39 +83,29 @@ local function getCompleteObject(target)
         return nil 
     end
 
-    -- 1. Si es un Zombie o Jugador con Humanoid
     local humModel = target:FindFirstAncestorOfClass("Model")
     while humModel and not humModel:FindFirstChildOfClass("Humanoid") and humModel.Parent ~= workspace do
         local higherModel = humModel.Parent:FindFirstAncestorOfClass("Model")
-        if higherModel then
-            humModel = higherModel
-        else
-            break
-        end
+        if higherModel then humModel = higherModel else break end
     end
     if humModel and humModel:FindFirstChildOfClass("Humanoid") then
         return humModel
     end
 
-    -- 2. Escalar ancestros buscando el Modelo contenedor principal
     local current = target
     local topModel = nil
-
     while current and current ~= workspace do
         if current:IsA("Model") then
             topModel = current
-            local parentName = current.Parent and current.Parent.Name:lower() or ""
-            if current.Parent == workspace or parentName == "characters" or parentName == "structures" or parentName == "tiles" or parentName == "map" then
+            local pName = current.Parent and current.Parent.Name:lower() or ""
+            if current.Parent == workspace or pName == "characters" or pName == "structures" or pName == "tiles" or pName == "map" then
                 return current
             end
         end
         current = current.Parent
     end
 
-    if topModel then
-        return topModel
-    end
-
+    if topModel then return topModel end
     if target.Name:lower():find("mesh") and target.Parent and target.Parent ~= workspace then
         return target.Parent
     end
@@ -121,7 +113,7 @@ local function getCompleteObject(target)
     return target
 end
 
--- RASTREO Y DETECCIÓN DE EXPLOSIONES DE BLOATERS
+-- DETECCIÓN DE BOMBAS DE BLOATERS
 local function getBloaterDangerZones()
     local dangers = {}
     local charFolder = workspace:FindFirstChild("Characters") or workspace
@@ -154,17 +146,18 @@ end
 
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | CUSTOM V3",
+    Title = "ZOMBIE HUB | CUSTOM V4",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(580, 440),
+    Size = UDim2.fromOffset(590, 460),
     Acrylic = true,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
 
 local Tabs = {
-    Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" })
+    Combat = Window:AddTab({ Title = "Combate / Auto", Icon = "crosshair" }),
+    Horde = Window:AddTab({ Title = "Radar Luna Roja", Icon = "moon" })
 }
 
 Tabs.Combat:AddSection("Controles de Movimiento y Evasión")
@@ -172,8 +165,16 @@ Tabs.Combat:AddSection("Controles de Movimiento y Evasión")
 ZigZagToggleInstance = Tabs.Combat:AddToggle("ZigZagToggle", {
     Title = "Activar Movimiento Automático",
     Default = false,
+    Callback = function(Value) Config.ZigZagEnabled = Value end
+})
+
+Tabs.Combat:AddDropdown("ModeDropdown", {
+    Title = "Modo de Ataque / Patrón",
+    Values = { "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico" },
+    Default = "Zigzag Clásico",
     Callback = function(Value)
-        Config.ZigZagEnabled = Value
+        Config.AttackMode = Value
+        Fluent:Notify({ Title = "Modo Cambiado", Content = "Nuevo patrón: " .. Value, Duration = 2 })
     end
 })
 
@@ -181,36 +182,30 @@ Tabs.Combat:AddToggle("BloaterEvadeToggle", {
     Title = "🛡️ Evasión Activa de Bloaters",
     Description = "Detecta bloaters caídos y los esquiva automáticamente",
     Default = true,
-    Callback = function(Value)
-        Config.EvadeBloaters = Value
-    end
+    Callback = function(Value) Config.EvadeBloaters = Value end
 })
 
 Tabs.Combat:AddParagraph({
     Title = "Controles Rápidos de Teclado",
-    Content = "• Presiona 'T': Fijar objetivo y ACTIVAR movimiento.\n• Presiona '9': PAUSAR movimiento y frenar 1s (mantiene el objetivo).\n• Presiona '0': DESMARCAR objetivo, apagar y frenar 1s."
+    Content = "• Presiona 'T': Fijar objetivo y ACTIVAR automáticamente.\n• Presiona '9': PAUSAR movimiento y frenar 1s (mantiene objetivo).\n• Presiona '0': DESMARCAR objetivo, apagar y frenar 1s."
 })
 
 Tabs.Combat:AddSlider("IntervalSlider", {
-    Title = "Frecuencia de oscilación (0 = Continuo)",
+    Title = "Frecuencia de oscilación (Segundos)",
     Default = 0.5,
     Min = 0.0,
     Max = 3.0,
     Rounding = 1,
-    Callback = function(Value)
-        Config.SwitchInterval = Value
-    end
+    Callback = function(Value) Config.SwitchInterval = Value end
 })
 
 Tabs.Combat:AddSlider("DistSlider", {
-    Title = "Amplitud / Ancho de pista (Studs)",
+    Title = "Amplitud / Rango de giro (Studs)",
     Default = 25,
     Min = 4,
     Max = 60,
     Rounding = 0,
-    Callback = function(Value)
-        Config.LateralDist = Value
-    end
+    Callback = function(Value) Config.LateralDist = Value end
 })
 
 Tabs.Combat:AddSlider("SpeedSlider", {
@@ -219,23 +214,43 @@ Tabs.Combat:AddSlider("SpeedSlider", {
     Min = 16,
     Max = 200,
     Rounding = 0,
-    Callback = function(Value)
-        Config.MoveSpeed = Value
+    Callback = function(Value) Config.MoveSpeed = Value end
+})
+
+-- PESTAÑA DEL RADAR DE LUNA ROJA
+local HordeStatusParagraph = Tabs.Horde:AddParagraph({
+    Title = "Dirección de Llegada Actual",
+    Content = "Escaneando anuncios del juego..."
+})
+
+Tabs.Horde:AddButton({
+    Title = "🔍 Escanear Variables de Horda Ahora",
+    Description = "Registra los textos y atributos activos del mapa",
+    Callback = function()
+        local foundTexts = {}
+        local pGui = lp:FindFirstChild("PlayerGui")
+        if pGui then
+            for _, desc in ipairs(pGui:GetDescendants()) do
+                if desc:IsA("TextLabel") and desc.Visible and desc.Text ~= "" then
+                    local t = desc.Text:lower()
+                    if t:find("norte") or t:find("sur") or t:find("este") or t:find("oeste") or t:find("north") or t:find("south") or t:find("east") or t:find("west") or t:find("horda") or t:find("wave") then
+                        table.insert(foundTexts, string.format("[%s]: '%s'", desc.Name, desc.Text))
+                    end
+                end
+            end
+        end
+
+        local report = #foundTexts > 0 and table.concat(foundTexts, "\n") or "No hay textos activos de dirección en pantalla en este momento."
+        if setclipboard then setclipboard(report) elseif toclipboard then toclipboard(report) end
+        Fluent:Notify({ Title = "Escaneo de Horda", Content = "Textos copiados al portapapeles.", Duration = 3 })
     end
 })
 
--- 2. BOTÓN FLOTANTE (ARRASTRABLE Y MÁS ABAJO EN PANTALLA)
+-- 2. BOTÓN FLOTANTE (ARRASTRABLE Y ABAJO)
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "CustomHubFloatingBtn"
 ScreenGui.ResetOnSpawn = false
-if gethui then
-    ScreenGui.Parent = gethui()
-elseif syn and syn.protect_gui then
-    syn.protect_gui(ScreenGui)
-    ScreenGui.Parent = game:GetService("CoreGui")
-else
-    ScreenGui.Parent = lp:WaitForChild("PlayerGui")
-end
+if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
@@ -256,66 +271,9 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- 3. CURSOR PERMANENTE ULTRA-LIGERO (SOBREPONE TORRETAS Y MENÚS)
-local CursorGui = Instance.new("ScreenGui")
-CursorGui.Name = "AlwaysOnTopCursor"
-CursorGui.ResetOnSpawn = false
-CursorGui.DisplayOrder = 2147483647 -- Máxima prioridad posible de renderizado
-CursorGui.IgnoreGuiInset = true
-
-if gethui then
-    CursorGui.Parent = gethui()
-elseif syn and syn.protect_gui then
-    syn.protect_gui(CursorGui)
-    CursorGui.Parent = game:GetService("CoreGui")
-else
-    CursorGui.Parent = lp:WaitForChild("PlayerGui")
-end
-
-local CursorDot = Instance.new("Frame")
-CursorDot.Name = "CursorPointer"
-CursorDot.Size = UDim2.fromOffset(8, 8)
-CursorDot.AnchorPoint = Vector2.new(0.5, 0.5)
-CursorDot.BackgroundColor3 = Color3.fromRGB(0, 255, 200) -- Cian neón visible en cualquier entorno
-CursorDot.BorderSizePixel = 0
-CursorDot.Active = false
-CursorDot.Selectable = false
-CursorDot.Parent = CursorGui
-
-local CursorCorner = Instance.new("UICorner")
-CursorCorner.CornerRadius = UDim.new(1, 0)
-CursorCorner.Parent = CursorDot
-
-local CursorStroke = Instance.new("UIStroke")
-CursorStroke.Color = Color3.fromRGB(0, 0, 0)
-CursorStroke.Thickness = 1.5
-CursorStroke.Parent = CursorDot
-
-local CursorRing = Instance.new("Frame")
-CursorRing.Size = UDim2.fromOffset(18, 18)
-CursorRing.AnchorPoint = Vector2.new(0.5, 0.5)
-CursorRing.Position = UDim2.fromScale(0.5, 0.5)
-CursorRing.BackgroundTransparency = 1
-CursorRing.Active = false
-CursorRing.Selectable = false
-CursorRing.Parent = CursorDot
-
-local RingCorner = Instance.new("UICorner")
-RingCorner.CornerRadius = UDim.new(1, 0)
-RingCorner.Parent = CursorRing
-
-local RingStroke = Instance.new("UIStroke")
-RingStroke.Color = Color3.fromRGB(255, 255, 255)
-RingStroke.Thickness = 1.2
-RingStroke.Transparency = 0.25
-RingStroke.Parent = CursorRing
-
+-- 3. FORZAR CURSOR LIMPIO SIEMPRE ACTIVO (SIN PUNTOS CIAN DECORATIVOS)
 RunService.RenderStepped:Connect(function()
-    -- Evitar que scripts del auto deshabiliten el icono nativo
     UserInputService.MouseIconEnabled = true
-    -- Seguir la posición del ratón en tiempo real
-    local mousePos = UserInputService:GetMouseLocation()
-    CursorDot.Position = UDim2.fromOffset(mousePos.X, mousePos.Y)
 end)
 
 -- 4. CONTROL DE TECLAS: 'T' (ACTIVAR), '9' (PAUSA Y FRENO), '0' (DESMARCAR Y FRENO)
@@ -335,7 +293,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
                 Fluent:Notify({
                     Title = "Objetivo Fijado [T]",
-                    Content = string.format("Fijado: %s | Auto-Movimiento ACTIVADO", chosen.Name),
+                    Content = string.format("Fijado: %s | Modo: %s", chosen.Name, Config.AttackMode),
                     Duration = 2.5
                 })
             end
@@ -350,7 +308,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
         Fluent:Notify({
             Title = "Pausado [9]",
-            Content = "Movimiento en pausa. Frenando 1s (Objetivo conservado)",
+            Content = "Frenando 1s. Objetivo conservado.",
             Duration = 2
         })
     end
@@ -365,15 +323,50 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 
         Fluent:Notify({
             Title = "Objetivo Limpiado [0]",
-            Content = "Auto-Movimiento apagado y frenando 1s",
+            Content = "Auto-Movimiento apagado y frenando 1s.",
             Duration = 2
         })
     end
 end)
 
--- 5. MOTOR DE DESPLAZAMIENTO FÍSICO CON ESQUIVE DE BLOATERS
+-- 5. DETECTOR EN SEGUNDO PLANO DE ANUNCIOS DE HORDA
+task.spawn(function()
+    while true do
+        task.wait(2.0)
+        if Config.AutoDetectHorde then
+            local pGui = lp:FindFirstChild("PlayerGui")
+            if pGui then
+                for _, desc in ipairs(pGui:GetDescendants()) do
+                    if desc:IsA("TextLabel") and desc.Visible and desc.Text ~= "" then
+                        local text = desc.Text:lower()
+                        local sideDetected = nil
+                        if text:find("norte") or text:find("north") then sideDetected = "NORTE"
+                        elseif text:find("sur") or text:find("south") then sideDetected = "SUR"
+                        elseif text:find("este") or text:find("east") then sideDetected = "ESTE"
+                        elseif text:find("oeste") or text:find("west") then sideDetected = "OESTE" end
+
+                        if sideDetected and sideDetected ~= DetectedHordeSide then
+                            DetectedHordeSide = sideDetected
+                            HordeStatusParagraph:SetDesc("🚨 Horda activa aproximándose por el: " .. sideDetected)
+                            Fluent:Notify({
+                                Title = "¡Alerta de Horda!",
+                                Content = "Los zombies están llegando por el " .. sideDetected,
+                                Duration = 4
+                            })
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- 6. MOTOR CINÉTICO MULTI-MODO CON EVASIÓN DE BLOATERS
 local side = 1
 local lastSwitch = tick()
+local currentStep = 1
+local orbitAngle = 0
 
 RunService.Heartbeat:Connect(function()
     if not Config.ZigZagEnabled or not CurrentTarget then return end
@@ -383,7 +376,6 @@ RunService.Heartbeat:Connect(function()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not root or not hum or hum.Health <= 0 then return end
 
-    -- Obtener pieza física de referencia
     local targetPart = nil
     if CurrentTarget:IsA("BasePart") then
         targetPart = CurrentTarget
@@ -396,25 +388,73 @@ RunService.Heartbeat:Connect(function()
 
     if targetPart and targetPart.Parent then
         local cf = targetPart.CFrame
-        local destination = nil
+        local destination = targetPart.Position
+        local d = Config.LateralDist
 
-        -- A. CÁLCULO DE OSCILACIÓN
-        if Config.SwitchInterval <= 0.05 then
-            -- Modo continuo sin pausas
-            local wave = math.sin(tick() * 3.8)
-            local lateralOffset = cf.RightVector * (wave * Config.LateralDist)
-            destination = targetPart.Position + lateralOffset
-        else
-            -- Por intervalos definidos
-            if tick() - lastSwitch >= Config.SwitchInterval then
-                side = -side
+        -- =========================================================================
+        -- CÁLCULO DEL PATRÓN DE ATAQUE
+        -- =========================================================================
+
+        -- MODO 1: ZIGZAG CLÁSICO
+        if Config.AttackMode == "Zigzag Clásico" then
+            if Config.SwitchInterval <= 0.05 then
+                local wave = math.sin(tick() * 3.8)
+                destination = targetPart.Position + (cf.RightVector * (wave * d))
+            else
+                if tick() - lastSwitch >= Config.SwitchInterval then
+                    side = -side
+                    lastSwitch = tick()
+                end
+                destination = targetPart.Position + (cf.RightVector * (side * d))
+            end
+
+        -- MODO 2: ROMBO (4 VÉRTICES: FRENTE, DERECHA, ATRÁS, IZQUIERDA)
+        elseif Config.AttackMode == "Rombo" then
+            if tick() - lastSwitch >= math.max(0.2, Config.SwitchInterval) then
+                currentStep = (currentStep % 4) + 1
                 lastSwitch = tick()
             end
-            local lateralOffset = cf.RightVector * (side * Config.LateralDist)
-            destination = targetPart.Position + lateralOffset
+            local offsets = {
+                cf.LookVector * d,          -- Adelante
+                cf.RightVector * d,         -- Derecha
+                -cf.LookVector * d,         -- Atrás
+                -cf.RightVector * d         -- Izquierda
+            }
+            destination = targetPart.Position + offsets[currentStep]
+
+        -- MODO 3: CÍRCULO (ÓRBITA CONTINUA SUAVE)
+        elseif Config.AttackMode == "Círculo" then
+            orbitAngle = orbitAngle + (Config.MoveSpeed * 0.02)
+            destination = targetPart.Position + (cf.RightVector * (math.cos(orbitAngle) * d)) + (cf.LookVector * (math.sin(orbitAngle) * d))
+
+        -- MODO 4: CUADRADO (4 ESQUINAS DEL PERÍMETRO)
+        elseif Config.AttackMode == "Cuadrado" then
+            if tick() - lastSwitch >= math.max(0.25, Config.SwitchInterval) then
+                currentStep = (currentStep % 4) + 1
+                lastSwitch = tick()
+            end
+            local corners = {
+                (cf.LookVector * d) + (cf.RightVector * d),   -- Esquina Adelante-Derecha
+                (-cf.LookVector * d) + (cf.RightVector * d),  -- Esquina Atrás-Derecha
+                (-cf.LookVector * d) - (cf.RightVector * d),  -- Esquina Atrás-Izquierda
+                (cf.LookVector * d) - (cf.RightVector * d)    -- Esquina Adelante-Izquierda
+            }
+            destination = targetPart.Position + corners[currentStep]
+
+        -- MODO 5: ZIGZAG CAÓTICO (ALEATORIO E IMPREDECIBLE)
+        elseif Config.AttackMode == "Zigzag Caótico" then
+            if tick() - lastSwitch >= math.max(0.15, Config.SwitchInterval) then
+                side = (math.random() > 0.5 and 1 or -1)
+                lastSwitch = tick()
+            end
+            local randomDist = math.random(math.floor(d * 0.4), math.floor(d))
+            local randomForward = (math.random() - 0.5) * (d * 0.5)
+            destination = targetPart.Position + (cf.RightVector * (side * randomDist)) + (cf.LookVector * randomForward)
         end
 
-        -- B. ESCUDO EVASOR DE BLOATERS
+        -- =========================================================================
+        -- ESCUDO EVASOR DE BLOATERS (APLICA A TODOS LOS MODOS)
+        -- =========================================================================
         if Config.EvadeBloaters then
             local dangerZones = getBloaterDangerZones()
             for _, bombPos in ipairs(dangerZones) do
@@ -429,7 +469,7 @@ RunService.Heartbeat:Connect(function()
             end
         end
 
-        -- C. APLICACIÓN DE FUERZA CINÉTICA
+        -- APLICACIÓN DE VELOCIDAD CINÉTICA
         local direction = (destination - root.Position)
         local horizontalDir = Vector3.new(direction.X, 0, direction.Z)
 
@@ -441,8 +481,8 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB V3 ACTIVO",
-    Content = "T: Activar | 9: Pausa + Freno | 0: Cancelar + Freno",
+    Title = "ZOMBIE HUB V4 LISTO",
+    Content = "Cursor estándar activo | 5 Modos | Radar de hordas incluido",
     Duration = 4
 })
 
