@@ -1,5 +1,5 @@
 -- ==============================================================================
--- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE (ANTI-BLOATERS V2)
+-- MI HUB PERSONAL - SOBREVIVE AL APOCALIPSIS ZOMBIE (ANTI-BLOATERS V3)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -13,9 +13,9 @@ local mouse = lp:GetMouse()
 -- Variables de configuración
 local Config = {
     ZigZagEnabled = false,
-    SwitchInterval = 0.0,   -- Frecuencia cero por defecto (movimiento continuo)
-    LateralDist = 25,       -- Amplitud de 25 studs por defecto
-    MoveSpeed = 80,         -- Velocidad de 80 por defecto (máximo 200)
+    SwitchInterval = 0.5,   -- Frecuencia por defecto ajustada a 0.5s
+    LateralDist = 25,       -- Amplitud por defecto de 25 studs
+    MoveSpeed = 80,         -- Velocidad por defecto de 80 studs/s
     EvadeBloaters = true,   -- Esquivar explosiones activado
     BloaterDangerDist = 30  -- Radio de peligro del Bloater en studs
 }
@@ -23,6 +23,36 @@ local Config = {
 local CurrentTarget = nil
 local TargetHighlight = nil
 local ZigZagToggleInstance = nil
+
+-- FRENADO FÍSICO TEMPORAL (AUTO Y PERSONAJE)
+local function applyBrake(duration)
+    duration = duration or 1.0
+    task.spawn(function()
+        local endTime = tick() + duration
+        while tick() < endTime do
+            local char = lp.Character
+            local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+            -- Si estás montado en un auto, frenar el chasis completo
+            if hum and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
+                local seat = hum.SeatPart
+                local carModel = seat:FindFirstAncestorOfClass("Model") or seat.Parent
+                local primary = carModel and (carModel.PrimaryPart or seat)
+                if primary then
+                    primary.AssemblyLinearVelocity = Vector3.new(0, primary.AssemblyLinearVelocity.Y, 0)
+                    primary.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+
+            -- Frenar al personaje
+            if root then
+                root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y, 0)
+            end
+            RunService.Heartbeat:Wait()
+        end
+    end)
+end
 
 -- Crear o limpiar Highlight visual
 local function clearHighlight()
@@ -107,7 +137,6 @@ local function getBloaterDangerZones()
                 local hum = entity:FindFirstChildOfClass("Humanoid")
                 local isDowned = (hum and hum.Health <= 0) or entity:GetAttribute("Exploding") == true or entity:GetAttribute("Dead") == true or name:find("corpse") or name:find("ragdoll")
 
-                -- Si está caído esperando explotar o en secuencia crítica
                 if eRoot and (isDowned or (hum and hum.Health <= 50)) then
                     table.insert(dangers, eRoot.Position)
                 end
@@ -125,7 +154,7 @@ end
 
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | CUSTOM V2",
+    Title = "ZOMBIE HUB | CUSTOM V3",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 440),
@@ -159,12 +188,12 @@ Tabs.Combat:AddToggle("BloaterEvadeToggle", {
 
 Tabs.Combat:AddParagraph({
     Title = "Controles Rápidos de Teclado",
-    Content = "• Presiona 'T': Apunta a la zona/carretera para fijar y ACTIVAR el movimiento automáticamente.\n• Presiona '0': Quita el objetivo y APAGA el movimiento."
+    Content = "• Presiona 'T': Fijar objetivo y ACTIVAR movimiento.\n• Presiona '9': PAUSAR movimiento y frenar 1s (mantiene el objetivo).\n• Presiona '0': DESMARCAR objetivo, apagar y frenar 1s."
 })
 
 Tabs.Combat:AddSlider("IntervalSlider", {
     Title = "Frecuencia de oscilación (0 = Continuo)",
-    Default = 0.0,
+    Default = 0.5,
     Min = 0.0,
     Max = 3.0,
     Rounding = 1,
@@ -210,11 +239,11 @@ end
 
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
-FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0) -- Ubicado más abajo
+FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
 FloatBtn.Image = "rbxassetid://10723415903"
 FloatBtn.Active = true
-FloatBtn.Draggable = true -- Arrastrable con el ratón
+FloatBtn.Draggable = true
 FloatBtn.Parent = ScreenGui
 
 local UICorner = Instance.new("UICorner")
@@ -227,11 +256,73 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- 3. SELECCIÓN CON 'T' Y DESELECCIÓN CON '0'
+-- 3. CURSOR PERMANENTE ULTRA-LIGERO (SOBREPONE TORRETAS Y MENÚS)
+local CursorGui = Instance.new("ScreenGui")
+CursorGui.Name = "AlwaysOnTopCursor"
+CursorGui.ResetOnSpawn = false
+CursorGui.DisplayOrder = 2147483647 -- Máxima prioridad posible de renderizado
+CursorGui.IgnoreGuiInset = true
+
+if gethui then
+    CursorGui.Parent = gethui()
+elseif syn and syn.protect_gui then
+    syn.protect_gui(CursorGui)
+    CursorGui.Parent = game:GetService("CoreGui")
+else
+    CursorGui.Parent = lp:WaitForChild("PlayerGui")
+end
+
+local CursorDot = Instance.new("Frame")
+CursorDot.Name = "CursorPointer"
+CursorDot.Size = UDim2.fromOffset(8, 8)
+CursorDot.AnchorPoint = Vector2.new(0.5, 0.5)
+CursorDot.BackgroundColor3 = Color3.fromRGB(0, 255, 200) -- Cian neón visible en cualquier entorno
+CursorDot.BorderSizePixel = 0
+CursorDot.Active = false
+CursorDot.Selectable = false
+CursorDot.Parent = CursorGui
+
+local CursorCorner = Instance.new("UICorner")
+CursorCorner.CornerRadius = UDim.new(1, 0)
+CursorCorner.Parent = CursorDot
+
+local CursorStroke = Instance.new("UIStroke")
+CursorStroke.Color = Color3.fromRGB(0, 0, 0)
+CursorStroke.Thickness = 1.5
+CursorStroke.Parent = CursorDot
+
+local CursorRing = Instance.new("Frame")
+CursorRing.Size = UDim2.fromOffset(18, 18)
+CursorRing.AnchorPoint = Vector2.new(0.5, 0.5)
+CursorRing.Position = UDim2.fromScale(0.5, 0.5)
+CursorRing.BackgroundTransparency = 1
+CursorRing.Active = false
+CursorRing.Selectable = false
+CursorRing.Parent = CursorDot
+
+local RingCorner = Instance.new("UICorner")
+RingCorner.CornerRadius = UDim.new(1, 0)
+RingCorner.Parent = CursorRing
+
+local RingStroke = Instance.new("UIStroke")
+RingStroke.Color = Color3.fromRGB(255, 255, 255)
+RingStroke.Thickness = 1.2
+RingStroke.Transparency = 0.25
+RingStroke.Parent = CursorRing
+
+RunService.RenderStepped:Connect(function()
+    -- Evitar que scripts del auto deshabiliten el icono nativo
+    UserInputService.MouseIconEnabled = true
+    -- Seguir la posición del ratón en tiempo real
+    local mousePos = UserInputService:GetMouseLocation()
+    CursorDot.Position = UDim2.fromOffset(mousePos.X, mousePos.Y)
+end)
+
+-- 4. CONTROL DE TECLAS: 'T' (ACTIVAR), '9' (PAUSA Y FRENO), '0' (DESMARCAR Y FRENO)
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
 
-    -- Tecla T: Fijar y ACTIVAR automáticamente
+    -- Tecla T: Fijar y ACTIVAR
     if input.KeyCode == Enum.KeyCode.T then
         local rawTarget = mouse.Target
         if rawTarget then
@@ -251,22 +342,36 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         end
     end
 
-    -- Tecla 0: Desmarcar y APAGAR automáticamente
+    -- Tecla 9: Pausar y frenar 1s (mantiene el objetivo guardado)
+    if input.KeyCode == Enum.KeyCode.Nine or input.KeyCode == Enum.KeyCode.KeypadNine then
+        Config.ZigZagEnabled = false
+        pcall(function() ZigZagToggleInstance:SetValue(false) end)
+        applyBrake(1.0)
+
+        Fluent:Notify({
+            Title = "Pausado [9]",
+            Content = "Movimiento en pausa. Frenando 1s (Objetivo conservado)",
+            Duration = 2
+        })
+    end
+
+    -- Tecla 0: Desmarcar, apagar y frenar 1s
     if input.KeyCode == Enum.KeyCode.Zero or input.KeyCode == Enum.KeyCode.KeypadZero then
         CurrentTarget = nil
         clearHighlight()
         Config.ZigZagEnabled = false
         pcall(function() ZigZagToggleInstance:SetValue(false) end)
+        applyBrake(1.0)
 
         Fluent:Notify({
             Title = "Objetivo Limpiado [0]",
-            Content = "Auto-Movimiento DESACTIVADO",
+            Content = "Auto-Movimiento apagado y frenando 1s",
             Duration = 2
         })
     end
 end)
 
--- 4. MOTOR DE DESPLAZAMIENTO FÍSICO CON ESQUIVE DE BLOATERS
+-- 5. MOTOR DE DESPLAZAMIENTO FÍSICO CON ESQUIVE DE BLOATERS
 local side = 1
 local lastSwitch = tick()
 
@@ -293,14 +398,14 @@ RunService.Heartbeat:Connect(function()
         local cf = targetPart.CFrame
         local destination = nil
 
-        -- A. CÁLCULO DE OSCILACIÓN (CONTINUA O POR INTERVALOS)
+        -- A. CÁLCULO DE OSCILACIÓN
         if Config.SwitchInterval <= 0.05 then
-            -- Frecuencia cero: oscilación senoidal suave que nunca se detiene
+            -- Modo continuo sin pausas
             local wave = math.sin(tick() * 3.8)
             local lateralOffset = cf.RightVector * (wave * Config.LateralDist)
             destination = targetPart.Position + lateralOffset
         else
-            -- Por intervalos fijos
+            -- Por intervalos definidos
             if tick() - lastSwitch >= Config.SwitchInterval then
                 side = -side
                 lastSwitch = tick()
@@ -315,12 +420,10 @@ RunService.Heartbeat:Connect(function()
             for _, bombPos in ipairs(dangerZones) do
                 local distToBomb = (root.Position - bombPos).Magnitude
                 if distToBomb <= Config.BloaterDangerDist then
-                    -- Vector de repulsión que aleja al carro de la explosión
                     local avoidDir = (root.Position - bombPos).Unit
                     if avoidDir.Magnitude == 0 or avoidDir ~= avoidDir then
                         avoidDir = cf.RightVector * side
                     end
-                    -- Desvío forzado de emergencia
                     destination = destination + Vector3.new(avoidDir.X, 0, avoidDir.Z) * 26
                 end
             end
@@ -338,8 +441,8 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB V2 ACTIVO",
-    Content = "T: Fijar y Activar | 0: Cancelar | Widget arrastrable",
+    Title = "ZOMBIE HUB V3 ACTIVO",
+    Content = "T: Activar | 9: Pausa + Freno | 0: Cancelar + Freno",
     Duration = 4
 })
 
