@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ZOMBIE HUB MASTER V6 (OPTIMIZADO CERO LAG PARA LUNA ROJA DE 5000 ZOMBIES)
+-- ZOMBIE HUB MASTER V7 (MODO STALKER: EMBESTIDA EN STRAIGHTROAD + CERO LAG)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -35,10 +35,10 @@ local SECTOR_ROUTES = {
 
 local Config = {
     ZigZagEnabled = false,
-    AttackMode = "Zigzag Clásico",
+    AttackMode = "Stalker", -- "Stalker", "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico"
     SwitchInterval = 0.5,
     LateralDist = 25,
-    MoveSpeed = 80,
+    MoveSpeed = 95,          -- Velocidad por defecto aumentada para embestida
     EvadeBloaters = true,
     BloaterDangerDist = 30,
     AutoRouteToWave = true
@@ -49,8 +49,9 @@ local TargetHighlight = nil
 local ZigZagToggleInstance = nil
 local CurrentActiveSector = "SUR"
 
--- LISTA EN CACHÉ PARA EVITAR LAG DE BÚSQUEDA
+-- LISTAS EN CACHÉ PARA RENDIMIENTO SIN LAG
 local CachedBloaterDangers = {}
+local CachedHordeClusterOffset = 0 -- Desplazamiento lateral del grupo de zombies
 
 local function applyBrake(duration)
     duration = duration or 1.0
@@ -99,6 +100,25 @@ local function applyHighlight(obj)
     end
 end
 
+-- FILTRO ESTRICTO DE OBJETOS: DESCARTA MOCHILAS, DROPS Y PARTES DEL MAPA
+local function isValidZombie(entity)
+    if not entity or not entity:IsA("Model") or entity == lp.Character or Players:GetPlayerFromCharacter(entity) then
+        return false
+    end
+    local name = entity.Name:lower()
+    if name:find("dropped") or name:find("bag") or name:find("loot") or name:find("item") 
+       or name:find("crate") or name:find("debris") or name:find("corpse") or name:find("ragdoll") 
+       or name:find("car") or name:find("fence") or name:find("door") then
+        return false
+    end
+    local hum = entity:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then
+        return false
+    end
+    local root = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
+    return root ~= nil, root
+end
+
 local function getCompleteObject(target)
     if not target or target == lp.Character or target:IsDescendantOf(lp.Character) then 
         return nil 
@@ -119,7 +139,7 @@ local function getCompleteObject(target)
         if current:IsA("Model") then
             topModel = current
             local pName = current.Parent and current.Parent.Name:lower() or ""
-            if current.Parent == workspace or pName == "characters" or pName == "structures" or pName == "tiles" or pName == "map" then
+            if current.Parent == workspace or pName == "characters" or pName == "structures" or pName == "tiles" or pName == "map" or pName == "roads" then
                 return current
             end
         end
@@ -135,11 +155,11 @@ local function getCompleteObject(target)
 end
 
 -- ==============================================================================
--- BUCLE DE CACHÉ DE BLOATERS (CORRE CADA 0.3s EN VEZ DE CADA FOTOGRAMA)
+-- BUCLE DE CACHÉ DE BLOATERS (CERO LAG: CORRE CADA 0.3s)
 -- ==============================================================================
 task.spawn(function()
     while true do
-        task.wait(0.3) -- Actualización suave fuera del bucle de físicas
+        task.wait(0.3)
         if Config.EvadeBloaters then
             local char = lp.Character
             local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
@@ -156,7 +176,6 @@ task.spawn(function()
 
                     if isBloater then
                         local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-                        -- Solo procesar si está a menos de 80 studs para no gastar memoria
                         if eRoot and (eRoot.Position - myPos).Magnitude <= 80 then
                             local hum = entity:FindFirstChildOfClass("Humanoid")
                             local isDowned = (hum and hum.Health <= 0) or entity:GetAttribute("Exploding") == true or entity:GetAttribute("Dead") == true or name:find("corpse") or name:find("ragdoll")
@@ -176,7 +195,50 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- ESCÁNER MANUAL (SOLO CORRE AL PULSAR EL BOTÓN - CERO IMPACTO EN JUEGO)
+-- BUCLE DE RASTREO DE GRUPOS DE ZOMBIES EN CARRETERA (MODO STALKER - 0.15s)
+-- ==============================================================================
+task.spawn(function()
+    while true do
+        task.wait(0.15)
+        if Config.ZigZagEnabled and Config.AttackMode == "Stalker" and CurrentTarget then
+            local tPos = CurrentTarget:IsA("BasePart") and CurrentTarget.Position or (CurrentTarget:IsA("Model") and select(1, CurrentTarget:GetBoundingBox()).Position)
+            if tPos then
+                local radialVec = Vector3.new(tPos.X - BaseCenter.X, 0, tPos.Z - BaseCenter.Z)
+                local roadLengthDir = radialVec.Magnitude > 0 and radialVec.Unit or Vector3.new(0, 0, 1)
+                local roadWidthDir = Vector3.new(-roadLengthDir.Z, 0, roadLengthDir.X)
+
+                local charFolder = workspace:FindFirstChild("Characters") or workspace
+                local lateralSum = 0
+                local count = 0
+
+                for _, entity in ipairs(charFolder:GetChildren()) do
+                    local valid, eRoot = isValidZombie(entity)
+                    if valid then
+                        local offset = eRoot.Position - tPos
+                        local distAlong = math.abs(offset:Dot(roadLengthDir))
+                        local distLateral = offset:Dot(roadWidthDir)
+
+                        -- Solo zombies dentro del tramo de la carretera (+- 50 studs de largo y ancho)
+                        if distAlong <= 55 and math.abs(distLateral) <= Config.LateralDist + 10 then
+                            lateralSum = lateralSum + distLateral
+                            count = count + 1
+                        end
+                    end
+                end
+
+                if count > 0 then
+                    -- Centro de masa lateral de la horda para orientar la embestida
+                    CachedHordeClusterOffset = math.clamp(lateralSum / count, -Config.LateralDist * 0.8, Config.LateralDist * 0.8)
+                else
+                    CachedHordeClusterOffset = 0
+                end
+            end
+        end
+    end
+end)
+
+-- ==============================================================================
+-- ESCÁNER MANUAL DE DIAGNÓSTICO
 -- ==============================================================================
 local function executeMasterDiagnostic()
     local char = lp.Character or lp.CharacterAdded:Wait()
@@ -248,18 +310,15 @@ local function executeMasterDiagnostic()
     local charFolder = workspace:FindFirstChild("Characters") or workspace
 
     for _, entity in ipairs(charFolder:GetChildren()) do
-        if entity:IsA("Model") and entity ~= char and not Players:GetPlayerFromCharacter(entity) then
-            local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-            local hum = entity:FindFirstChildOfClass("Humanoid")
-            if eRoot and (not hum or hum.Health > 0) then
-                local diff = eRoot.Position - refPos
-                if diff.Magnitude <= 900 then
-                    totalZombies = totalZombies + 1
-                    if math.abs(diff.Z) > math.abs(diff.X) then
-                        if diff.Z < 0 then quadrantCount.NORTE = quadrantCount.NORTE + 1 else quadrantCount.SUR = quadrantCount.SUR + 1 end
-                    else
-                        if diff.X > 0 then quadrantCount.ESTE = quadrantCount.ESTE + 1 else quadrantCount.OESTE = quadrantCount.OESTE + 1 end
-                    end
+        local valid, eRoot = isValidZombie(entity)
+        if valid then
+            local diff = eRoot.Position - refPos
+            if diff.Magnitude <= 900 then
+                totalZombies = totalZombies + 1
+                if math.abs(diff.Z) > math.abs(diff.X) then
+                    if diff.Z < 0 then quadrantCount.NORTE = quadrantCount.NORTE + 1 else quadrantCount.SUR = quadrantCount.SUR + 1 end
+                else
+                    if diff.X > 0 then quadrantCount.ESTE = quadrantCount.ESTE + 1 else quadrantCount.OESTE = quadrantCount.OESTE + 1 end
                 end
             end
         end
@@ -326,11 +385,11 @@ end
 -- INTERFAZ FLUENT
 -- ==============================================================================
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | MASTER V6",
+    Title = "ZOMBIE HUB | MASTER V7",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(600, 470),
-    Acrylic = false, -- Desactivado para no cargar la GPU
+    Size = UDim2.fromOffset(600, 480),
+    Acrylic = false,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
@@ -350,8 +409,8 @@ ZigZagToggleInstance = Tabs.Combat:AddToggle("ZigZagToggle", {
 
 Tabs.Combat:AddDropdown("ModeDropdown", {
     Title = "Modo de Ataque / Patrón",
-    Values = { "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico" },
-    Default = "Zigzag Clásico",
+    Values = { "Stalker", "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico" },
+    Default = "Stalker",
     Callback = function(Value) Config.AttackMode = Value end
 })
 
@@ -371,11 +430,11 @@ Tabs.Combat:AddToggle("AutoRouteToggle", {
 
 Tabs.Combat:AddParagraph({
     Title = "Controles Rápidos de Teclado",
-    Content = "• Tecla 'T': Fijar objetivo y ACTIVAR.\n• Tecla '9': PAUSAR movimiento y frenar 1s (mantiene objetivo).\n• Tecla '0': DESMARCAR objetivo, apagar y frenar 1s."
+    Content = "• Tecla 'T': Fijar StraightRoad/Zombie y ACTIVAR.\n• Tecla '9': PAUSAR movimiento y frenar 1s (mantiene objetivo).\n• Tecla '0': DESMARCAR objetivo, apagar y frenar 1s."
 })
 
 Tabs.Combat:AddSlider("IntervalSlider", {
-    Title = "Frecuencia de oscilación (Segundos)",
+    Title = "Frecuencia de oscilación / Barrido (Segundos)",
     Default = 0.5,
     Min = 0.0,
     Max = 3.0,
@@ -384,7 +443,7 @@ Tabs.Combat:AddSlider("IntervalSlider", {
 })
 
 Tabs.Combat:AddSlider("DistSlider", {
-    Title = "Amplitud / Rango de giro (Studs)",
+    Title = "Amplitud de Barrido Lateral (Studs)",
     Default = 25,
     Min = 4,
     Max = 60,
@@ -393,8 +452,8 @@ Tabs.Combat:AddSlider("DistSlider", {
 })
 
 Tabs.Combat:AddSlider("SpeedSlider", {
-    Title = "Velocidad de Movimiento",
-    Default = 80,
+    Title = "Velocidad de Embestida",
+    Default = 95,
     Min = 16,
     Max = 200,
     Rounding = 0,
@@ -413,9 +472,7 @@ Tabs.Horde:AddSection("Herramientas Forenses")
 Tabs.Horde:AddButton({
     Title = "📋 EJECUTAR DIAGNÓSTICO MAESTRO COMPLETO",
     Description = "Mapea carreteras a 500 studs, analiza la horda y copia el reporte",
-    Callback = function()
-        executeMasterDiagnostic()
-    end
+    Callback = function() executeMasterDiagnostic() end
 })
 
 -- BOTÓN FLOTANTE
@@ -507,19 +564,15 @@ task.spawn(function()
         local charFolder = workspace:FindFirstChild("Characters") or workspace
 
         for _, entity in ipairs(charFolder:GetChildren()) do
-            if entity:IsA("Model") and entity ~= lp.Character and not Players:GetPlayerFromCharacter(entity) then
-                local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-                local hum = entity:FindFirstChildOfClass("Humanoid")
-
-                if eRoot and (not hum or hum.Health > 0) then
-                    local p = eRoot.Position - BaseCenter
-                    if p.Magnitude <= 900 then
-                        totalZombies = totalZombies + 1
-                        if math.abs(p.Z) > math.abs(p.X) then
-                            if p.Z < 0 then counts.NORTE = counts.NORTE + 1 else counts.SUR = counts.SUR + 1 end
-                        else
-                            if p.X > 0 then counts.ESTE = counts.ESTE + 1 else counts.OESTE = counts.OESTE + 1 end
-                        end
+            local valid, eRoot = isValidZombie(entity)
+            if valid then
+                local p = eRoot.Position - BaseCenter
+                if p.Magnitude <= 900 then
+                    totalZombies = totalZombies + 1
+                    if math.abs(p.Z) > math.abs(p.X) then
+                        if p.Z < 0 then counts.NORTE = counts.NORTE + 1 else counts.SUR = counts.SUR + 1 end
+                    else
+                        if p.X > 0 then counts.ESTE = counts.ESTE + 1 else counts.OESTE = counts.OESTE + 1 end
                     end
                 end
             end
@@ -552,11 +605,15 @@ task.spawn(function()
     end
 end)
 
--- MOTOR FÍSICO ULTRA-LIGERO (SOLO COMPARA CONTRA LA CACHÉ)
+-- ==============================================================================
+-- MOTOR CINÉTICO ULTRA-RÁPIDO (MODO STALKER Y PATRONES CLÁSICOS)
+-- ==============================================================================
 local side = 1
 local lastSwitch = tick()
 local currentStep = 1
 local orbitAngle = 0
+local stalkerDir = 1 -- 1 = avanzando lejos de la base, -1 = retrocediendo hacia la base
+local lastStalkerSwitch = tick()
 
 RunService.Heartbeat:Connect(function()
     if not Config.ZigZagEnabled then return end
@@ -568,13 +625,18 @@ RunService.Heartbeat:Connect(function()
 
     local targetPos = nil
     local targetCF = nil
+    local targetSize = Vector3.new(60, 10, 60)
 
     if CurrentTarget then
-        local tPart = CurrentTarget:IsA("BasePart") and CurrentTarget 
-            or (CurrentTarget:IsA("Model") and (CurrentTarget:FindFirstChild("HumanoidRootPart") or CurrentTarget.PrimaryPart or CurrentTarget:FindFirstChildWhichIsA("BasePart", true)))
-        if tPart and tPart.Parent then
-            targetPos = tPart.Position
-            targetCF = tPart.CFrame
+        if CurrentTarget:IsA("BasePart") then
+            targetPos = CurrentTarget.Position
+            targetCF = CurrentTarget.CFrame
+            targetSize = CurrentTarget.Size
+        elseif CurrentTarget:IsA("Model") then
+            local bbCF, bbSize = CurrentTarget:GetBoundingBox()
+            targetPos = bbCF.Position
+            targetCF = bbCF
+            targetSize = bbSize
         end
     elseif Config.AutoRouteToWave and SECTOR_ROUTES[CurrentActiveSector] then
         local routeData = SECTOR_ROUTES[CurrentActiveSector]
@@ -593,7 +655,50 @@ RunService.Heartbeat:Connect(function()
         local destination = targetPos
         local d = Config.LateralDist
 
-        if Config.AttackMode == "Zigzag Clásico" then
+        -- =====================================================================
+        -- MODO EXCLUSIVO: STALKER (EMBESTIDA + RETROCESO + BARRIDO EN STRAIGHTROAD)
+        -- =====================================================================
+        if Config.AttackMode == "Stalker" then
+            -- 1. Calcular el eje radial exacto de la carretera respecto a la base
+            local toRoadVec = Vector3.new(targetPos.X - BaseCenter.X, 0, targetPos.Z - BaseCenter.Z)
+            local roadLengthDir = toRoadVec.Magnitude > 0 and toRoadVec.Unit or Vector3.new(0, 0, 1) -- Dirección alejándose de base
+            local roadWidthDir = Vector3.new(-roadLengthDir.Z, 0, roadLengthDir.X) -- Ancho perpendicular
+
+            -- 2. Amplitud longitudinal: tamaño de la carretera + 20 studs a cada lado
+            local halfLength = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
+            local maxReach = halfLength + 20.0 -- +20 studs hacia la base y +20 al lado opuesto
+
+            -- 3. Calcular posición actual del auto a lo largo de la carretera
+            local carOffset = root.Position - targetPos
+            local carAlongRoad = carOffset:Dot(roadLengthDir)
+
+            -- 4. Inversión de marcha (pasar y retroceder)
+            if stalkerDir == 1 and carAlongRoad >= (maxReach - 5.0) then
+                stalkerDir = -1
+                lastStalkerSwitch = tick()
+            elseif stalkerDir == -1 and carAlongRoad <= -(maxReach - 5.0) then
+                stalkerDir = 1
+                lastStalkerSwitch = tick()
+            end
+
+            -- Failsafe de tiempo: si pasan 3 segundos sin llegar al extremo, invertir marcha
+            if tick() - lastStalkerSwitch >= 3.0 then
+                stalkerDir = -stalkerDir
+                lastStalkerSwitch = tick()
+            end
+
+            -- 5. Posición objetivo longitudinal (adelante o atrás)
+            local longitudinalTarget = targetPos + (roadLengthDir * (stalkerDir * maxReach))
+
+            -- 6. Barrido lateral rápido (Zigzag) para barrer el ancho de la calzada
+            local weaveWave = math.sin(tick() * 5.5) * d
+            -- Sumar el sesgo de la horda detectada en caché
+            local totalLateral = math.clamp(weaveWave + CachedHordeClusterOffset, -d, d)
+
+            destination = longitudinalTarget + (roadWidthDir * totalLateral)
+
+        -- MODO 1: ZIGZAG CLÁSICO
+        elseif Config.AttackMode == "Zigzag Clásico" then
             if Config.SwitchInterval <= 0.05 then
                 local wave = math.sin(tick() * 3.8)
                 destination = targetPos + (targetCF.RightVector * (wave * d))
@@ -604,6 +709,8 @@ RunService.Heartbeat:Connect(function()
                 end
                 destination = targetPos + (targetCF.RightVector * (side * d))
             end
+
+        -- MODO 2: ROMBO
         elseif Config.AttackMode == "Rombo" then
             if tick() - lastSwitch >= math.max(0.2, Config.SwitchInterval) then
                 currentStep = (currentStep % 4) + 1
@@ -616,9 +723,13 @@ RunService.Heartbeat:Connect(function()
                 -targetCF.RightVector * d
             }
             destination = targetPos + offsets[currentStep]
+
+        -- MODO 3: CÍRCULO
         elseif Config.AttackMode == "Círculo" then
             orbitAngle = orbitAngle + (Config.MoveSpeed * 0.02)
             destination = targetPos + (targetCF.RightVector * (math.cos(orbitAngle) * d)) + (targetCF.LookVector * (math.sin(orbitAngle) * d))
+
+        -- MODO 4: CUADRADO
         elseif Config.AttackMode == "Cuadrado" then
             if tick() - lastSwitch >= math.max(0.25, Config.SwitchInterval) then
                 currentStep = (currentStep % 4) + 1
@@ -631,6 +742,8 @@ RunService.Heartbeat:Connect(function()
                 (targetCF.LookVector * d) - (targetCF.RightVector * d)
             }
             destination = targetPos + corners[currentStep]
+
+        -- MODO 5: ZIGZAG CAÓTICO
         elseif Config.AttackMode == "Zigzag Caótico" then
             if tick() - lastSwitch >= math.max(0.15, Config.SwitchInterval) then
                 side = (math.random() > 0.5 and 1 or -1)
@@ -641,7 +754,9 @@ RunService.Heartbeat:Connect(function()
             destination = targetPos + (targetCF.RightVector * (side * randomDist)) + (targetCF.LookVector * randomForward)
         end
 
-        -- EVASIÓN USANDO LA LISTA PRE-FILTRADA (MÁXIMO 1-3 COMPARACIONES, 0 LAG)
+        -- =====================================================================
+        -- ESCUDO EVASOR DE BLOATERS (MÁXIMO 1-3 COMPARACIONES, 0 LAG)
+        -- =====================================================================
         if Config.EvadeBloaters and #CachedBloaterDangers > 0 then
             for _, bombPos in ipairs(CachedBloaterDangers) do
                 local distToBomb = (root.Position - bombPos).Magnitude
@@ -655,6 +770,7 @@ RunService.Heartbeat:Connect(function()
             end
         end
 
+        -- APLICACIÓN CINÉTICA AL VEHÍCULO
         local direction = (destination - root.Position)
         local horizontalDir = Vector3.new(direction.X, 0, direction.Z)
 
@@ -666,8 +782,8 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB MASTER V6 OPTIMIZADO",
-    Content = "Cero lag asegurado para Luna Roja de 5,000 zombies.",
+    Title = "ZOMBIE HUB V7 ACTIVO",
+    Content = "Modo Stalker configurado: embestida +20 studs y barrido continuo.",
     Duration = 4
 })
 
