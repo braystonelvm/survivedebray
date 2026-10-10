@@ -1,6 +1,6 @@
 -- ==============================================================================
 -- REACTOR NUCLEAR HUB - APERTURA PRIORITARIA, RONDAS (10s), GAS 128 Y EXPERIMENT
--- V9 MASTER: PARADAS 100% INMÓVILES + CAZA DE PHASER + COMBATE ORIGINAL + COFRES
+-- V10 MASTER: CAJAS ESTRICTAS + PARADAS INMÓVILES + PHASER READY + COFRES
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -69,7 +69,7 @@ local RangeVisuals = {}
 
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
-    Title = "REACTOR HUB | NUCLEAR V9",
+    Title = "REACTOR HUB | NUCLEAR V10",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(560, 500),
@@ -245,7 +245,6 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     return false
 end
 
-
 -- ATAQUE CIRCULAR EN CACERÍA (DESDE -4 STUDS BAJO EL SUELO HASTA +5 STUDS DE ALTURA)
 local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
@@ -256,7 +255,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
     local angle = 0
 
     local initialTPos = targetRoot.Position
-    local startY = initialTPos.Y - 4.0 -- << [1] CAMBIAR AQUÍ A -4.0 (Inicio bajo tierra)
+    local startY = initialTPos.Y - 4.0 -- Comienza a -4 studs por debajo
     local bodyPos = getOrCreatePhysics(root, startY)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
@@ -268,9 +267,9 @@ local function orbitTarget(targetRoot, radius, duration, speed)
         angle = angle + (speed * 0.010)
         local tPos = targetRoot.Position
 
-        -- Ascenso dinámico durante el giro: inicia en -4 y sube 7 studs para terminar en +5
+        -- Ascenso dinámico durante el giro: desde -4 studs hasta +5 studs (recorrido de 9 studs)
         local progress = math.clamp((tick() - startTime) / duration, 0, 1)
-        local currentY = (tPos.Y - 4.0) + (progress * 7.0) -- << [2] CAMBIAR AQUÍ (-4.0 y * 9.0)
+        local currentY = (tPos.Y - 4.0) + (progress * 9.0)
 
         local orbitDest = Vector3.new(
             tPos.X + math.cos(angle) * radius,
@@ -282,7 +281,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
 end
 
 -- ==============================================================================
--- FILTRO ESTRICTO CONTRA DROPPED BAGS Y OBJETOS DEL SUELO
+-- FILTRO ESTRICTO CONTRA DROPPED BAGS, DRONES Y OBJETOS DEL SUELO
 -- ==============================================================================
 local function isValidZombieModel(entity)
     if not entity or not entity:IsA("Model") or entity == lp.Character or Players:GetPlayerFromCharacter(entity) then
@@ -290,8 +289,11 @@ local function isValidZombieModel(entity)
     end
 
     local name = entity.Name:lower()
-    -- EXCLUSIÓN TOTAL DE MOCHILAS, ITEMS, CAJAS Y DROPS
-    if name:find("dropped") or name:find("bag") or name:find("item") or name:find("loot") or name:find("crate") or name:find("debris") or name:find("corpse") then
+    -- EXCLUSIÓN TOTAL DE MOCHILAS, ITEMS, CAJAS, DRONES Y ESTRUCTURAS
+    if name:find("dropped") or name:find("bag") or name:find("item") or name:find("loot") 
+       or name:find("crate") or name:find("debris") or name:find("corpse") or name:find("drone")
+       or name:find("turret") or name:find("sentry") or name:find("car") or name:find("vehicle")
+       or name:find("structure") or name:find("door") or name:find("fence") then
         return false
     end
 
@@ -381,7 +383,7 @@ local function updateRangeVisuals()
     createBoxVisual("Visual_Center2_Range", Center2_Pos, State.Center2Radius, Color3.fromRGB(255, 170, 0))
 end
 
--- DETECCIÓN EXACTA DE ZOMBIES DENTRO DE LOS STUDS (CON FILTRO ESTRICTO)
+-- DETECCIÓN ESTRICTA DENTRO DEL VOLUMEN DE LA CAJA (IGNORA CUALQUIERA FUERA DEL RANGO)
 local function getZombiesInBox(centerPos, radius)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local targets = {}
@@ -392,9 +394,11 @@ local function getZombiesInBox(centerPos, radius)
             local dx = math.abs(eRoot.Position.X - centerPos.X)
             local dz = math.abs(eRoot.Position.Z - centerPos.Z)
             local dy = math.abs(eRoot.Position.Y - centerPos.Y)
+            local distHorizontal = math.sqrt(dx * dx + dz * dz)
 
-            if dx <= radius and dz <= radius and dy <= radius then
-                table.insert(targets, {Model = entity, Root = eRoot, Dist = (eRoot.Position - centerPos).Magnitude})
+            -- Medición matemática estricta: solo si está dentro del radio horizontal Y dentro de la altura
+            if distHorizontal <= radius and dy <= radius then
+                table.insert(targets, {Model = entity, Root = eRoot, Dist = distHorizontal})
             end
         end
     end
@@ -430,23 +434,23 @@ local function executeThreeInitialStops()
         return false
     end
 
-    -- PARADA 1: CENTRO 1 (QUIETO HASTA QUE NO HAYA ZOMBIES EN 10 STUDS)
-    updateStatus("🛑 Parada 1/3: Centro 1 (Quieto hasta limpiar 10 studs)...")
+    -- PARADA 1: CENTRO 1 (QUIETO HASTA QUE LA CAJA DE 10 STUDS ESTÉ VACÍA)
+    updateStatus("🛑 Parada 1/3: Centro 1 (Quieto hasta limpiar caja 10 studs)...")
     flyMoveTo(CalculatedCenter, 45, 2.5, true)
     if bp then bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z) end
 
     while State.Running and not State.Paused do
         if not checkPhaserInterrupt(CalculatedCenter) then
-            -- MANTENERSE 100% INMÓVIL EN EL CENTRO
             if bp then bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z) end
             
             local inRange = getZombiesInBox(CalculatedCenter, State.Center1Radius)
-            if #inRange > 0 then
-                updateStatus(string.format("Centro 1: Quieto en el sitio (%d zombies en rango)...", #inRange))
-            else
-                updateStatus("✅ Parada 1 limpia. Avanzando a Centro 2...")
+            if #inRange == 0 then
+                -- Caja vacía: completó la misión en Centro 1
+                updateStatus("✅ Centro 1 limpio (caja vacía). Avanzando a Centro 2...")
                 task.wait(0.5)
                 break
+            else
+                updateStatus(string.format("Centro 1: Quieto esperando (%d en caja)...", #inRange))
             end
         end
         task.wait(0.25)
@@ -454,8 +458,8 @@ local function executeThreeInitialStops()
 
     if not State.Running or State.Paused then return end
 
-    -- PARADA 2: CENTRO 2 (QUIETO VERIFICANDO 10s EN 8 STUDS)
-    updateStatus("🛑 Parada 2/3: Centro 2 (Quieto verificando 10s en 8 studs)...")
+    -- PARADA 2: CENTRO 2 (QUIETO VERIFICANDO 10s EN CAJA DE 8 STUDS)
+    updateStatus("🛑 Parada 2/3: Centro 2 (Quieto verificando 10s en caja 8 studs)...")
     flyMoveTo(Center2_Pos, 45, 2.5, true)
     if bp then bp.Position = Vector3.new(Center2_Pos.X, targetY, Center2_Pos.Z) end
     local verify2Start = tick()
@@ -464,18 +468,18 @@ local function executeThreeInitialStops()
         if checkPhaserInterrupt(Center2_Pos) then
             verify2Start = tick()
         else
-            -- MANTENERSE 100% INMÓVIL EN EL CENTRO 2
             if bp then bp.Position = Vector3.new(Center2_Pos.X, targetY, Center2_Pos.Z) end
 
             local inRange = getZombiesInBox(Center2_Pos, State.Center2Radius)
             if #inRange > 0 then
-                updateStatus(string.format("Centro 2: Quieto esperando (%d zombies en rango)...", #inRange))
-                verify2Start = tick() -- Se reinicia el temporizador si hay zombies
+                -- Si entra un zombie en la caja, espera y reinicia los 10 segundos
+                updateStatus(string.format("Centro 2: Zombie en caja (%d). Esperando...", #inRange))
+                verify2Start = tick()
             else
                 local elapsed = tick() - verify2Start
-                updateStatus(string.format("Centro 2: Quieto verificando (%ds/10s)...", math.floor(elapsed)))
+                updateStatus(string.format("Centro 2: Caja vacía. Verificando (%ds/10s)...", math.floor(elapsed)))
                 if elapsed >= 10 then
-                    updateStatus("✅ Parada 2 completada (10s limpio). Regresando a Centro 1...")
+                    updateStatus("✅ Centro 2 completado (10s limpio). Regresando a Centro 1...")
                     break
                 end
             end
@@ -485,8 +489,8 @@ local function executeThreeInitialStops()
 
     if not State.Running or State.Paused then return end
 
-    -- PARADA 3: CENTRO 1 SEGUNDA VEZ (QUIETO RE-VERIFICANDO 10s EN 10 STUDS)
-    updateStatus("🛑 Parada 3/3: Centro 1 (Quieto re-verificando 10s en 10 studs)...")
+    -- PARADA 3: CENTRO 1 SEGUNDA VEZ (QUIETO RE-VERIFICANDO 10s EN CAJA DE 10 STUDS)
+    updateStatus("🛑 Parada 3/3: Centro 1 (Quieto re-verificando 10s en caja 10 studs)...")
     flyMoveTo(CalculatedCenter, 45, 2.5, true)
     if bp then bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z) end
     local verify3Start = tick()
@@ -495,16 +499,15 @@ local function executeThreeInitialStops()
         if checkPhaserInterrupt(CalculatedCenter) then
             verify3Start = tick()
         else
-            -- MANTENERSE 100% INMÓVIL EN EL CENTRO 1
             if bp then bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z) end
 
             local inRange = getZombiesInBox(CalculatedCenter, State.Center1Radius)
             if #inRange > 0 then
-                updateStatus(string.format("Centro 1: Quieto esperando (%d zombies en rango)...", #inRange))
+                updateStatus(string.format("Centro 1: Zombie en caja (%d). Esperando...", #inRange))
                 verify3Start = tick()
             else
                 local elapsed = tick() - verify3Start
-                updateStatus(string.format("Centro 1: Quieto re-verificando (%ds/10s)...", math.floor(elapsed)))
+                updateStatus(string.format("Centro 1: Caja vacía. Re-verificando (%ds/10s)...", math.floor(elapsed)))
                 if elapsed >= 10 then
                     updateStatus("✅ Las 3 paradas terminadas. ¡Iniciando cacería general como siempre!")
                     break
@@ -1362,8 +1365,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB V9 ACTIVO",
-    Content = "Paradas 100% inmóviles sin orbitar, filtro estricto anti-drops y cacería intacta.",
+    Title = "REACTOR HUB V10 LISTO",
+    Content = "Cajas estrictas, paradas 100% inmóviles y cacería intacta.",
     Duration = 4
 })
 
