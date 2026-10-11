@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REPARADOR DE INGENIERO TURBO & TRUCK GODMODE (SIN DEPENDENCIAS EXTERNAS)
+-- REPARADOR OVERCLOCK 60 FPS & TRUCK GODMODE (BOMBA MULTI-THREAD NATIVA)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -7,12 +7,20 @@ local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 
-local Config = {
-    BlockImpactDamage = true,    -- Anula daño al atropellar Tanks
-    InstantAuraRepair = true,     -- Repara estructuras dañadas en radio
-    RepairTruckDirect = true,     -- Intenta reparar el camión por remote
-    AuraRadius = 35,             -- Radio de reparación en studs
-    PacketsPerCycle = 10         -- Pulsos de reparación por ciclo
+local TurboConfig = {
+    BlockImpactDamage = true,     -- Inmunidad al Tank (Bloqueo de 'Impact')
+    UltraRepairActive = true,     -- Reparación Overclock activa
+    PacketsPerBurst = 35,         -- Ráfaga de paquetes por cada ciclo
+    ParallelWorkers = 3,          -- Hilos concurrentes simultáneos
+    AuraRadius = 35,              -- Rango de detección en studs
+    RepairTruck = true            -- Reparar también el camión si estás montado
+}
+
+local Stats = {
+    PacketsSentLastSec = 0,
+    TotalPacketsSent = 0,
+    CurrentTargetName = "Ninguno",
+    CurrentTargetHP = "N/A"
 }
 
 -- OBTENER EL CAMIÓN ACTUAL
@@ -26,7 +34,7 @@ local function getCurrentTruck()
     return nil, nil
 end
 
--- OBTENER EL REMOTE REPAIR DIRECTAMENTE DESDE LA MOCHILA (SIN EQUIPAR)
+-- OBTENER EL REMOTE REPAIR DIRECTO DESDE LA MOCHILA
 local function getRepairRemote()
     local char = lp.Character
     local bp = lp:FindFirstChild("Backpack")
@@ -35,25 +43,25 @@ local function getRepairRemote()
 end
 
 -- ==============================================================================
--- 1. BLOQUEO DE DAÑO POR IMPACTO (ANTI-TANK GODMODE)
+-- 1. BLOQUEO DE DAÑO DE IMPACTO (ANTI-TANK GODMODE)
 -- ==============================================================================
 if hookmetamethod then
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
         local method = getnamecallmethod()
-        if Config.BlockImpactDamage and method == "FireServer" and self.Name == "Impact" then
-            return nil -- Descarta el paquete de choque
+        if TurboConfig.BlockImpactDamage and method == "FireServer" and self.Name == "Impact" then
+            return nil -- Descarta la colisión contra Tanks
         end
         return oldNamecall(self, ...)
     end)
 end
 
 -- ==============================================================================
--- 2. INTERFAZ NATIVA ROBLOX (WIDGET FLOTANTE Y PANEL)
+-- 2. INTERFAZ NATIVA ROBLOX (WIDGET ROJO Y PANEL)
 -- ==============================================================================
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "NativeEngineerRepairGui"
+ScreenGui.Name = "NativeTurboRepairGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -73,16 +81,16 @@ BtnCorner.Parent = FloatBtn
 local BtnIcon = Instance.new("TextLabel")
 BtnIcon.Size = UDim2.new(1, 0, 1, 0)
 BtnIcon.BackgroundTransparency = 1
-BtnIcon.Text = "🔨"
+BtnIcon.Text = "⚡"
 BtnIcon.TextSize = 22
 BtnIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
 BtnIcon.Parent = FloatBtn
 
 -- Ventana Principal
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 420, 0, 320)
-MainFrame.Position = UDim2.new(0.5, -210, 0.5, -160)
-MainFrame.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
+MainFrame.Size = UDim2.new(0, 430, 0, 360)
+MainFrame.Position = UDim2.new(0.5, -215, 0.5, -180)
+MainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 26)
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -94,8 +102,8 @@ FrameCorner.Parent = MainFrame
 
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
-TitleBar.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
-TitleBar.Text = "  INGENIERO TURBO & TRUCK DEFENSE"
+TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+TitleBar.Text = "  REPARADOR OVERCLOCK 60 FPS (TURBO)"
 TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
 TitleBar.TextSize = 13
 TitleBar.Font = Enum.Font.GothamBold
@@ -106,27 +114,26 @@ local TitleCorner = Instance.new("UICorner")
 TitleCorner.CornerRadius = UDim.new(0, 10)
 TitleCorner.Parent = TitleBar
 
--- Estado en vivo
+-- Monitor de Rendimiento y Vida
 local StatusLbl = Instance.new("TextLabel")
-StatusLbl.Size = UDim2.new(1, -20, 0, 80)
+StatusLbl.Size = UDim2.new(1, -20, 0, 90)
 StatusLbl.Position = UDim2.new(0, 10, 0, 44)
-StatusLbl.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+StatusLbl.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
 StatusLbl.TextColor3 = Color3.fromRGB(0, 255, 170)
-StatusLbl.TextSize = 12
+StatusLbl.TextSize = 11
 StatusLbl.Font = Enum.Font.Code
 StatusLbl.TextXAlignment = Enum.TextXAlignment.Left
 StatusLbl.TextYAlignment = Enum.TextYAlignment.Top
-StatusLbl.Text = " Buscando estructuras y vehículo..."
+StatusLbl.Text = " Calculando tasa de paquetes por segundo (PPS)..."
 StatusLbl.Parent = MainFrame
 
 local StatusCorner = Instance.new("UICorner")
 StatusCorner.CornerRadius = UDim.new(0, 6)
 StatusCorner.Parent = StatusLbl
 
--- Función auxiliar para botones de alternancia
 local function createToggleBtn(yPos, labelText, defaultState, callback)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, -20, 0, 38)
+    btn.Size = UDim2.new(1, -20, 0, 36)
     btn.Position = UDim2.new(0, 10, 0, yPos)
     btn.BackgroundColor3 = defaultState and Color3.fromRGB(30, 120, 60) or Color3.fromRGB(140, 35, 35)
     btn.Text = (defaultState and "🟢 " or "🔴 ") .. labelText
@@ -148,16 +155,49 @@ local function createToggleBtn(yPos, labelText, defaultState, callback)
     end)
 end
 
-createToggleBtn(134, "Inmunidad a Choques de Tanks (Anti-Impact)", Config.BlockImpactDamage, function(s)
-    Config.BlockImpactDamage = s
+createToggleBtn(144, "Reparación Overclock Extrema (Multi-Thread)", TurboConfig.UltraRepairActive, function(s)
+    TurboConfig.UltraRepairActive = s
 end)
 
-createToggleBtn(178, "Aura de Reparación Instantánea (Bases/Vallas)", Config.InstantAuraRepair, function(s)
-    Config.InstantAuraRepair = s
+createToggleBtn(186, "Inmunidad a Choques de Tanks (Anti-Impact)", TurboConfig.BlockImpactDamage, function(s)
+    TurboConfig.BlockImpactDamage = s
 end)
 
-createToggleBtn(222, "Reparar Camión Actual en Movimiento", Config.RepairTruckDirect, function(s)
-    Config.RepairTruckDirect = s
+createToggleBtn(228, "Reparar Camión Actual en Movimiento", TurboConfig.RepairTruck, function(s)
+    TurboConfig.RepairTruck = s
+end)
+
+-- Selector de Potencia de Bombeo
+local SpeedBtn = Instance.new("TextButton")
+SpeedBtn.Size = UDim2.new(1, -20, 0, 36)
+SpeedBtn.Position = UDim2.new(0, 10, 0, 270)
+SpeedBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+SpeedBtn.Text = "🚀 Potencia de Ráfaga: ALTA (35 paquetes/ciclo)"
+SpeedBtn.TextColor3 = Color3.fromRGB(255, 200, 0)
+SpeedBtn.TextSize = 12
+SpeedBtn.Font = Enum.Font.GothamBold
+SpeedBtn.Parent = MainFrame
+
+local SpeedCorner = Instance.new("UICorner")
+SpeedCorner.CornerRadius = UDim.new(0, 6)
+SpeedCorner.Parent = SpeedBtn
+
+local currentLevel = 2
+SpeedBtn.MouseButton1Click:Connect(function()
+    currentLevel = (currentLevel % 3) + 1
+    if currentLevel == 1 then
+        TurboConfig.PacketsPerBurst = 15
+        TurboConfig.ParallelWorkers = 2
+        SpeedBtn.Text = "⚡ Potencia de Ráfaga: MEDIA (15 paquetes)"
+    elseif currentLevel == 2 then
+        TurboConfig.PacketsPerBurst = 35
+        TurboConfig.ParallelWorkers = 3
+        SpeedBtn.Text = "🚀 Potencia de Ráfaga: ALTA (35 paquetes)"
+    else
+        TurboConfig.PacketsPerBurst = 65
+        TurboConfig.ParallelWorkers = 4
+        SpeedBtn.Text = "🔥 Potencia de Ráfaga: EXTREMA (65 paquetes)"
+    end
 end)
 
 local isVis = true
@@ -167,62 +207,97 @@ FloatBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 3. MOTOR DE REPARACIÓN RÁPIDA (DESDE LA MOCHILA)
+-- 3. MOTOR DE DISPARO MULTI-THREAD CON BOMBEO EN PARALELO
 -- ==============================================================================
+local packetCounterThisSec = 0
+
+-- Contador de paquetes por segundo (PPS)
 task.spawn(function()
     while true do
-        task.wait(0.1)
-        local repairRemote = getRepairRemote()
-        local char = lp.Character
-        local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-        local truck, seat = getCurrentTruck()
+        task.wait(1.0)
+        Stats.PacketsSentLastSec = packetCounterThisSec
+        packetCounterThisSec = 0
 
-        local repairedCount = 0
+        local truck = getCurrentTruck()
+        local truckInfo = truck and string.format("Camión: %s | Anti-Tank: %s", truck.Name, TurboConfig.BlockImpactDamage and "ACTIVO" or "OFF") or "A pie"
 
-        if repairRemote and root then
-            -- 1. REPARACIÓN DEL CAMIÓN (SIN EQUIPAR HERRAMIENTA)
-            if Config.RepairTruckDirect and truck then
-                for _ = 1, Config.PacketsPerCycle do
-                    pcall(function() repairRemote:FireServer(truck) end)
-                    pcall(function() repairRemote:FireServer(truck.PrimaryPart or seat) end)
-                end
-                repairedCount = repairedCount + 1
+        StatusLbl.Text = string.format(
+            " %s\n Velocidad de inyección: %d paquetes/seg (PPS)\n Estructura actual: %s\n Vida: %s",
+            truckInfo,
+            Stats.PacketsSentLastSec,
+            Stats.CurrentTargetName,
+            Stats.CurrentTargetHP
+        )
+    end
+end)
+
+-- Disparador en ráfaga paralela
+local function fireBurst(remote, targetInstance)
+    for _ = 1, TurboConfig.ParallelWorkers do
+        task.spawn(function()
+            for _ = 1, TurboConfig.PacketsPerBurst do
+                pcall(function()
+                    remote:FireServer(targetInstance)
+                end)
+                packetCounterThisSec = packetCounterThisSec + 1
+                Stats.TotalPacketsSent = Stats.TotalPacketsSent + 1
             end
+        end)
+    end
+end
 
-            -- 2. REPARACIÓN INSTANTÁNEA DE ESTRUCTURAS DAÑADAS
-            if Config.InstantAuraRepair then
+-- Bucle de escaneo continuo a máxima frecuencia
+task.spawn(function()
+    while true do
+        task.wait(0.03) -- 33 ciclos de escaneo por segundo (prácticamente instantáneo)
+
+        if TurboConfig.UltraRepairActive then
+            local repairRemote = getRepairRemote()
+            local char = lp.Character
+            local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+            local truck, seat = getCurrentTruck()
+
+            if repairRemote and root then
+                -- 1. Reparación del camión si está activada
+                if TurboConfig.RepairTruck and truck then
+                    fireBurst(repairRemote, truck)
+                    fireBurst(repairRemote, truck.PrimaryPart or seat)
+                end
+
+                -- 2. Escaneo de estructuras dañadas
                 local structFolder = workspace:FindFirstChild("Structures") or workspace
+                local foundDamaged = false
+
                 for _, struct in ipairs(structFolder:GetChildren()) do
                     if struct:IsA("Model") then
                         local primary = struct.PrimaryPart or struct:FindFirstChildWhichIsA("BasePart")
-                        if primary and (primary.Position - root.Position).Magnitude <= Config.AuraRadius then
+                        if primary and (primary.Position - root.Position).Magnitude <= TurboConfig.AuraRadius then
                             local mock = struct:FindFirstChild("MockHumanoid")
                             if mock then
                                 local hp = mock:GetAttribute("Health") or 0
                                 local maxHp = mock:GetAttribute("MaxHealth") or 100
 
-                                -- Solo repara si tiene daño
                                 if hp < maxHp then
-                                    for _ = 1, Config.PacketsPerCycle do
-                                        pcall(function() repairRemote:FireServer(struct) end)
-                                    end
-                                    repairedCount = repairedCount + 1
+                                    foundDamaged = true
+                                    Stats.CurrentTargetName = struct.Name
+                                    Stats.CurrentTargetHP = string.format("%d / %d (%.0f%%)", hp, maxHp, (hp / maxHp) * 100)
+
+                                    -- Disparo masivo inmediato
+                                    fireBurst(repairRemote, struct)
+                                    break
                                 end
                             end
                         end
                     end
                 end
+
+                if not foundDamaged then
+                    Stats.CurrentTargetName = "Ninguna dañada en rango"
+                    Stats.CurrentTargetHP = "100%"
+                end
             end
         end
-
-        -- Actualizar texto de estado
-        local truckStatus = truck and string.format("Camión: %s | Anti-Tank: %s", truck.Name, Config.BlockImpactDamage and "ACTIVO" or "OFF") or "A pie (sin vehículo)"
-        StatusLbl.Text = string.format(" %s\n Martillo: %s\n Estructuras reparándose en rango: %d",
-            truckStatus,
-            repairRemote and "Detectado en Mochila (Seguro)" or "No encontrado",
-            repairedCount
-        )
     end
 end)
 
-print("[INGENIERO]: Sistema iniciado sin errores.")
+print("[OVERCLOCK]: Reparador Turbo cargado con éxito.")
