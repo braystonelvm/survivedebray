@@ -1,165 +1,195 @@
 -- ==============================================================================
--- TRUCK GODMODE & REPARADOR UNIVERSAL TURBO (CON WIDGET FLOTANTE)
+-- ESPÍA FORENSE: REPAIR HAMMER, GRIP, ARGUMENTOS Y REMOTE SPY (CON WIDGET)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
-local mouse = lp:GetMouse()
 
-local Config = {
-    BlockImpactDamage = true,   -- Inmunidad a choques contra Tanks
-    AutoRepairVehicle = true,   -- Reparar vehículo actual
-    RepairUnderMouse = true,    -- Reparar cualquier cosa a la que apuntes con el mouse
-    AuraRepair = true,          -- Reparar vallas, muros y estructuras cercanas (25 studs)
-    RepairPulses = 15,          -- Ráfagas de reparación por ciclo
-    EquipHammer = true
+local SpyData = {
+    LastRemoteArgs = {},
+    LastCallTime = 0,
+    CallsCount = 0,
+    ToolDropCause = "Monitoreando...",
+    DecompiledClient = "No disponible"
 }
 
--- OBTENER EL VEHÍCULO ACTUAL
-local function getCurrentTruck()
-    local char = lp.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
-        local seat = hum.SeatPart
-        return seat:FindFirstAncestorOfClass("Model") or seat.Parent, seat
-    end
-    return nil, nil
-end
+local lines = {}
+local function log(t) table.insert(lines, t) end
 
--- OBTENER EL MARTILLO Y SU REMOTE
-local function getRepairTools()
-    local char = lp.Character
-    local bp = lp:FindFirstChild("Backpack")
-    local hammer = nil
-
-    if char then hammer = char:FindFirstChild("Repair Hammer") end
-    if not hammer and bp then hammer = bp:FindFirstChild("Repair Hammer") end
-
-    local repairRemote = hammer and hammer:FindFirstChild("Repair")
-    return hammer, repairRemote
-end
-
--- ==============================================================================
--- 1. GODMODE POR HOOK: BLOQUEO DEL EVENTO "IMPACT" (ANTI-DAÑO DE CHOQUE)
--- ==============================================================================
+-- 1. REMOTE SPY DEDICADO AL MARTILLO
 if hookmetamethod then
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
         local method = getnamecallmethod()
-        if Config.BlockImpactDamage and method == "FireServer" and self.Name == "Impact" then
-            return nil
-        end
-        return oldNamecall(self, ...)
-    end)
-else
-    task.spawn(function()
-        while true do
-            task.wait(1.5)
-            if Config.BlockImpactDamage then
-                local truck = getCurrentTruck()
-                if truck then
-                    for _, part in ipairs(truck:GetDescendants()) do
-                        if part:IsA("BasePart") then
-                            local pName = part.Name:lower()
-                            if pName:find("bumper") or pName:find("grill") or pName:find("fender") or pName:find("hood") or pName:find("hitbox") then
-                                part.CanTouch = false
-                            end
-                        end
-                    end
-                end
+        local args = {...}
+
+        if method == "FireServer" and (self.Name == "Repair" or self.Name == "Deconstruct") then
+            SpyData.CallsCount = SpyData.CallsCount + 1
+            local now = tick()
+            local interval = SpyData.LastCallTime > 0 and (now - SpyData.LastCallTime) or 0
+            SpyData.LastCallTime = now
+
+            local argDetails = {}
+            for i, v in ipairs(args) do
+                table.insert(argDetails, string.format("Arg[%d]: (%s) %s", i, typeof(v), tostring(v)))
+            end
+
+            SpyData.LastRemoteArgs = argDetails
+
+            print(string.format("[ESPÍA MARTILLO] %s disparado | Intervalo: %.3fs", self.Name, interval))
+            for _, d in ipairs(argDetails) do
+                print("   -> " .. d)
             end
         end
+
+        return oldNamecall(self, ...)
     end)
 end
 
+-- 2. DETECTOR DE CAÍDA Y ESTADO DEL AGARRE (GRIP / HANDLE)
+local function checkHammerPhysicalState()
+    local char = lp.Character
+    local bp = lp:FindFirstChild("Backpack")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hammer = (char and char:FindFirstChild("Repair Hammer")) or (bp and bp:FindFirstChild("Repair Hammer"))
+
+    local report = {}
+    table.insert(report, string.format("• ¿Personaje sentado?: %s", tostring(hum and hum.Sit or false)))
+    if hum and hum.SeatPart then
+        table.insert(report, string.format("• Asiento actual: %s (Clase: %s)", hum.SeatPart.Name, hum.SeatPart.ClassName))
+    end
+
+    if hammer then
+        table.insert(report, string.format("• Ubicación actual del martillo: %s", hammer.Parent and hammer.Parent.Name or "Nil"))
+        local handle = hammer:FindFirstChild("Handle")
+        if handle then
+            table.insert(report, string.format("• Handle: Anchored = %s | CanCollide = %s", tostring(handle.Anchored), tostring(handle.CanCollide)))
+        else
+            table.insert(report, "• ALERTA: El martillo NO tiene Handle o fue destruido.")
+        end
+
+        -- Revisar si el Grip existe en la mano
+        local grip = (char and char:FindFirstChild("RightGrip", true)) or (handle and handle:FindFirstChildOfClass("Weld"))
+        if grip then
+            table.insert(report, string.format("• Agarre (Grip/Weld): ACTIVO (%s conectando %s con %s)", grip.ClassName, tostring(grip.Part0), tostring(grip.Part1)))
+        else
+            table.insert(report, "• ALERTA CRÍTICA: No existe 'RightGrip'. El martillo se soltó de las manos y cayó por física.")
+        end
+    else
+        table.insert(report, "• No se detectó 'Repair Hammer' en Character ni en Backpack.")
+    end
+
+    return table.concat(report, "\n")
+end
+
+-- 3. EXTRAER CÓDIGO FUENTE DE REPAIRHAMMERCLIENT
+local function tryExtractClientCode()
+    local char = lp.Character
+    local bp = lp:FindFirstChild("Backpack")
+    local hammer = (char and char:FindFirstChild("Repair Hammer")) or (bp and bp:FindFirstChild("Repair Hammer"))
+    local clientScript = hammer and hammer:FindFirstChild("RepairHammerClient")
+
+    if not clientScript then
+        return "No se encontró el LocalScript RepairHammerClient."
+    end
+
+    -- Si el ejecutor soporta decompile()
+    if decompile then
+        local success, code = pcall(function() return decompile(clientScript) end)
+        if success and code and #code > 10 then
+            return code
+        end
+    end
+
+    -- Respaldo: volcar constantes si decompile no está soportado
+    if getconstants then
+        local consts = getconstants(clientScript)
+        local cList = {}
+        for k, v in pairs(consts) do
+            table.insert(cList, tostring(v))
+        end
+        return "Constantes del script: " .. table.concat(cList, ", ")
+    end
+
+    return "Tu ejecutor no soporta funciones de decompilación de código."
+end
+
 -- ==============================================================================
--- 2. INTERFAZ FLUENT
+-- 4. INTERFAZ Y WIDGET FLOTANTE
 -- ==============================================================================
 local Window = Fluent:CreateWindow({
-    Title = "GODMODE & REPARADOR TOTAL",
+    Title = "ESPÍA FORENSE DE REPARACIÓN",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(560, 440),
+    Size = UDim2.fromOffset(580, 460),
     Acrylic = false,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
 
-local TabMain = Window:AddTab({ Title = "Defensa & Auto", Icon = "shield" })
-local TabRepair = Window:AddTab({ Title = "Reparar Todo", Icon = "wrench" })
+local TabSpy = Window:AddTab({ Title = "Espía Martillo", Icon = "file-search" })
 
--- PESTAÑA VEHÍCULO
-TabMain:AddSection("Protección de Choques (Anti-Tank)")
-
-TabMain:AddToggle("BlockImpactToggle", {
-    Title = "🛡️ Inmunidad a Choques (Godmode)",
-    Description = "Anula el daño al atropellar Tanks a toda velocidad",
-    Default = true,
-    Callback = function(v) Config.BlockImpactDamage = v end
+local LiveStatusParagraph = TabSpy:AddParagraph({
+    Title = "Captura de Golpes del Martillo",
+    Content = "Equipa tu martillo y dale 1 o 2 golpes manuales al camión o a una valla..."
 })
 
-TabMain:AddToggle("AutoRepairVehToggle", {
-    Title = "⚡ Auto-Reparar Camión al Conducir",
-    Description = "Mantiene el camión al 100% mientras manejas",
-    Default = true,
-    Callback = function(v) Config.AutoRepairVehicle = v end
+local GripStatusParagraph = TabSpy:AddParagraph({
+    Title = "Estado Físico del Agarre (Grip)",
+    Content = "Analizando..."
 })
 
-local VehicleStatusParagraph = TabMain:AddParagraph({
-    Title = "Estado del Camión",
-    Content = "Buscando vehículo..."
-})
+TabSpy:AddButton({
+    Title = "📋 COPIAR REPORTE COMPLETO AL PORTAPAPELES",
+    Description = "Copia argumentos exactos, estado del Grip y código del cliente",
+    Callback = function()
+        table.clear(lines)
+        log("==================================================================")
+        log("           INFORME FORENSE: CAPTURA DE REMOTE REPAIR              ")
+        log("==================================================================")
+        log("Hora: " .. os.date("%X"))
+        log("\n[1. ESTADO FÍSICO DEL MARTILLO Y AGARRE]:")
+        log(checkHammerPhysicalState())
+        log("\n------------------------------------------------------------------")
+        log(string.format("[2. LLAMADAS CAPTURADAS AL REMOTE (Total: %d)]:", SpyData.CallsCount))
+        if #SpyData.LastRemoteArgs > 0 then
+            for _, arg in ipairs(SpyData.LastRemoteArgs) do
+                log("   " .. arg)
+            end
+        else
+            log(">> Aún no has dado ningún martillazo manual desde que ejecutaste el script.")
+        end
+        log("\n------------------------------------------------------------------")
+        log("[3. ANÁLISIS DE CÓDIGO (RepairHammerClient)]:")
+        log(tryExtractClientCode())
+        log("==================================================================")
 
--- PESTAÑA REPARACIÓN UNIVERSAL
-TabRepair:AddSection("Reparación Rápida de Cualquier Estructura")
+        local fullReport = table.concat(lines, "\n")
+        if setclipboard then setclipboard(fullReport) elseif toclipboard then toclipboard(fullReport) end
 
-TabRepair:AddToggle("RepairMouseToggle", {
-    Title = "🎯 Reparar lo que Miro con el Mouse",
-    Description = "Repara en ráfaga cualquier valla, muro o cosa a la que apuntes",
-    Default = true,
-    Callback = function(v) Config.RepairUnderMouse = v end
-})
+        Fluent:Notify({
+            Title = "Reporte Copiado",
+            Content = "Pega los datos aquí para ver qué argumentos pide el martillo.",
+            Duration = 4
+        })
+    end
+end)
 
-TabRepair:AddToggle("AuraRepairToggle", {
-    Title = "🌐 Aura de Reparación (Radio 25 studs)",
-    Description = "Repara automáticamente todas las estructuras dañadas a tu alrededor",
-    Default = true,
-    Callback = function(v) Config.AuraRepair = v end
-})
-
-TabRepair:AddSlider("RepairPulsesSlider", {
-    Title = "Velocidad de ráfaga (Pulsos por ciclo)",
-    Default = 15,
-    Min = 1,
-    Max = 35,
-    Rounding = 0,
-    Callback = function(v) Config.RepairPulses = v end
-})
-
--- ==============================================================================
--- 3. BOTÓN FLOTANTE (WIDGET ROJO ARRASTRABLE)
--- ==============================================================================
+-- WIDGET FLOTANTE CIRCULAR (ROJO)
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RepairWidgetScreenGui"
+ScreenGui.Name = "SpyWidgetScreenGui"
 ScreenGui.ResetOnSpawn = false
-if gethui then
-    ScreenGui.Parent = gethui()
-elseif syn and syn.protect_gui then
-    syn.protect_gui(ScreenGui)
-    ScreenGui.Parent = game:GetService("CoreGui")
-else
-    ScreenGui.Parent = lp:WaitForChild("PlayerGui")
-end
+if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.45, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
-FloatBtn.Image = "rbxassetid://10723415903" -- Ícono de engranaje/llave
+FloatBtn.Image = "rbxassetid://10723415903"
 FloatBtn.Active = true
 FloatBtn.Draggable = true
 FloatBtn.Parent = ScreenGui
@@ -174,96 +204,24 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- ACTUALIZACIÓN DE ESTADO DEL VEHÍCULO
+-- ACTUALIZACIÓN EN VIVO DE LA INTERFAZ
 task.spawn(function()
     while true do
         task.wait(0.5)
-        local truck = getCurrentTruck()
-        if truck then
-            local def = tostring(truck:GetAttribute("Defense") or "0.5")
-            local arm = tostring(truck:GetAttribute("Armor") or "true")
-            local fuel = string.format("%.1f", tonumber(truck:GetAttribute("Fuel") or 0))
+        GripStatusParagraph:SetDesc(checkHammerPhysicalState())
 
-            VehicleStatusParagraph:SetDesc(string.format(
-                "Vehículo: %s\nDefensa: %s | Blindaje: %s\nCombustible: %s\nProtección Choques: %s",
-                truck.Name, def, arm, fuel,
-                Config.BlockImpactDamage and "🟢 ACTIVA (Choques anulados)" or "🔴 INACTIVA"
+        if #SpyData.LastRemoteArgs > 0 then
+            LiveStatusParagraph:SetDesc(string.format(
+                "Golpes registrados: %d\nÚltimos argumentos:\n%s",
+                SpyData.CallsCount,
+                table.concat(SpyData.LastRemoteArgs, "\n")
             ))
-        else
-            VehicleStatusParagraph:SetDesc("No estás conduciendo. (Usa el modo mouse o aura para reparar a pie).")
-        end
-    end
-end)
-
--- ==============================================================================
--- 4. MOTOR UNIVERSAL DE REPARACIÓN EN RÁFAGA
--- ==============================================================================
-task.spawn(function()
-    while true do
-        task.wait(0.08)
-        local char = lp.Character
-        local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        local hammer, repairRemote = getRepairTools()
-
-        if hum and hammer and repairRemote then
-            -- Equipar automáticamente si no está en las manos
-            if hammer.Parent ~= char and Config.EquipHammer then
-                hum:EquipTool(hammer)
-            end
-
-            local targetsToRepair = {}
-
-            -- 1. Si estás conduciendo y la auto-reparación está encendida
-            local truck, seat = getCurrentTruck()
-            if truck and Config.AutoRepairVehicle then
-                table.insert(targetsToRepair, truck)
-                table.insert(targetsToRepair, truck.PrimaryPart or seat)
-            end
-
-            -- 2. Reparar lo que miras con el mouse
-            if Config.RepairUnderMouse and mouse.Target then
-                local mTarget = mouse.Target
-                if not mTarget:IsDescendantOf(char) then
-                    local model = mTarget:FindFirstAncestorOfClass("Model")
-                    table.insert(targetsToRepair, mTarget)
-                    if model and model ~= workspace then
-                        table.insert(targetsToRepair, model)
-                    end
-                end
-            end
-
-            -- 3. Aura de reparación cercana (vallas, muros, barricadas)
-            if Config.AuraRepair and root then
-                local structFolder = workspace:FindFirstChild("Structures") or workspace
-                for _, obj in ipairs(structFolder:GetChildren()) do
-                    if obj:IsA("Model") or obj:IsA("BasePart") then
-                        local oPos = obj:IsA("BasePart") and obj.Position or (obj.PrimaryPart and obj.PrimaryPart.Position)
-                        if oPos and (oPos - root.Position).Magnitude <= 25 then
-                            local name = obj.Name:lower()
-                            if not name:find("zombie") and not name:find("dropped") and not name:find("bag") then
-                                table.insert(targetsToRepair, obj)
-                            end
-                        end
-                    end
-                end
-            end
-
-            -- Disparar ráfagas ultrarrápidas a los objetivos recopilados
-            if #targetsToRepair > 0 then
-                for _ = 1, Config.RepairPulses do
-                    for _, target in ipairs(targetsToRepair) do
-                        pcall(function() repairRemote:FireServer(target) end)
-                    end
-                    pcall(function() hammer:Activate() end)
-                end
-            end
         end
     end
 end)
 
 Fluent:Notify({
-    Title = "GODMODE & REPARADOR LISTO",
-    Content = "Widget circular añadido. Menú y reparación universal activos.",
+    Title = "ESPÍA DE MARTILLO ACTIVO",
+    Content = "Toca el widget si se cierra. Da 1 golpe normal con el martillo.",
     Duration = 4
 })
