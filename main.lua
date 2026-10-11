@@ -1,6 +1,6 @@
 -- ==============================================================================
--- REACTOR NUCLEAR HUB - APERTURA PRIORITARIA, RONDAS (10s), GAS 128 Y EXPERIMENT
--- V13 MASTER: PARADAS SUSPENDIDAS + FLY/NOCLIP CONTINUO + CACERÍA ORIGINAL
+-- REACTOR NUCLEAR HUB - V14 MASTER DEFINITIVO
+-- PARADAS SUSPENDIDAS + CAZA DE PHASERS EN CADENA + NOCLIP/FLY PERMANENTE
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -37,7 +37,7 @@ local GAS_STATIONS = {
 local State = {
     Running = false,
     Paused = false,
-    NoclipEnabled = false,    -- Se activa tras 3 segundos y se mantiene encendido en todo momento
+    NoclipEnabled = false,    -- Se activa tras 3 segundos de Fly y permanece activo siempre
     CurrentStatus = "Inactivo",
     LootChests = true,        -- ACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
@@ -69,7 +69,7 @@ local RangeVisuals = {}
 
 -- 1. VENTANA PRINCIPAL
 local Window = Fluent:CreateWindow({
-    Title = "REACTOR HUB | NUCLEAR V13",
+    Title = "REACTOR HUB | NUCLEAR V14",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(560, 500),
@@ -120,7 +120,7 @@ local function copyCurrentCoords()
     end
 end
 
--- LIMPIEZA DE FÍSICAS (ÚNICAMENTE AL PRESIONAR STOP)
+-- LIMPIEZA TOTAL DE FÍSICAS (SOLO AL DETENER O PAUSAR)
 local function removePhysicsHelpers()
     local root = getRootPart()
     if root then
@@ -141,9 +141,9 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP SIEMPRE ACTIVO DURANTE TODA LA EJECUCIÓN
+-- NOCLIP ACTIVO CONSTANTE DESDE EL SEGUNDO 3 HASTA DETENER
 RunService.Stepped:Connect(function()
-    if State.Running and State.NoclipEnabled then
+    if State.Running and not State.Paused and State.NoclipEnabled then
         local char = lp.Character
         if char then
             for _, p in ipairs(char:GetDescendants()) do
@@ -193,7 +193,7 @@ local function secureFlightStart()
     return true
 end
 
--- VUELO HACIA UN DESTINO (CON DESPLAZAMIENTO FLUIDO Y ANTI-TRABA)
+-- VUELO HACIA UN DESTINO (FLUIDO Y SIN ATASCOS)
 local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     stopDistance = stopDistance or 3.0
     local root = getRootPart()
@@ -215,7 +215,6 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
         RunService.Heartbeat:Wait()
 
         while State.Running and State.Paused do
-            bodyPos.Position = Vector3.new(root.Position.X, targetY, root.Position.Z)
             task.wait(0.2)
         end
 
@@ -227,7 +226,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
             return true
         end
 
-        -- Anti-trabado inteligente: si roza una superficie lo eleva sin frenar el avance horizontal
+        -- Anti-roce inteligente en superficies
         if (root.Position - lastPos).Magnitude < 0.2 then
             stuckCounter = stuckCounter + 1
             if stuckCounter >= 20 then
@@ -250,7 +249,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     return false
 end
 
--- ATAQUE CIRCULAR EN CACERÍA (DESDE -4 STUDS BAJO EL SUELO HASTA +5 STUDS DE ALTURA)
+-- ATAQUE CIRCULAR EN CACERÍA (DESDE -4 STUDS BAJO TIERRA HASTA +5 STUDS SOBRE EL OBJETIVO)
 local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
@@ -272,7 +271,7 @@ local function orbitTarget(targetRoot, radius, duration, speed)
         angle = angle + (speed * 0.010)
         local tPos = targetRoot.Position
 
-        -- Ascenso dinámico durante el giro: desde -4 studs hasta +5 studs (recorrido total de 9 studs)
+        -- Ascenso dinámico durante el giro: desde -4 studs hasta +5 studs (recorrido de 9 studs)
         local progress = math.clamp((tick() - startTime) / duration, 0, 1)
         local currentY = (tPos.Y - 4.0) + (progress * 9.0)
 
@@ -368,7 +367,7 @@ local function updateRangeVisuals()
     local function createBoxVisual(name, pos, rad, color)
         local part = Instance.new("Part")
         part.Name = name
-        part.Size = Vector3.new(rad * 2, 11, rad * 2)
+        part.Size = Vector3.new(rad * 2, 11, rad * 2) -- Altura de 11 studs (5.5 hacia arriba y abajo)
         part.CFrame = CFrame.new(pos)
         part.Anchored = true
         part.CanCollide = false
@@ -400,6 +399,7 @@ local function getZombiesInBox(centerPos, radius)
     local function checkEntity(entity)
         local valid, eRoot = isValidZombieModel(entity)
         if valid then
+            -- Excluir zombies hibernando o durmiendo para no bloquear el avance
             if entity:GetAttribute("Hibernating") == true or entity:GetAttribute("Sleeping") == true then
                 return
             end
@@ -426,33 +426,50 @@ local function getZombiesInBox(centerPos, radius)
 end
 
 -- ==============================================================================
--- RUTINA DE 3 PARADAS 100% INMÓVILES EN EL AIRE (CON CAZA Y RETORNO SEGURO)
+-- RUTINA DE 3 PARADAS EN SUSPENSIÓN INMÓVIL (CON CAZA DE PHASERS EN CADENA)
 -- ==============================================================================
 local function executeThreeInitialStops()
     local hoverAltitude = Point2_Door.Y + 6.0
 
-    -- Si aparece un Phaser en el reactor, salir a cazarlo y regresar al punto exacto
-    local function checkAndHuntPhaser(returnPos)
+    -- CAZA PRIORITARIA EN CADENA: mata a un Phaser y si hay otro va al siguiente antes de volver
+    local function checkAndHuntAllPhasers(returnPos)
         local phaserTarget, phaserRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
-        if phaserTarget and phaserRoot then
-            local pName = phaserTarget.Name
-            updateStatus(string.format("👻 INTERRUPCIÓN: Caza prioritaria de PHASER [%s]...", pName))
-            flyMoveTo(phaserRoot.Position, 45, 6.0, true)
-            orbitTarget(phaserRoot, 7, 55.0, 3)
-            updateStatus("Phaser eliminado. Volviendo al centro...")
-            flyMoveTo(returnPos, 45, 3.5, true)
-            return true
+        if not phaserTarget or not phaserRoot then
+            return false
         end
-        return false
+
+        local anyPhaserHunted = false
+
+        while State.Running and not State.Paused do
+            local currentPhaser, currentRoot = getPriorityPhaser(CalculatedCenter, State.DetectionRadius)
+            if not currentPhaser or not currentRoot then
+                break -- Ya no quedan más Phasers en todo el reactor
+            end
+
+            anyPhaserHunted = true
+            local pName = currentPhaser.Name
+            updateStatus(string.format("👻 INTERRUPCIÓN: Cazando PHASER [%s]...", pName))
+            flyMoveTo(currentRoot.Position, 45, 6.0, true)
+            orbitTarget(currentRoot, 7, 55.0, 3)
+            task.wait(0.2)
+        end
+
+        -- Tras eliminar a TODOS los Phasers en radar, regresar a la posición fija de la parada
+        if anyPhaserHunted and returnPos and State.Running and not State.Paused then
+            updateStatus("Todos los Phasers eliminados. Regresando a la posición de parada...")
+            flyMoveTo(returnPos, 45, 3.0, true)
+        end
+
+        return anyPhaserHunted
     end
 
     -- PARADA 1: CENTRO 1 (SUSPENDIDO HASTA QUE LA CAJA DE 10 STUDS ESTÉ VACÍA)
     updateStatus("🛑 Parada 1/3: Centro 1 (Suspendido hasta limpiar caja 10 studs)...")
-    flyMoveTo(CalculatedCenter, 45, 3.5, true)
+    flyMoveTo(CalculatedCenter, 45, 3.0, true)
 
     while State.Running and not State.Paused do
-        if not checkAndHuntPhaser(CalculatedCenter) then
-            -- Mantenerse suspendido exactamente en la coordenada del centro
+        if not checkAndHuntAllPhasers(CalculatedCenter) then
+            -- Mantenerse suspendido inmóvil en el aire en la coordenada exacta
             local myRoot = getRootPart()
             if myRoot then
                 local bp = getOrCreatePhysics(myRoot, hoverAltitude)
@@ -475,12 +492,12 @@ local function executeThreeInitialStops()
 
     -- PARADA 2: CENTRO 2 (SUSPENDIDO VERIFICANDO 10s EN CAJA DE 8 STUDS)
     updateStatus("🛑 Parada 2/3: Centro 2 (Suspendido verificando 10s en caja 8 studs)...")
-    flyMoveTo(Center2_Pos, 45, 3.5, true)
+    flyMoveTo(Center2_Pos, 45, 3.0, true)
     local verify2Start = tick()
 
     while State.Running and not State.Paused do
-        if checkAndHuntPhaser(Center2_Pos) then
-            verify2Start = tick() -- Reinicia los 10 segundos al volver de cazar
+        if checkAndHuntAllPhasers(Center2_Pos) then
+            verify2Start = tick() -- Reiniciar los 10 segundos tras volver de cazar Phasers
         else
             local myRoot = getRootPart()
             if myRoot then
@@ -508,12 +525,12 @@ local function executeThreeInitialStops()
 
     -- PARADA 3: CENTRO 1 SEGUNDA VEZ (SUSPENDIDO RE-VERIFICANDO 10s EN CAJA DE 10 STUDS)
     updateStatus("🛑 Parada 3/3: Centro 1 (Suspendido re-verificando 10s en caja 10 studs)...")
-    flyMoveTo(CalculatedCenter, 45, 3.5, true)
+    flyMoveTo(CalculatedCenter, 45, 3.0, true)
     local verify3Start = tick()
 
     while State.Running and not State.Paused do
-        if checkAndHuntPhaser(CalculatedCenter) then
-            verify3Start = tick()
+        if checkAndHuntAllPhasers(CalculatedCenter) then
+            verify3Start = tick() -- Reiniciar los 10 segundos tras volver de cazar Phasers
         else
             local myRoot = getRootPart()
             if myRoot then
@@ -529,7 +546,7 @@ local function executeThreeInitialStops()
                 local elapsed = tick() - verify3Start
                 updateStatus(string.format("Centro 1: Caja vacía. Re-verificando (%ds/10s)...", math.floor(elapsed)))
                 if elapsed >= 10 then
-                    updateStatus("✅ Las 3 paradas terminadas. ¡Iniciando cacería general como siempre!")
+                    updateStatus("✅ Las 3 paradas terminadas. ¡Iniciando cacería general!")
                     break
                 end
             end
@@ -575,7 +592,7 @@ local function openNuclearDoorDirect()
     local entrance = getEntrancePart()
     local targetPos = entrance and entrance.Position or Point2_Door
 
-    flyMoveTo(targetPos, 50, 3.0, false)
+    flyMoveTo(targetPos, 50, 2.5, false)
     task.wait(0.15)
 
     local opened = false
@@ -640,7 +657,7 @@ local function getDoorTimerText()
     return nil
 end
 
--- INTERACCIÓN CON GASOLINERAS (MÉTODO EFECTIVO ORIGINAL)
+-- INTERACCIÓN CON GASOLINERAS
 local function interactWithGasPump(stationPos)
     for _, prompt in ipairs(workspace:GetDescendants()) do
         if prompt:IsA("ProximityPrompt") then
@@ -696,7 +713,7 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
     end
 end)
 
--- FILTRO DE ASALTO COMPLETO (DETECCIÓN BASE ORIGINAL CON TODAS LAS PRIORIDADES)
+-- FILTRO DE ASALTO COMPLETO (CACERÍA GENERAL CON TODAS LAS PRIORIDADES)
 local function getAnyTargetZombie(centerPos, maxDist)
     local charFolder = workspace:FindFirstChild("Characters") or workspace
     local priorityScreamer, priorityScreamerRoot = nil, nil
@@ -910,7 +927,14 @@ Tabs.Main:AddButton({
     Callback = function()
         if State.Running then
             State.Paused = not State.Paused
-            updateStatus(State.Paused and "Pausado (Fly/Noclip retenidos)" or "Reanudado")
+            if State.Paused then
+                removePhysicsHelpers()
+                restoreCollisions()
+                updateStatus("Pausado manualmente (Movimiento libre WASD)")
+            else
+                secureFlightStart()
+                updateStatus("Reanudado (Fly restablecido)")
+            end
         end
     end
 })
@@ -1089,6 +1113,7 @@ task.spawn(function()
         task.wait(0.5)
 
         if State.Running and not State.Paused then
+            -- Esperar hasta que se cumplan los 3 segundos de Fly para activar Noclip
             if not State.NoclipEnabled then
                 task.wait(0.3)
                 continue
@@ -1120,7 +1145,7 @@ task.spawn(function()
             -- PASO 2: VERIFICAR SI ESTÁ EN COOLDOWN O LIBRE
             local cdText = getDoorTimerText()
 
-            -- SI LA PUERTA ESTÁ EN ENFRIAMIENTO -> IR DIRECTO A GASOLINERAS
+            -- SI LA PUERTA ESTÁ EN ENFRIAMIENTO (TIEMPO ACTIVO) -> IR DIRECTO A GASOLINERAS
             if cdText then
                 updateStatus("Reactor en Cooldown (" .. cdText .. "). Yendo a Gasolineras...")
                 local cooldownStart = tick()
@@ -1178,7 +1203,7 @@ task.spawn(function()
 
             -- SI LA PUERTA ESTÁ LISTA / SE CONFIRMÓ LA APERTURA
             else
-                -- 1. PRE-RUTINA AÑADIDA: LAS 3 PARADAS TOTALMENTE INMÓVILES
+                -- 1. PRE-RUTINA DE 3 PARADAS 100% INMÓVILES EN SUSPENSIÓN (CON CAZA DE PHASERS EN CADENA)
                 if doorWasPressed and State.EnableInitialStops then
                     executeThreeInitialStops()
                 else
@@ -1382,8 +1407,8 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "REACTOR HUB V13 LISTO",
-    Content = "Fly/Noclip continuo, paradas suspendidas limpias y cacería intacta.",
+    Title = "REACTOR HUB V14 LISTO",
+    Content = "Paradas suspendidas, Phasers encadenados y Noclip/Fly continuo.",
     Duration = 4
 })
 
