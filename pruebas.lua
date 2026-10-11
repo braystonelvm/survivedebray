@@ -1,17 +1,21 @@
 -- ==============================================================================
--- TRUCK GODMODE & REPARADOR TURBO - SOBREVIVE AL APOCALIPSIS
+-- TRUCK GODMODE & REPARADOR UNIVERSAL TURBO (CON WIDGET FLOTANTE)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 local lp = Players.LocalPlayer
+local mouse = lp:GetMouse()
 
-local GodmodeConfig = {
-    BlockImpactDamage = true,   -- Inmunidad a choques contra Tanks y obstáculos
-    TurboRepairActive = false,  -- Reparación continua por ráfaga
-    RepairPulses = 12,          -- Disparos de reparación por ciclo
+local Config = {
+    BlockImpactDamage = true,   -- Inmunidad a choques contra Tanks
+    AutoRepairVehicle = true,   -- Reparar vehículo actual
+    RepairUnderMouse = true,    -- Reparar cualquier cosa a la que apuntes con el mouse
+    AuraRepair = true,          -- Reparar vallas, muros y estructuras cercanas (25 studs)
+    RepairPulses = 15,          -- Ráfagas de reparación por ciclo
     EquipHammer = true
 }
 
@@ -42,30 +46,20 @@ end
 -- ==============================================================================
 -- 1. GODMODE POR HOOK: BLOQUEO DEL EVENTO "IMPACT" (ANTI-DAÑO DE CHOQUE)
 -- ==============================================================================
-local hookSuccess = false
-
 if hookmetamethod then
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
         local method = getnamecallmethod()
-        local args = {...}
-
-        if GodmodeConfig.BlockImpactDamage and method == "FireServer" then
-            -- Si el evento disparado es el Impact del camión, se descarta silenciosamente
-            if self.Name == "Impact" then
-                return nil
-            end
+        if Config.BlockImpactDamage and method == "FireServer" and self.Name == "Impact" then
+            return nil
         end
-
         return oldNamecall(self, ...)
     end)
-    hookSuccess = true
 else
-    -- Fallback si el ejecutor no soporta hookmetamethod: apagar CanTouch en parachoques
     task.spawn(function()
         while true do
             task.wait(1.5)
-            if GodmodeConfig.BlockImpactDamage then
+            if Config.BlockImpactDamage then
                 local truck = getCurrentTruck()
                 if truck then
                     for _, part in ipairs(truck:GetDescendants()) do
@@ -86,48 +80,33 @@ end
 -- 2. INTERFAZ FLUENT
 -- ==============================================================================
 local Window = Fluent:CreateWindow({
-    Title = "TRUCK GODMODE & REPAIR",
+    Title = "GODMODE & REPARADOR TOTAL",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(560, 420),
+    Size = UDim2.fromOffset(560, 440),
     Acrylic = false,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
 
 local TabMain = Window:AddTab({ Title = "Defensa & Auto", Icon = "shield" })
+local TabRepair = Window:AddTab({ Title = "Reparar Todo", Icon = "wrench" })
 
+-- PESTAÑA VEHÍCULO
 TabMain:AddSection("Protección de Choques (Anti-Tank)")
 
 TabMain:AddToggle("BlockImpactToggle", {
     Title = "🛡️ Inmunidad a Choques (Godmode)",
-    Description = "Bloquea el evento 'Impact' del camión para no recibir daño al atropellar Tanks",
+    Description = "Anula el daño al atropellar Tanks a toda velocidad",
     Default = true,
-    Callback = function(v)
-        GodmodeConfig.BlockImpactDamage = v
-    end
+    Callback = function(v) Config.BlockImpactDamage = v end
 })
 
-TabMain:AddSection("Reparación Turbo")
-
-TabMain:AddToggle("TurboRepairToggle", {
-    Title = "⚡ Reparación Continua Ultrarrápida",
-    Description = "Spamea el Remote 'Repair' directamente hacia el camión",
-    Default = false,
-    Callback = function(v)
-        GodmodeConfig.TurboRepairActive = v
-    end
-})
-
-TabMain:AddSlider("RepairPulsesSlider", {
-    Title = "Ráfaga de reparación por ciclo",
-    Default = 12,
-    Min = 1,
-    Max = 30,
-    Rounding = 0,
-    Callback = function(v)
-        GodmodeConfig.RepairPulses = v
-    end
+TabMain:AddToggle("AutoRepairVehToggle", {
+    Title = "⚡ Auto-Reparar Camión al Conducir",
+    Description = "Mantiene el camión al 100% mientras manejas",
+    Default = true,
+    Callback = function(v) Config.AutoRepairVehicle = v end
 })
 
 local VehicleStatusParagraph = TabMain:AddParagraph({
@@ -135,53 +114,147 @@ local VehicleStatusParagraph = TabMain:AddParagraph({
     Content = "Buscando vehículo..."
 })
 
--- ACTUALIZACIÓN EN VIVO DE ATRIBUTOS
+-- PESTAÑA REPARACIÓN UNIVERSAL
+TabRepair:AddSection("Reparación Rápida de Cualquier Estructura")
+
+TabRepair:AddToggle("RepairMouseToggle", {
+    Title = "🎯 Reparar lo que Miro con el Mouse",
+    Description = "Repara en ráfaga cualquier valla, muro o cosa a la que apuntes",
+    Default = true,
+    Callback = function(v) Config.RepairUnderMouse = v end
+})
+
+TabRepair:AddToggle("AuraRepairToggle", {
+    Title = "🌐 Aura de Reparación (Radio 25 studs)",
+    Description = "Repara automáticamente todas las estructuras dañadas a tu alrededor",
+    Default = true,
+    Callback = function(v) Config.AuraRepair = v end
+})
+
+TabRepair:AddSlider("RepairPulsesSlider", {
+    Title = "Velocidad de ráfaga (Pulsos por ciclo)",
+    Default = 15,
+    Min = 1,
+    Max = 35,
+    Rounding = 0,
+    Callback = function(v) Config.RepairPulses = v end
+})
+
+-- ==============================================================================
+-- 3. BOTÓN FLOTANTE (WIDGET ROJO ARRASTRABLE)
+-- ==============================================================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "RepairWidgetScreenGui"
+ScreenGui.ResetOnSpawn = false
+if gethui then
+    ScreenGui.Parent = gethui()
+elseif syn and syn.protect_gui then
+    syn.protect_gui(ScreenGui)
+    ScreenGui.Parent = game:GetService("CoreGui")
+else
+    ScreenGui.Parent = lp:WaitForChild("PlayerGui")
+end
+
+local FloatBtn = Instance.new("ImageButton")
+FloatBtn.Size = UDim2.new(0, 48, 0, 48)
+FloatBtn.Position = UDim2.new(0.04, 0, 0.45, 0)
+FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
+FloatBtn.Image = "rbxassetid://10723415903" -- Ícono de engranaje/llave
+FloatBtn.Active = true
+FloatBtn.Draggable = true
+FloatBtn.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(1, 0)
+UICorner.Parent = FloatBtn
+
+local isWindowOpen = true
+FloatBtn.MouseButton1Click:Connect(function()
+    isWindowOpen = not isWindowOpen
+    Window.Root.Visible = isWindowOpen
+end)
+
+-- ACTUALIZACIÓN DE ESTADO DEL VEHÍCULO
 task.spawn(function()
     while true do
         task.wait(0.5)
         local truck = getCurrentTruck()
         if truck then
-            local defense = tostring(truck:GetAttribute("Defense") or "0.5")
-            local armor = tostring(truck:GetAttribute("Armor") or "true")
-            local pen = tostring(truck:GetAttribute("PenResistance") or "2")
+            local def = tostring(truck:GetAttribute("Defense") or "0.5")
+            local arm = tostring(truck:GetAttribute("Armor") or "true")
             local fuel = string.format("%.1f", tonumber(truck:GetAttribute("Fuel") or 0))
 
             VehicleStatusParagraph:SetDesc(string.format(
-                "Modelo: %s\nDefensa: %s | Blindaje: %s | Resistencia: %s\nCombustible: %s\nModo Anti-Tank: %s",
-                truck.Name, defense, armor, pen, fuel,
-                GodmodeConfig.BlockImpactDamage and "🟢 ACTIVO (Impactos anulados)" or "🔴 INACTIVO"
+                "Vehículo: %s\nDefensa: %s | Blindaje: %s\nCombustible: %s\nProtección Choques: %s",
+                truck.Name, def, arm, fuel,
+                Config.BlockImpactDamage and "🟢 ACTIVA (Choques anulados)" or "🔴 INACTIVA"
             ))
         else
-            VehicleStatusParagraph:SetDesc("Súbete al camión para activar la protección.")
+            VehicleStatusParagraph:SetDesc("No estás conduciendo. (Usa el modo mouse o aura para reparar a pie).")
         end
     end
 end)
 
 -- ==============================================================================
--- 3. MOTOR DE REPARACIÓN RÁPIDA POR REMOTE
+-- 4. MOTOR UNIVERSAL DE REPARACIÓN EN RÁFAGA
 -- ==============================================================================
 task.spawn(function()
     while true do
-        task.wait(0.08) -- 12.5 ciclos por segundo
-        if GodmodeConfig.TurboRepairActive then
-            local char = lp.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local hammer, repairRemote = getRepairTools()
+        task.wait(0.08)
+        local char = lp.Character
+        local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hammer, repairRemote = getRepairTools()
+
+        if hum and hammer and repairRemote then
+            -- Equipar automáticamente si no está en las manos
+            if hammer.Parent ~= char and Config.EquipHammer then
+                hum:EquipTool(hammer)
+            end
+
+            local targetsToRepair = {}
+
+            -- 1. Si estás conduciendo y la auto-reparación está encendida
             local truck, seat = getCurrentTruck()
+            if truck and Config.AutoRepairVehicle then
+                table.insert(targetsToRepair, truck)
+                table.insert(targetsToRepair, truck.PrimaryPart or seat)
+            end
 
-            if hum and hammer and repairRemote and truck then
-                -- Equipar el martillo automáticamente si está en la mochila
-                if hammer.Parent ~= char and GodmodeConfig.EquipHammer then
-                    hum:EquipTool(hammer)
+            -- 2. Reparar lo que miras con el mouse
+            if Config.RepairUnderMouse and mouse.Target then
+                local mTarget = mouse.Target
+                if not mTarget:IsDescendantOf(char) then
+                    local model = mTarget:FindFirstAncestorOfClass("Model")
+                    table.insert(targetsToRepair, mTarget)
+                    if model and model ~= workspace then
+                        table.insert(targetsToRepair, model)
+                    end
                 end
+            end
 
-                local primary = truck.PrimaryPart or seat
+            -- 3. Aura de reparación cercana (vallas, muros, barricadas)
+            if Config.AuraRepair and root then
+                local structFolder = workspace:FindFirstChild("Structures") or workspace
+                for _, obj in ipairs(structFolder:GetChildren()) do
+                    if obj:IsA("Model") or obj:IsA("BasePart") then
+                        local oPos = obj:IsA("BasePart") and obj.Position or (obj.PrimaryPart and obj.PrimaryPart.Position)
+                        if oPos and (oPos - root.Position).Magnitude <= 25 then
+                            local name = obj.Name:lower()
+                            if not name:find("zombie") and not name:find("dropped") and not name:find("bag") then
+                                table.insert(targetsToRepair, obj)
+                            end
+                        end
+                    end
+                end
+            end
 
-                -- Disparar ráfaga directa de reparación
-                for _ = 1, GodmodeConfig.RepairPulses do
-                    -- Enviar con los formatos más comunes aceptados por servidores de Roblox
-                    pcall(function() repairRemote:FireServer(truck) end)
-                    pcall(function() repairRemote:FireServer(primary) end)
+            -- Disparar ráfagas ultrarrápidas a los objetivos recopilados
+            if #targetsToRepair > 0 then
+                for _ = 1, Config.RepairPulses do
+                    for _, target in ipairs(targetsToRepair) do
+                        pcall(function() repairRemote:FireServer(target) end)
+                    end
                     pcall(function() hammer:Activate() end)
                 end
             end
@@ -190,7 +263,7 @@ task.spawn(function()
 end)
 
 Fluent:Notify({
-    Title = "SISTEMA DE PROTECCIÓN LISTO",
-    Content = hookSuccess and "Hook metamethod activo: choques anulados." or "Protección física activada.",
+    Title = "GODMODE & REPARADOR LISTO",
+    Content = "Widget circular añadido. Menú y reparación universal activos.",
     Duration = 4
 })
