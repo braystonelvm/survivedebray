@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ZOMBIE HUB MASTER V8.6: STALKER (+5/-25) + EVACUACIÓN Y=32 + RESCATE EN CAPÓ
+-- ZOMBIE HUB MASTER V8.7: VUELO CINÉTICO SUAVE (ANTI-BUG LLANTAS) + STALKER (+5/-25)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -31,21 +31,21 @@ local Config = {
     BloaterDangerDist = 30,
     AutoRouteToWave = true,
 
-    -- VALORES DE EMBESTIDA STALKER
+    -- VALORES DE EMBESTIDA STALKER PEDIDOS
     StalkerBaseOvershoot = 5.0,    -- 5 studs hacia la base
     StalkerFarOvershoot = 25.0,    -- 25 studs hacia el lado contrario
 
-    -- PROTOCOLO DE EVACUACIÓN Y CURA EN BASE
+    -- PROTOCOLO DE EVACUACIÓN Y CURA EN BASE (Y=32)
     EmergencyHealEnabled = true,
     LowHealthThreshold = 0.20,     -- 20% activa huida a base
     FullHealthThreshold = 0.70,    -- 70% regresa al combate
     FlightAltitude = 32.0,         -- Altura Y para sobrevolar estructuras
-    TruckFlySpeed = 100,           -- Velocidad aérea del auto
+    TruckFlySpeed = 85,            -- Velocidad crucero aérea estable
 
-    -- PROTOCOLO DE RESCATE DEL PERSONAJE (CONTINGENCIA)
+    -- PROTOCOLO DE RESCATE DEL PERSONAJE (CONTINGENCIA EN CAPÓ)
     AutoRemountEnabled = true,     -- Siempre activo ante eyección
     RescueFlyAltitude = 8.0,       -- Altura aérea de traslado seguro
-    RescueFlySpeed = 85,           -- Velocidad moderada anti-rollback de Roblox
+    RescueFlySpeed = 80,           -- Velocidad moderada anti-rollback
     MaxCarSearchDist = 300
 }
 
@@ -71,7 +71,7 @@ local EvacState = {
 }
 
 -- ==============================================================================
--- 1. DETECCIÓN ROBUSTA DE RAÍZ Y SALUD DEL VEHÍCULO
+-- 1. DETECCIÓN ROBUSTA DE SALUD DEL VEHÍCULO
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -81,7 +81,6 @@ local function getCharacterParts()
     return char, root, hum
 end
 
--- Encuentra el modelo principal del vehículo sin quedarse atrapado en submodelos
 local function getVehicleRootModel(seat)
     if not seat then return nil end
     local current = seat
@@ -115,7 +114,7 @@ local function getTruckHealth(truck)
     local foundHP, foundMax = nil, nil
     local src = "Desconocido"
 
-    -- 1. Búsqueda profunda de Configuration
+    -- 1. Configuration (carpeta u objeto de valores)
     local config = truck:FindFirstChild("Configuration", true) or truck:FindFirstChild("Config", true)
     if config then
         local h = config:GetAttribute("Health") or config:GetAttribute("HP")
@@ -131,7 +130,7 @@ local function getTruckHealth(truck)
         end
     end
 
-    -- 2. Atributos en el modelo raíz o en descendientes
+    -- 2. Atributos en modelo raíz
     if not foundHP then
         for _, obj in ipairs({truck, truck.PrimaryPart}) do
             if obj then
@@ -149,7 +148,7 @@ local function getTruckHealth(truck)
         end
     end
 
-    -- 3. NumberValues en cualquier parte del vehículo
+    -- 3. NumberValues descendientes
     if not foundHP then
         for _, desc in ipairs(truck:GetDescendants()) do
             if desc:IsA("NumberValue") or desc:IsA("IntValue") then
@@ -163,7 +162,7 @@ local function getTruckHealth(truck)
         end
     end
 
-    -- 4. MockHumanoid o Humanoid
+    -- 4. MockHumanoid
     if not foundHP then
         local mock = truck:FindFirstChild("MockHumanoid", true) or truck:FindFirstChildOfClass("Humanoid")
         if mock then
@@ -173,7 +172,7 @@ local function getTruckHealth(truck)
         end
     end
 
-    -- 5. Fallback a PlayerGui (velocímetro)
+    -- 5. PlayerGui
     if not foundHP then
         local pGui = lp:FindFirstChild("PlayerGui")
         if pGui then
@@ -201,35 +200,38 @@ local function getTruckHealth(truck)
 end
 
 -- ==============================================================================
--- 2. GESTORES FÍSICOS DE VUELO (BODY MOVERS)
+-- 2. SISTEMA CINÉTICO SUAVE PARA EL AUTO (BODYVELOCITY + BODYGYRO)
 -- ==============================================================================
 
 local function getOrCreateVehicleFlight(primary)
-    local bp = primary:FindFirstChild("TruckAirBP")
-    if not bp then
-        bp = Instance.new("BodyPosition")
-        bp.Name = "TruckAirBP"
-        bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-        bp.P = 25000
-        bp.D = 900
-        bp.Position = primary.Position
-        bp.Parent = primary
+    local bv = primary:FindFirstChild("TruckAirBV")
+    if not bv then
+        bv = Instance.new("BodyVelocity")
+        bv.Name = "TruckAirBV"
+        bv.MaxForce = Vector3.new(2e6, 2e6, 2e6)
+        bv.Velocity = Vector3.zero
+        bv.Parent = primary
     end
+
     local bg = primary:FindFirstChild("TruckAirBG")
     if not bg then
         bg = Instance.new("BodyGyro")
         bg.Name = "TruckAirBG"
-        bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
-        bg.CFrame = primary.CFrame
+        bg.MaxTorque = Vector3.new(2e6, 2e6, 2e6)
+        bg.P = 15000
+        bg.D = 1200
+        -- Mantiene el auto horizontal sin inclinarlo
+        bg.CFrame = CFrame.new(primary.Position) * CFrame.Angles(0, math.rad(primary.Orientation.Y), 0)
         bg.Parent = primary
     end
-    return bp, bg
+
+    return bv, bg
 end
 
 local function removeVehicleFlight(primary)
     if primary then
-        local bp = primary:FindFirstChild("TruckAirBP")
-        if bp then bp:Destroy() end
+        local bv = primary:FindFirstChild("TruckAirBV")
+        if bv then bv:Destroy() end
         local bg = primary:FindFirstChild("TruckAirBG")
         if bg then bg:Destroy() end
         primary.AssemblyLinearVelocity = Vector3.zero
@@ -271,7 +273,7 @@ local function removePlayerFlight(root)
 end
 
 -- ==============================================================================
--- 3. PROTOCOLO DE AUTO-EVACUACIÓN AÉREA AL 20% (CAMIÓN A Y=32)
+-- 3. PROTOCOLO DE AUTO-EVACUACIÓN AÉREA AL 20% (Y = 32 SIN COLAPSO DE RESORTES)
 -- ==============================================================================
 
 local function executeAirEvacuation()
@@ -283,44 +285,50 @@ local function executeAirEvacuation()
     EvacState.SavedCombatTarget = CurrentTarget
     EvacState.SavedCombatPos = primary.Position
 
-    -- 1. ASCENSO VERTICAL DIRECTO A Y=32
-    EvacState.Stage = "ASCENDING"
-    local bp, bg = getOrCreateVehicleFlight(primary)
+    local bv, bg = getOrCreateVehicleFlight(primary)
     local targetAirY = Config.FlightAltitude
-    bp.Position = Vector3.new(primary.Position.X, targetAirY, primary.Position.Z)
 
-    local climbTimeout = tick() + 4.5
-    while EvacState.IsActive and math.abs(primary.Position.Y - targetAirY) > 2.0 and tick() < climbTimeout do
-        task.wait(0.1)
+    -- 1. ASCENSO VERTICAL CINÉTICO (Sin forzar BodyPosition rígido)
+    EvacState.Stage = "ASCENDING"
+    local ascendLimit = tick() + 4.0
+    while EvacState.IsActive and primary.Position.Y < (targetAirY - 1.5) and tick() < ascendLimit do
+        bv.Velocity = Vector3.new(0, 24, 0)
+        bg.CFrame = CFrame.new(primary.Position) * CFrame.Angles(0, math.rad(primary.Orientation.Y), 0)
+        task.wait(0.04)
     end
+    bv.Velocity = Vector3.zero
 
-    -- 2. VUELO HORIZONTAL AL CENTRO (0, 32, 0)
+    -- 2. TRASLADO CINÉTICO AL CENTRO (Y=32)
     EvacState.Stage = "FLYING_TO_BASE"
     local flyTarget = Vector3.new(BASE_HEAL_AIR_POS.X, targetAirY, BASE_HEAL_AIR_POS.Z)
 
-    local travelTimeout = tick() + 18.0
-    while EvacState.IsActive and tick() < travelTimeout do
+    local travelLimit = tick() + 20.0
+    while EvacState.IsActive and tick() < travelLimit do
         local curPos = primary.Position
         local diff = flyTarget - curPos
-        local horizontalDist = Vector3.new(diff.X, 0, diff.Z).Magnitude
+        local horizontalDiff = Vector3.new(diff.X, 0, diff.Z)
 
-        if horizontalDist <= 5.0 then
-            bp.Position = flyTarget
+        if horizontalDiff.Magnitude <= 6.0 then
+            bv.Velocity = Vector3.zero
             break
         end
 
-        local stepDir = Vector3.new(diff.X, 0, diff.Z).Unit
-        local nextPos = curPos + (stepDir * (Config.TruckFlySpeed * 0.08))
-        bp.Position = Vector3.new(nextPos.X, targetAirY, nextPos.Z)
+        local stepDir = horizontalDiff.Unit
+        local yCorrection = math.clamp((targetAirY - curPos.Y) * 3, -10, 10)
+        bv.Velocity = (stepDir * Config.TruckFlySpeed) + Vector3.new(0, yCorrection, 0)
+        bg.CFrame = CFrame.lookAt(curPos, curPos + Vector3.new(stepDir.X, 0, stepDir.Z))
         task.wait(0.04)
     end
+    bv.Velocity = Vector3.zero
 
-    -- 3. ESPERA EN SUSPENSIÓN HASTA LLEGAR AL 70% DE VIDA
+    -- 3. ESPERA EN SUSPENSIÓN HASTA ALCANZAR EL 70% DE VIDA
     EvacState.Stage = "HEALING"
-    bp.Position = flyTarget
-
-    local healTimeout = tick() + 50.0
+    local healTimeout = tick() + 55.0
     while EvacState.IsActive and tick() < healTimeout do
+        local curPos = primary.Position
+        local yCorrection = math.clamp((targetAirY - curPos.Y) * 2, -6, 6)
+        bv.Velocity = Vector3.new(0, yCorrection, 0)
+
         local hp, maxHp, ratio, src = getTruckHealth(truck)
         EvacState.CurrentHP = hp
         EvacState.MaxHP = maxHp
@@ -332,36 +340,56 @@ local function executeAirEvacuation()
         end
         task.wait(0.3)
     end
+    bv.Velocity = Vector3.zero
 
     -- 4. RETORNO AÉREO A LA POSICIÓN DE COMBATE (Y=32)
     EvacState.Stage = "RETURNING"
     local returnGroundPos = EvacState.SavedCombatPos or primary.Position
-    local returnAirPos = Vector3.new(returnGroundPos.X, targetAirY, returnGroundPos.Z)
+    local returnAirTarget = Vector3.new(returnGroundPos.X, targetAirY, returnGroundPos.Z)
 
-    local returnTimeout = tick() + 18.0
-    while EvacState.IsActive and tick() < returnTimeout do
+    local returnLimit = tick() + 20.0
+    while EvacState.IsActive and tick() < returnLimit do
         local curPos = primary.Position
-        local diff = returnAirPos - curPos
-        local horizontalDist = Vector3.new(diff.X, 0, diff.Z).Magnitude
+        local diff = returnAirTarget - curPos
+        local horizontalDiff = Vector3.new(diff.X, 0, diff.Z)
 
-        if horizontalDist <= 6.0 then
-            bp.Position = returnAirPos
+        if horizontalDiff.Magnitude <= 6.0 then
+            bv.Velocity = Vector3.zero
             break
         end
 
-        local stepDir = Vector3.new(diff.X, 0, diff.Z).Unit
-        local nextPos = curPos + (stepDir * (Config.TruckFlySpeed * 0.08))
-        bp.Position = Vector3.new(nextPos.X, targetAirY, nextPos.Z)
+        local stepDir = horizontalDiff.Unit
+        local yCorrection = math.clamp((targetAirY - curPos.Y) * 3, -10, 10)
+        bv.Velocity = (stepDir * Config.TruckFlySpeed) + Vector3.new(0, yCorrection, 0)
+        bg.CFrame = CFrame.lookAt(curPos, curPos + Vector3.new(stepDir.X, 0, stepDir.Z))
         task.wait(0.04)
     end
+    bv.Velocity = Vector3.zero
 
-    -- 5. DESCENSO AL SUELO Y RETOMA DE COMBATE
+    -- 5. ATERRIZAJE INTELIGENTE CON RAYCAST (CERO HUNDIMIENTO BAJO TIERRA)
     EvacState.Stage = "DESCENDING"
-    bp.Position = returnGroundPos
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {truck, lp.Character}
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
-    local descentTimeout = tick() + 4.5
-    while EvacState.IsActive and math.abs(primary.Position.Y - returnGroundPos.Y) > 2.5 and tick() < descentTimeout do
-        task.wait(0.1)
+    local descentLimit = tick() + 6.0
+    while EvacState.IsActive and tick() < descentLimit do
+        local curPos = primary.Position
+        local hit = workspace:Raycast(curPos, Vector3.new(0, -50, 0), rayParams)
+        local groundY = hit and hit.Position.Y or (returnGroundPos.Y)
+        local safeChassisHoverY = groundY + 3.2 -- Altura natural del chasis sobre las ruedas
+
+        if curPos.Y <= (safeChassisHoverY + 0.8) then
+            -- Amortiguación final suave: deja que las ruedas toquen el suelo por gravedad
+            bv.Velocity = Vector3.new(0, -2, 0)
+            task.wait(0.35)
+            break
+        else
+            -- Descenso suave y constante
+            bv.Velocity = Vector3.new(0, -12, 0)
+        end
+        bg.CFrame = CFrame.new(curPos) * CFrame.Angles(0, math.rad(primary.Orientation.Y), 0)
+        task.wait(0.04)
     end
 
     removeVehicleFlight(primary)
@@ -374,7 +402,7 @@ local function executeAirEvacuation()
 end
 
 -- ==============================================================================
--- 4. PROTOCOLO DE RESCATE: VUELO ANTI-ROLLBACK Y REPARACIÓN EN CAPÓ
+-- 4. PROTOCOLO DE RESCATE: VUELO CONTROLADO Y REPARACIÓN EN CAPÓ
 -- ==============================================================================
 
 local function getActiveRepairPrompt(carModel)
@@ -440,7 +468,7 @@ local function executeContingencyRescue()
     bp.Position = Vector3.new(root.Position.X, safeAirY, root.Position.Z)
     task.wait(0.08)
 
-    -- 2. VUELO CONTROLADO AL AUTO A VELOCIDAD MODERADA (ANTI-ROLLBACK)
+    -- 2. TRASLADO POR EL AIRE AL AUTO A VELOCIDAD ESTABLE (ANTI-ROLLBACK)
     local seatPos = seat.Position
     local cruiseAirTarget = Vector3.new(seatPos.X, seatPos.Y + Config.RescueFlyAltitude, seatPos.Z)
 
@@ -456,7 +484,7 @@ local function executeContingencyRescue()
         task.wait(0.03)
     end
 
-    -- 3. DESCENSO DIRECTO AL CAPÓ (PEGADO AL MOTOR PARA QUE EL SERVIDOR VALIDE)
+    -- 3. DESCENSO DIRECTO AL CAPÓ (PEGADO AL MOTOR PARA QUE EL SERVER ACEPTE)
     local isDead = carModel:GetAttribute("Dead") == true
     local repairPrompt = getActiveRepairPrompt(carModel)
 
@@ -483,7 +511,7 @@ local function executeContingencyRescue()
         task.wait(0.1)
     end
 
-    -- 4. MONTAJE EN EL ASIENTO
+    -- 4. ENTRADA Y MONTAJE EN EL ASIENTO
     local seatEntryCF = seat.CFrame * CFrame.new(0, 1.2, 0)
     bp.Position = seatEntryCF.Position
     bg.CFrame = seat.CFrame
@@ -509,7 +537,7 @@ local function executeContingencyRescue()
 end
 
 -- ==============================================================================
--- 5. MONITOR EN SEGUNDO PLANO (SALUD & RESCATE)
+-- 5. GUARDIANES EN SEGUNDO PLANO (SALUD & RESCATE)
 -- ==============================================================================
 
 task.spawn(function()
@@ -528,7 +556,7 @@ task.spawn(function()
                 task.spawn(executeAirEvacuation)
             end
         else
-            -- Si el jugador sale del auto con el ataque activo -> Rescate inmediato
+            -- Si el jugador sale del auto con el ataque encendido -> Rescate inmediato
             if Config.AutoRemountEnabled and Config.ZigZagEnabled and not IsInContingency and not EvacState.IsActive then
                 local _, _, hum = getCharacterParts()
                 if hum and hum.Health > 0 and (not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat")) then
@@ -685,11 +713,11 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 7. INTERFAZ FLUENT (TODAS LAS CONFIGURACIONES CONSERVADAS)
+-- 7. INTERFAZ FLUENT (CONFIGURACIONES COMPLETAS CONSERVADAS)
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | MASTER V8.6",
+    Title = "ZOMBIE HUB | MASTER V8.7",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(600, 500),
@@ -754,8 +782,8 @@ Tabs.Combat:AddToggle("AutoRouteToggle", {
 Tabs.Evac:AddSection("Huida Aérea por Daño Crítico")
 
 Tabs.Evac:AddToggle("EmergencyHealToggle", {
-    Title = "🛡️ Activar Huida Aérea por Daño (Y=32)",
-    Description = "Vuela a 32 de altura hacia el centro al bajar del 20%",
+    Title = "🛡️ Activar Huida Aérea (Y=32)",
+    Description = "Vuela al centro de forma suave sin desarmar las llantas",
     Default = true,
     Callback = function(v) Config.EmergencyHealEnabled = v end
 })
@@ -795,7 +823,7 @@ Tabs.Rescue:AddSection("Contingencia Aérea (Sin Noclip)")
 
 Tabs.Rescue:AddToggle("AutoRemountToggle", {
     Title = "🛡️ Auto-Rescate en Eyección / Destrucción",
-    Description = "Vuela al auto, desciende al capó, repara y se monta",
+    Description = "Vuela al auto, baja al capó a reparar y se sienta de nuevo",
     Default = true,
     Callback = function(v) Config.AutoRemountEnabled = v end
 })
@@ -811,7 +839,7 @@ Tabs.Rescue:AddSlider("RescueAltSlider", {
 
 Tabs.Rescue:AddSlider("RescueSpeedSlider", {
     Title = "Velocidad de Vuelo al Auto",
-    Default = 85,
+    Default = 80,
     Min = 40,
     Max = 140,
     Rounding = 0,
@@ -837,11 +865,11 @@ task.spawn(function()
         task.wait(0.3)
         local stageText = "⚔️ En Combate Normal"
         if EvacState.IsActive then
-            if EvacState.Stage == "ASCENDING" then stageText = "🛫 Ascendiendo vertical a Y=32..."
-            elseif EvacState.Stage == "FLYING_TO_BASE" then stageText = "🛩️ Volando a Base a Y=32..."
-            elseif EvacState.Stage == "HEALING" then stageText = "💉 Curando en Base hasta 70%..."
-            elseif EvacState.Stage == "RETURNING" then stageText = "🚀 Regresando al combate..."
-            elseif EvacState.Stage == "DESCENDING" then stageText = "🛬 Descendiendo al suelo..." end
+            if EvacState.Stage == "ASCENDING" then stageText = "🛫 Ascendiendo suavemente a Y=32..."
+            elseif EvacState.Stage == "FLYING_TO_BASE" then stageText = "🛩️ Traslado cinético a Base (0, 32, 0)..."
+            elseif EvacState.Stage == "HEALING" then stageText = "💉 Suspendido en Base hasta 70%..."
+            elseif EvacState.Stage == "RETURNING" then stageText = "🚀 Retorno aéreo al frente de combate..."
+            elseif EvacState.Stage == "DESCENDING" then stageText = "🛬 Aterrizaje inteligente por Raycast..." end
         elseif IsInContingency then
             stageText = "🚨 Rescatando personaje (Vuelo -> Capó -> Asiento)..."
         end
@@ -971,7 +999,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 8. MOTOR CINÉTICO ULTRA-RÁPIDO (MODO STALKER RECALIBRADO: +5 / +25)
+-- 8. MOTOR CINÉTICO ULTRA-RÁPIDO (MODO STALKER RECALIBRADO: +5 / +25 STUDS)
 -- ==============================================================================
 
 local side = 1
@@ -1019,13 +1047,12 @@ RunService.Heartbeat:Connect(function()
         local d = Config.LateralDist
 
         if Config.AttackMode == "Stalker" then
-            -- Vector que apunta desde la base hacia la carretera (Dirección hacia afuera)
             local toRoadVec = Vector3.new(targetPos.X - BaseCenter.X, 0, targetPos.Z - BaseCenter.Z)
             local roadLengthDir = toRoadVec.Magnitude > 0 and toRoadVec.Unit or Vector3.new(0, 0, 1)
             local roadWidthDir = Vector3.new(-roadLengthDir.Z, 0, roadLengthDir.X)
 
             local halfLength = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
-            
+
             -- LÍMITES CALIBRADOS: +25 studs hacia afuera, +5 studs hacia la base
             local reachAway = halfLength + Config.StalkerFarOvershoot   -- +25 studs afuera
             local reachBase = halfLength + Config.StalkerBaseOvershoot  -- +5 studs hacia base
@@ -1033,7 +1060,6 @@ RunService.Heartbeat:Connect(function()
             local carOffset = root.Position - targetPos
             local carAlongRoad = carOffset:Dot(roadLengthDir)
 
-            -- Inversión de marcha según los dos límites independientes
             if stalkerDir == 1 and carAlongRoad >= (reachAway - 3.5) then
                 stalkerDir = -1
                 lastStalkerSwitch = tick()
@@ -1042,7 +1068,6 @@ RunService.Heartbeat:Connect(function()
                 lastStalkerSwitch = tick()
             end
 
-            -- Failsafe de tiempo para evitar atascos
             if tick() - lastStalkerSwitch >= 3.2 then
                 stalkerDir = -stalkerDir
                 lastStalkerSwitch = tick()
@@ -1093,8 +1118,8 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB V8.6 CARGADO",
-    Content = "Stalker (+5/-25 studs) + Evacuación Y=32 + Rescate en capó listos.",
+    Title = "ZOMBIE HUB V8.7 LISTO",
+    Content = "Vuelo cinético suave, aterrizaje por Raycast y Stalker (+5/-25) activos.",
     Duration = 4
 })
 
