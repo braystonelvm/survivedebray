@@ -1,5 +1,5 @@
 -- ==============================================================================
--- LABORATORIO DE INMORTALIDAD V2: RADAR DE TANKS (ESP) & PROTECCIÓN DE HORDA
+-- TRUCK ANTI-TANK MUSCLE (ANULACIÓN DE IMPACTO Y COLISIÓN SÓLIDA)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -7,25 +7,17 @@ local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 
-local TestModes = {
-    BlockImpactRemote = true,       -- Bloquear Remote 'Impact' (Colisiones)
-    BlockDamageRemotes = true,      -- Bloquear Remotes globales de daño
-    DisableTruckCanTouch = false,   -- Apagar CanTouch en chasis del camión
-    ProtectAllZombies = true,       -- True = Protege contra toda la horda / False = Solo Tanks
-    FlingRepel = false,             -- Repulsión física de zombies antes del contacto
-    SyncedAutoRepair = true,        -- Auto-reparación de fondo (+125 cada 0.42s)
-    TankESP = true                  -- Resaltar Tanks automáticamente con neón rojo
+local Config = {
+    GhostTankMode = true,       -- Atraviesa al Tank Muscle (CanCollide = false)
+    ZeroMassTank = true,        -- Quita la densidad de roca al Tank (Density = 0.001)
+    BlockImpactRemote = true,   -- Bloquea paquetes de daño de choque
+    TankRadarESP = true,        -- Resalta en rojo neón a los Tank Muscle
+    ScanRadius = 60             -- Radio de neutralización física en studs
 }
 
-local Diagnostics = {
-    CurrentTruckHP = "Buscando...",
-    MaxTruckHP = "Buscando...",
-    HPLocation = "Desconocida",
-    LastDamageTaken = 0,
-    LastDamageTime = "Ninguno",
-    ImpactBlockedCount = 0,
-    DamageBlockedCount = 0,
-    ClosestTankDist = "Ninguno en radar",
+local Stats = {
+    TanksNeutralized = 0,
+    ClosestTankDist = "Ninguno",
     ClosestTankName = "N/A"
 }
 
@@ -42,204 +34,107 @@ local function getCurrentTruck()
     return nil, nil
 end
 
--- RASTREO PRECISO DE VIDA DEL CAMIÓN
-local lastHP = nil
-local function updateTruckHP()
-    local truck, seat = getCurrentTruck()
-    if not truck then
-        Diagnostics.CurrentTruckHP = "No estás montado"
-        Diagnostics.MaxTruckHP = "N/A"
-        return
-    end
-
-    local foundHP, foundMax = nil, nil
-    local loc = "No encontrada"
-
-    -- 1. Atributos
-    for _, attr in ipairs({"Health", "HP", "Durability", "Vida", "VehicleHealth"}) do
-        local val = truck:GetAttribute(attr)
-        if val and type(val) == "number" then
-            foundHP = val
-            foundMax = truck:GetAttribute("Max" .. attr) or 1000
-            loc = "Atributo: " .. attr
-            break
-        end
-    end
-
-    -- 2. Values
-    if not foundHP then
-        for _, desc in ipairs(truck:GetDescendants()) do
-            if desc:IsA("NumberValue") or desc:IsA("IntValue") then
-                local n = desc.Name:lower()
-                if n == "health" or n == "hp" or n == "durability" then
-                    foundHP = desc.Value
-                    foundMax = 1000
-                    loc = "Value: " .. desc.Name
-                    break
-                end
-            end
-        end
-    end
-
-    -- 3. Humanoid / MockHumanoid
-    if not foundHP then
-        local mock = truck:FindFirstChild("MockHumanoid") or truck:FindFirstChildOfClass("Humanoid")
-        if mock then
-            foundHP = mock:GetAttribute("Health") or (mock:IsA("Humanoid") and mock.Health)
-            foundMax = mock:GetAttribute("MaxHealth") or (mock:IsA("Humanoid") and mock.MaxHealth)
-            loc = mock.ClassName
-        end
-    end
-
-    if foundHP then
-        Diagnostics.CurrentTruckHP = string.format("%.1f", foundHP)
-        Diagnostics.MaxTruckHP = tostring(foundMax or "?")
-        Diagnostics.HPLocation = loc
-
-        if lastHP and foundHP < lastHP then
-            Diagnostics.LastDamageTaken = lastHP - foundHP
-            Diagnostics.LastDamageTime = os.date("%X")
-        end
-        lastHP = foundHP
-    else
-        Diagnostics.CurrentTruckHP = "Protegido por Server"
-    end
-end
-
 -- ==============================================================================
--- 1. HOOKS DE DAÑO (ANULACIÓN DE IMPACTO Y REMOTES)
+-- 1. BLOQUEO DEL REMOTE 'IMPACT'
 -- ==============================================================================
 if hookmetamethod then
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
         local method = getnamecallmethod()
-        if method == "FireServer" then
-            local rName = tostring(self.Name)
-
-            if TestModes.BlockImpactRemote and rName == "Impact" then
-                Diagnostics.ImpactBlockedCount = Diagnostics.ImpactBlockedCount + 1
-                return nil
-            end
-
-            local rLower = rName:lower()
-            if TestModes.BlockDamageRemotes and (rLower:find("damage") or rLower:find("hit") or rLower:find("hurt")) then
-                Diagnostics.DamageBlockedCount = Diagnostics.DamageBlockedCount + 1
-                return nil
-            end
+        if Config.BlockImpactRemote and method == "FireServer" and self.Name == "Impact" then
+            return nil
         end
         return oldNamecall(self, ...)
     end)
 end
 
 -- ==============================================================================
--- 2. RADAR DE TANKS (ESP) Y GESTIÓN DE CANTOUCH
+-- 2. NEUTRALIZADOR FÍSICO DE TANK MUSCLE (CERO DAÑO POR ESCOMBRO)
 -- ==============================================================================
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-        local truck, seat = getCurrentTruck()
-        local truckPos = truck and (truck.PrimaryPart or seat).Position
-        local charFolder = workspace:FindFirstChild("Characters") or workspace
+local zeroDensityProperties = PhysicalProperties.new(0.001, 0, 0, 0, 0)
 
-        local closestDist = math.huge
-        local closestName = "N/A"
+RunService.Heartbeat:Connect(function()
+    local truck, seat = getCurrentTruck()
+    if not truck then return end
 
-        for _, ent in ipairs(charFolder:GetChildren()) do
-            if ent:IsA("Model") and ent ~= lp.Character and not Players:GetPlayerFromCharacter(ent) then
-                local hum = ent:FindFirstChildOfClass("Humanoid")
+    local truckPos = (truck.PrimaryPart or seat).Position
+    local charFolder = workspace:FindFirstChild("Characters") or workspace
+
+    local count = 0
+    local closestDist = math.huge
+    local closestName = "N/A"
+
+    for _, ent in ipairs(charFolder:GetChildren()) do
+        if ent:IsA("Model") and ent ~= lp.Character and not Players:GetPlayerFromCharacter(ent) then
+            local name = ent.Name:lower()
+            local variant = tostring(ent:GetAttribute("Variant") or ""):lower()
+            local isTank = name:find("tank") or name:find("muscle") or variant:find("tank") or variant:find("muscle")
+
+            if isTank then
                 local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent:FindFirstChild("Torso") or ent.PrimaryPart
+                local hum = ent:FindFirstChildOfClass("Humanoid")
 
                 if eRoot and (not hum or hum.Health > 0) then
-                    local name = ent.Name:lower()
-                    local variant = tostring(ent:GetAttribute("Variant") or ""):lower()
-                    local isTank = name:find("tank") or variant:find("tank") or name:find("golem") or name:find("brute")
+                    local dist = (eRoot.Position - truckPos).Magnitude
 
-                    local dist = truckPos and (eRoot.Position - truckPos).Magnitude or 999
-
-                    -- RADAR Y RESALTADO DE TANKS
-                    if isTank then
-                        if dist < closestDist then
-                            closestDist = dist
-                            closestName = ent.Name
-                        end
-
-                        if TestModes.TankESP and not TankHighlights[ent] then
-                            local hl = Instance.new("Highlight")
-                            hl.Name = "TankAlertESP"
-                            hl.FillColor = Color3.fromRGB(255, 30, 30)
-                            hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-                            hl.FillTransparency = 0.3
-                            hl.Adornee = ent
-                            hl.Parent = ent
-                            TankHighlights[ent] = hl
-                        end
+                    if dist < closestDist then
+                        closestDist = dist
+                        closestName = ent.Name
                     end
 
-                    -- GESTIÓN FÍSICA SEGÚN EL MODO (SOLO TANK O TODA LA HORDA)
-                    local shouldAffect = TestModes.ProtectAllZombies or isTank
-                    if shouldAffect and dist <= 35 then
-                        -- Anular CanTouch para que los ataques cuerpo a cuerpo no conecten
-                        for _, p in ipairs(ent:GetDescendants()) do
-                            if p:IsA("BasePart") and p.CanTouch then
-                                p.CanTouch = false
-                            end
-                        end
+                    -- RESALTADOR VISUAL (ESP)
+                    if Config.TankRadarESP and not TankHighlights[ent] then
+                        local hl = Instance.new("Highlight")
+                        hl.Name = "TankMuscleESP"
+                        hl.FillColor = Color3.fromRGB(255, 30, 30)
+                        hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                        hl.FillTransparency = 0.35
+                        hl.Adornee = ent
+                        hl.Parent = ent
+                        TankHighlights[ent] = hl
+                    end
 
-                        -- Repulsión física
-                        if TestModes.FlingRepel and truckPos then
-                            local away = (eRoot.Position - truckPos).Unit
-                            eRoot.AssemblyLinearVelocity = Vector3.new(away.X * 100, -30, away.Z * 100)
+                    -- APLICACIÓN FÍSICA A TANKS DENTRO DEL RANGO
+                    if dist <= Config.ScanRadius then
+                        count = count + 1
+
+                        for _, part in ipairs(ent:GetDescendants()) do
+                            if part:IsA("BasePart") then
+                                -- MODO FANTASMA: Sin colisión sólida, pero CON detección táctil para arrollarlo
+                                if Config.GhostTankMode and part.CanCollide then
+                                    part.CanCollide = false
+                                    part.CanTouch = true
+                                end
+
+                                -- MASA CERO: Evita que frene el auto como escombro
+                                if Config.ZeroMassTank then
+                                    pcall(function()
+                                        part.CustomPhysicalProperties = zeroDensityProperties
+                                        part.Massless = true
+                                    end)
+                                end
+                            end
                         end
                     end
                 end
             end
         end
-
-        Diagnostics.ClosestTankDist = closestDist < 800 and string.format("%.1f studs", closestDist) or "Ninguno en radar"
-        Diagnostics.ClosestTankName = closestName
     end
-end)
 
--- AUTO-REPARACIÓN DE FONDO (SWEET SPOT 0.42s)
-task.spawn(function()
-    while true do
-        task.wait(0.42)
-        if TestModes.SyncedAutoRepair then
-            local truck, seat = getCurrentTruck()
-            local bp = lp:FindFirstChild("Backpack")
-            local hammer = bp and bp:FindFirstChild("Repair Hammer")
-            local remote = hammer and hammer:FindFirstChild("Repair")
-
-            if truck and remote then
-                pcall(function() remote:FireServer(truck) end)
-                pcall(function() remote:FireServer(truck.PrimaryPart or seat) end)
-            end
-        end
-    end
-end)
-
--- GESTIÓN DEL CANTOUCH DEL CAMIÓN
-RunService.Heartbeat:Connect(function()
-    if TestModes.DisableTruckCanTouch then
-        local truck = getCurrentTruck()
-        if truck then
-            for _, p in ipairs(truck:GetDescendants()) do
-                if p:IsA("BasePart") and p.CanTouch then p.CanTouch = false end
-            end
-        end
-    end
+    Stats.TanksNeutralized = count
+    Stats.ClosestTankDist = closestDist < 800 and string.format("%.1f studs", closestDist) or "Ninguno"
+    Stats.ClosestTankName = closestName
 end)
 
 -- ==============================================================================
--- 3. INTERFAZ NATIVA ROBLOX (WIDGET FLOTANTE Y PANEL)
+-- 3. INTERFAZ NATIVA (WIDGET FLOTANTE ROJO)
 -- ==============================================================================
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "ImmortalLabV2Gui"
+ScreenGui.Name = "AntiTankMuscleGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
--- Botón Flotante Rojo
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
@@ -260,10 +155,9 @@ BtnIcon.TextSize = 22
 BtnIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
 BtnIcon.Parent = FloatBtn
 
--- Ventana Principal
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 480, 0, 410)
-MainFrame.Position = UDim2.new(0.5, -240, 0.5, -205)
+MainFrame.Size = UDim2.new(0, 440, 0, 310)
+MainFrame.Position = UDim2.new(0.5, -220, 0.5, -155)
 MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -276,7 +170,7 @@ FrameCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
-TitleBar.Text = "  LABORATORIO DE INMORTALIDAD & RADAR"
+TitleBar.Text = "  NEUTRALIZADOR DE TANK MUSCLE"
 TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
 TitleBar.TextSize = 13
 TitleBar.Font = Enum.Font.GothamBold
@@ -287,9 +181,8 @@ local TitleCorner = Instance.new("UICorner")
 TitleCorner.CornerRadius = UDim.new(0, 10)
 TitleCorner.Parent = TitleBar
 
--- Panel de Estado y Radar
 local MonitorLbl = Instance.new("TextLabel")
-MonitorLbl.Size = UDim2.new(1, -20, 0, 85)
+MonitorLbl.Size = UDim2.new(1, -20, 0, 68)
 MonitorLbl.Position = UDim2.new(0, 10, 0, 42)
 MonitorLbl.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
 MonitorLbl.TextColor3 = Color3.fromRGB(0, 255, 170)
@@ -297,7 +190,7 @@ MonitorLbl.TextSize = 11
 MonitorLbl.Font = Enum.Font.Code
 MonitorLbl.TextXAlignment = Enum.TextXAlignment.Left
 MonitorLbl.TextYAlignment = Enum.TextYAlignment.Top
-MonitorLbl.Text = " Escaneando entorno..."
+MonitorLbl.Text = " Escaneando Tank Muscles..."
 MonitorLbl.Parent = MainFrame
 
 local MonCorner = Instance.new("UICorner")
@@ -306,7 +199,7 @@ MonCorner.Parent = MonitorLbl
 
 local function createToggle(yPos, name, defaultVal, callback)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, -20, 0, 32)
+    btn.Size = UDim2.new(1, -20, 0, 34)
     btn.Position = UDim2.new(0, 10, 0, yPos)
     btn.BackgroundColor3 = defaultVal and Color3.fromRGB(30, 120, 60) or Color3.fromRGB(80, 25, 25)
     btn.Text = (defaultVal and "🟢 " or "🔴 ") .. name
@@ -328,37 +221,10 @@ local function createToggle(yPos, name, defaultVal, callback)
     end)
 end
 
-createToggle(134, "Bloquear Remote 'Impact' (Choques)", TestModes.BlockImpactRemote, function(v) TestModes.BlockImpactRemote = v end)
-createToggle(170, "Protección Contra TODA la Horda (No solo Tanks)", TestModes.ProtectAllZombies, function(v) TestModes.ProtectAllZombies = v end)
-createToggle(206, "Camión No-Touch (Desactivar CanTouch en chasis)", TestModes.DisableTruckCanTouch, function(v) TestModes.DisableTruckCanTouch = v end)
-createToggle(242, "Repulsión Física (Empujar zombies cercanos)", TestModes.FlingRepel, function(v) TestModes.FlingRepel = v end)
-createToggle(278, "Auto-Reparación Sincronizada (+125 cada 0.42s)", TestModes.SyncedAutoRepair, function(v) TestModes.SyncedAutoRepair = v end)
-createToggle(314, "ESP / Resaltador Rojo de Tanks", TestModes.TankESP, function(v) TestModes.TankESP = v end)
-
--- Botón de Reiniciar Daño
-local ResetBtn = Instance.new("TextButton")
-ResetBtn.Size = UDim2.new(1, -20, 0, 34)
-ResetBtn.Position = UDim2.new(0, 10, 0, 356)
-ResetBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
-ResetBtn.Text = "🔄 REINICIAR CONTADOR DE DAÑO"
-ResetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ResetBtn.TextSize = 11
-ResetBtn.Font = Enum.Font.GothamBold
-ResetBtn.Parent = MainFrame
-
-local RstCorner = Instance.new("UICorner")
-RstCorner.CornerRadius = UDim.new(0, 6)
-RstCorner.Parent = ResetBtn
-
-ResetBtn.MouseButton1Click:Connect(function()
-    Diagnostics.LastDamageTaken = 0
-    Diagnostics.LastDamageTime = "Ninguno"
-    Diagnostics.ImpactBlockedCount = 0
-    Diagnostics.DamageBlockedCount = 0
-    ResetBtn.Text = "✅ CONTADORES REINICIADOS"
-    task.wait(1)
-    ResetBtn.Text = "🔄 REINICIAR CONTADOR DE DAÑO"
-end)
+createToggle(120, "Modo Fantasma (Atravesar Tank Muscle sin choque)", Config.GhostTankMode, function(v) Config.GhostTankMode = v end)
+createToggle(160, "Masa Cero en Tanks (Evita desaceleración de escombro)", Config.ZeroMassTank, function(v) Config.ZeroMassTank = v end)
+createToggle(200, "Bloquear Remote 'Impact' (Daño de choque vehicular)", Config.BlockImpactRemote, function(v) Config.BlockImpactRemote = v end)
+createToggle(240, "ESP / Resaltador Rojo para Tank Muscle", Config.TankRadarESP, function(v) Config.TankRadarESP = v end)
 
 local isVis = true
 FloatBtn.MouseButton1Click:Connect(function()
@@ -366,26 +232,19 @@ FloatBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = isVis
 end)
 
--- Actualización continua del monitor
 task.spawn(function()
     while true do
         task.wait(0.3)
-        updateTruckHP()
-
-        local radarText = Diagnostics.ClosestTankDist ~= "Ninguno en radar" 
-            and string.format("🚨 TANK CERCA: %s (%s)", Diagnostics.ClosestTankName, Diagnostics.ClosestTankDist)
-            or "Radar Tank: Ninguno en 800 studs"
+        local radarInfo = Stats.ClosestTankDist ~= "Ninguno"
+            and string.format("%s a %s", Stats.ClosestTankName, Stats.ClosestTankDist)
+            or "Ninguno en radar"
 
         MonitorLbl.Text = string.format(
-            " Vida Camión: %s / %s | %s\n Daño Recibido: -%.1f HP (Hora: %s)\n Impact bloqueados: %d | Remotes daño: %d\n %s",
-            Diagnostics.CurrentTruckHP,
-            Diagnostics.MaxTruckHP,
-            Diagnostics.HPLocation,
-            Diagnostics.LastDamageTaken,
-            Diagnostics.LastDamageTime,
-            Diagnostics.ImpactBlockedCount,
-            Diagnostics.DamageBlockedCount,
-            radarText
+            " Tank Muscle más cercano: %s\n Tanks neutralizados en radio (60 studs): %d\n Modo Fantasma: %s | Masa Cero: %s",
+            radarInfo,
+            Stats.TanksNeutralized,
+            Config.GhostTankMode and "ACTIVO (Sin choque)" or "OFF",
+            Config.ZeroMassTank and "ACTIVO (Sin frenado)" or "OFF"
         )
     end
 end)
