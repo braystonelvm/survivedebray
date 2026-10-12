@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ZOMBIE HUB MASTER V13: ZERO-LAG ENGINE + RUTEO DINÁMICO + WIDGET AUTO-PILOT
+-- ZOMBIE HUB MASTER V14: STALKER HORDA + TORBELLINO + RESCATE Y DEFENSA UNIVERSAL
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -13,49 +13,51 @@ local mouse = lp:GetMouse()
 
 local BaseCenter = Vector3.new(0, 0, 0)
 
--- COORDENADAS CALIBRADAS (+Z = NORTE, -Z = SUR)
+-- COORDENADAS ORIGINALES RESTAURADAS (+Z = SUR, -Z = NORTE)
 local SECTOR_ROUTES = {
-    NORTE = { Gate = Vector3.new(0, -1.9, 120.0), Combat = Vector3.new(0, 14.5, 180.0) },
-    SUR   = { Gate = Vector3.new(0, -1.7, -120.0), Combat = Vector3.new(0, 14.5, -180.0) },
-    ESTE  = { Gate = Vector3.new(120.0, -1.9, 0.0), Combat = Vector3.new(180.0, 14.5, 0.0) },
+    SUR   = { Gate = Vector3.new(0, -1.9, 120.0),   Combat = Vector3.new(0, 14.5, 180.0) },
+    NORTE = { Gate = Vector3.new(0, -1.7, -120.0),  Combat = Vector3.new(0, 14.5, -180.0) },
+    ESTE  = { Gate = Vector3.new(120.0, -1.9, 0.0),  Combat = Vector3.new(180.0, 14.5, 0.0) },
     OESTE = { Gate = Vector3.new(-120.0, -1.9, 0.0), Combat = Vector3.new(-180.0, 14.5, 0.0) }
 }
 
--- RED DE PISTAS PERIMETRALES (T-SECTIONS Y CORNERS)
+-- ANILLO PERIMETRAL EXTERIOR PARA BORDEAR LA BASE Y EVITAR EL CENTRO
 local PERIMETER_NODES = {
-    { Name = "T_NORTE", Pos = Vector3.new(0, -1.9, 120.0),   Sector = "NORTE" },
-    { Name = "C_NE",    Pos = Vector3.new(115.0, -1.9, 115.0), Sector = nil },
-    { Name = "T_ESTE",  Pos = Vector3.new(120.0, -1.9, 0.0),    Sector = "ESTE" },
-    { Name = "C_SE",    Pos = Vector3.new(115.0, -1.7, -115.0),Sector = nil },
-    { Name = "T_SUR",   Pos = Vector3.new(0, -1.7, -120.0),  Sector = "SUR" },
-    { Name = "C_SW",    Pos = Vector3.new(-115.0, -1.7, -115.0),Sector = nil },
-    { Name = "T_OESTE", Pos = Vector3.new(-120.0, -1.9, 0.0),   Sector = "OESTE" },
-    { Name = "C_NW",    Pos = Vector3.new(-115.0, -1.9, 115.0), Sector = nil }
+    { Name = "T_SUR",   Pos = Vector3.new(0, -1.9, 120.0),    Sector = "SUR" },
+    { Name = "C_SE",    Pos = Vector3.new(115.0, -1.9, 115.0), Sector = nil },
+    { Name = "T_ESTE",  Pos = Vector3.new(120.0, -1.9, 0.0),   Sector = "ESTE" },
+    { Name = "C_NE",    Pos = Vector3.new(115.0, -1.7, -115.0),Sector = nil },
+    { Name = "T_NORTE", Pos = Vector3.new(0, -1.7, -120.0),   Sector = "NORTE" },
+    { Name = "C_NW",    Pos = Vector3.new(-115.0, -1.7, -115.0),Sector = nil },
+    { Name = "T_OESTE", Pos = Vector3.new(-120.0, -1.9, 0.0),  Sector = "OESTE" },
+    { Name = "C_SW",    Pos = Vector3.new(-115.0, -1.9, 115.0), Sector = nil }
 }
 
 local Config = {
     ZigZagEnabled = false,
-    AttackMode = "Stalker",
+    AttackMode = "Stalker",       -- "Stalker", "Torbellino", "Zigzag Clásico", etc.
     SwitchInterval = 0.5,
     LateralDist = 25,
-    MoveSpeed = 150,              -- 150 studs/s por defecto
+    MoveSpeed = 150,
     EvadeBloaters = true,
     BloaterDangerDist = 30,
     AutoRouteToWave = true,
 
-    -- LÍMITES STALKER
-    StalkerBaseOvershoot = 5.0,    -- 5 studs hacia la base
-    StalkerFarOvershoot = 25.0,    -- 25 studs hacia la horda
+    -- VALORES DE EMBESTIDA
+    StalkerBaseOvershoot = 5.0,    -- 5 studs hacia base
+    StalkerFarOvershoot = 25.0,    -- 25 studs hacia horda
 
-    -- RETIRADA TÁCTICA TERRESTRE
+    -- RETIRADA TÁCTICA Y DEFENSA UNIVERSAL (CUALQUIER TERRENO)
     RetreatEnabled = true,
-    LowHealthThreshold = 0.20,     -- 20% activa retirada
-    FullHealthThreshold = 0.70,    -- 70% reanuda combate
-    RetreatDistance = 30.0,        -- 30 studs de retroceso
+    UniversalDefense = true,       -- Esquiva en campo abierto si no hay pista
+    LowHealthThreshold = 0.20,
+    FullHealthThreshold = 0.70,
+    RetreatDistance = 30.0,
     RetreatSpeed = 110,
 
-    -- RESCATE PEATONAL
-    AutoRemountEnabled = true,
+    -- RESCATES PEATONALES
+    AutoRemountEnabled = true,     -- Rescate con bot de combate activo
+    ManualStandaloneRescue = true, -- Rescate independiente conduciendo manual
     SprintSpeed = 34,
     BunnyHop = true,
     MaxCarSearchDist = 300
@@ -64,10 +66,9 @@ local Config = {
 local CurrentTarget = nil
 local TargetHighlight = nil
 local ZigZagToggleInstance = nil
-local CurrentActiveSector = "NORTE"
+local CurrentActiveSector = "SUR"
 
--- CACHÉS LIGERAS PARA EVITAR CONSUMO DE CPU
-local CachedCombatRoads = {} -- [Sector] = Instance
+local CachedCombatRoads = {}
 local CachedBloaterDangers = {}
 local CachedHordeClusterOffset = 0
 local LastDrivenVehicle = nil
@@ -77,18 +78,19 @@ local DefenseState = {
     IsRetreating = false,
     CurrentHP = 2500,
     MaxHP = 2500,
-    HPRatio = 1.0
+    HPRatio = 1.0,
+    LocalEvadeVector = Vector3.zero
 }
 
 local TransitState = {
     Active = false,
     Waypoints = {},
     Index = 1,
-    TargetSector = "NORTE"
+    TargetSector = "SUR"
 }
 
 -- ==============================================================================
--- 1. DETECCIÓN LIGERA DE VEHÍCULO Y SALUD (CERO LAG)
+-- 1. DETECCIÓN ROBUSTA DE VEHÍCULO Y SALUD
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -113,10 +115,8 @@ local function getCurrentVehicle()
     return nil, nil
 end
 
--- Consulta directa en memoria sin escanear descendientes
 local function getTruckHealth(truck)
     if not truck then return 2500, 2500, 1.0 end
-
     local cfg = truck:FindFirstChild("Configuration")
     local hp = cfg and cfg:GetAttribute("Health") or truck:GetAttribute("Health")
     local maxHp = cfg and cfg:GetAttribute("MaxHealth") or truck:GetAttribute("MaxHealth") or 2500
@@ -132,7 +132,61 @@ local function getTruckHealth(truck)
 end
 
 -- ==============================================================================
--- 2. CACHÉ INICIAL DE PISTAS FRONTALES (ESCANEO ÚNICO AL ENTRAR)
+-- 2. BUCLE ORIGINAL DE CONCENTRACIÓN DE HORDAS (MODO STALKER)
+-- ==============================================================================
+
+local function isValidZombie(entity)
+    if not entity or not entity:IsA("Model") or entity == lp.Character or Players:GetPlayerFromCharacter(entity) then
+        return false
+    end
+    local name = entity.Name:lower()
+    if name:find("dropped") or name:find("bag") or name:find("loot") or name:find("item") 
+       or name:find("crate") or name:find("debris") or name:find("corpse") or name:find("ragdoll") 
+       or name:find("car") or name:find("fence") or name:find("door") then
+        return false
+    end
+    local hum = entity:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    local root = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
+    return root ~= nil, root
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.15)
+        if Config.ZigZagEnabled and Config.AttackMode == "Stalker" and CurrentTarget and not IsInContingency and not TransitState.Active then
+            local tPos = CurrentTarget:IsA("BasePart") and CurrentTarget.Position or select(1, CurrentTarget:GetBoundingBox()).Position
+            if tPos then
+                local radialVec = Vector3.new(tPos.X - BaseCenter.X, 0, tPos.Z - BaseCenter.Z)
+                local roadLengthDir = radialVec.Magnitude > 0 and radialVec.Unit or Vector3.new(0, 0, 1)
+                local roadWidthDir = Vector3.new(-roadLengthDir.Z, 0, roadLengthDir.X)
+
+                local charFolder = workspace:FindFirstChild("Characters") or workspace
+                local lateralSum, count = 0, 0
+
+                for _, entity in ipairs(charFolder:GetChildren()) do
+                    local valid, eRoot = isValidZombie(entity)
+                    if valid then
+                        local offset = eRoot.Position - tPos
+                        local distAlong = math.abs(offset:Dot(roadLengthDir))
+                        local distLateral = offset:Dot(roadWidthDir)
+
+                        if distAlong <= 55 and math.abs(distLateral) <= Config.LateralDist + 10 then
+                            lateralSum = lateralSum + distLateral
+                            count = count + 1
+                        end
+                    end
+                end
+                CachedHordeClusterOffset = count > 0 and math.clamp(lateralSum / count, -Config.LateralDist * 0.8, Config.LateralDist * 0.8) or 0
+            end
+        else
+            CachedHordeClusterOffset = 0
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 3. CACHÉ DE STRAIGHTROADS Y RUTEO DINÁMICO POR PISTAS
 -- ==============================================================================
 
 local function clearHighlight()
@@ -152,7 +206,6 @@ local function applyHighlight(obj)
     end
 end
 
--- Mapea las carreteras una sola vez en segundo plano sin congelar el juego
 task.spawn(function()
     task.wait(1.0)
     local mapFolder = workspace:FindFirstChild("Map") or workspace:FindFirstChild("Tiles") or workspace
@@ -185,10 +238,6 @@ local function getCombatStraightRoad(secName)
     return nil
 end
 
--- ==============================================================================
--- 3. ENCAMINAMIENTO POR LA PISTA MÁS CERCANA (ANILLO PERIMETRAL)
--- ==============================================================================
-
 local function calculateDynamicRoadPath(currentPos, targetSector)
     local targetGateIdx = 1
     for idx, node in ipairs(PERIMETER_NODES) do
@@ -198,7 +247,7 @@ local function calculateDynamicRoadPath(currentPos, targetSector)
         end
     end
 
-    -- Nodo perimetral más próximo a la posición actual
+    -- Pista perimetral más cercana a donde se encuentre el auto
     local closestIdx = 1
     local minDist = math.huge
     for idx, node in ipairs(PERIMETER_NODES) do
@@ -212,6 +261,7 @@ local function calculateDynamicRoadPath(currentPos, targetSector)
     local wps = {}
     table.insert(wps, PERIMETER_NODES[closestIdx].Pos)
 
+    -- Circunnavegación circular por las esquinas y entradas
     if closestIdx ~= targetGateIdx then
         local total = #PERIMETER_NODES
         local fSteps = (targetGateIdx - closestIdx) % total
@@ -244,14 +294,14 @@ local function startDynamicSectorTransition(newSector)
     clearHighlight()
 
     Fluent:Notify({
-        Title = "🚗 ENRUTANDO: " .. newSector,
-        Content = string.format("Tomando pista perimetral (%d tramos)...", #wps),
+        Title = "🚗 RUTA PERIMETRAL: " .. newSector,
+        Content = string.format("Tomando pista perimetral (%d tramos sin cruzar base)...", #wps),
         Duration = 3
     })
 end
 
 -- ==============================================================================
--- 4. PARSER ULTRA-LIGERO DE INCOMINGPOSITION (0ms LAG)
+-- 4. PARSER ORIGINAL DE INCOMINGPOSITION (+Z = SUR, -Z = NORTE)
 -- ==============================================================================
 
 local function parseSectorFromAttribute(val)
@@ -266,9 +316,9 @@ local function parseSectorFromAttribute(val)
     end
 
     if not vec then return "DESCONOCIDO" end
-    -- +Z = NORTE, -Z = SUR
+    -- RESTAURADO ORIGINAL: +Z = SUR, -Z = NORTE
     if math.abs(vec.Z) > math.abs(vec.X) then
-        return (vec.Z > 0) and "NORTE" or "SUR"
+        return (vec.Z > 0) and "SUR" or "NORTE"
     else
         return (vec.X > 0) and "ESTE" or "OESTE"
     end
@@ -289,7 +339,7 @@ workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(function()
 end)
 
 -- ==============================================================================
--- 5. RESCATE PEATONAL Y DESMONTE LIMPIO
+-- 5. RESCATE TERRESTRE (CON FILTRO ESTRICTO A 100 STUDS - CERO LAG)
 -- ==============================================================================
 
 local function applyBrake(duration)
@@ -308,7 +358,6 @@ local function applyBrake(duration)
     end)
 end
 
--- Baja al personaje y lo coloca seguro al costado
 local function forceDismountVehicle()
     local _, root, hum = getCharacterParts()
     if hum and hum.SeatPart then
@@ -368,7 +417,7 @@ local function executeGroundRescue(onBoardCallback)
     IsInContingency = true
     LastDrivenVehicle = carModel
 
-    local runTimeout = tick() + 8.0
+    local runTimeout = tick() + 8.5
     local lastJumpTime = 0
 
     while IsInContingency and tick() < runTimeout do
@@ -382,7 +431,6 @@ local function executeGroundRescue(onBoardCallback)
         local dist = horiz.Magnitude
 
         if dist <= 6.5 then
-            -- Reparación si está muerto
             if carModel:GetAttribute("Dead") == true then
                 local p = carModel:FindFirstChildWhichIsA("ProximityPrompt", true)
                 if p and fireproximityprompt then
@@ -392,7 +440,6 @@ local function executeGroundRescue(onBoardCallback)
                 task.wait(0.2)
             end
 
-            -- Montaje inmediato
             local sitP = seat:FindFirstChild("SitPrompt") or seat:FindFirstChildOfClass("ProximityPrompt")
             if sitP and fireproximityprompt then
                 pcall(function() fireproximityprompt(sitP) end)
@@ -404,9 +451,28 @@ local function executeGroundRescue(onBoardCallback)
             break
         end
 
+        -- ESQUIVE DE ZOMBIES FILTRADO A 100 STUDS (0 LAG)
+        local avoidVector = Vector3.zero
+        local charFolder = workspace:FindFirstChild("Characters") or workspace
+
+        for _, ent in ipairs(charFolder:GetChildren()) do
+            if ent:IsA("Model") and ent ~= char and not Players:GetPlayerFromCharacter(ent) then
+                local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+                if eRoot then
+                    local eOffset = root.Position - eRoot.Position
+                    local eDist = eOffset.Magnitude
+                    -- Solo procesa si está a menos de 100 studs alrededor
+                    if eDist <= 100 and eDist <= 14.0 and eDist > 0.5 then
+                        avoidVector = avoidVector + (Vector3.new(eOffset.X, 0, eOffset.Z).Unit * (15.0 - eDist) * 1.8)
+                    end
+                end
+            end
+        end
+
         local runDir = horiz.Unit
-        root.AssemblyLinearVelocity = Vector3.new(runDir.X * Config.SprintSpeed, root.AssemblyLinearVelocity.Y, runDir.Z * Config.SprintSpeed)
-        hum:MoveTo(root.Position + runDir * 10)
+        local totalMoveDir = (runDir + avoidVector).Unit
+        root.AssemblyLinearVelocity = Vector3.new(totalMoveDir.X * Config.SprintSpeed, root.AssemblyLinearVelocity.Y, totalMoveDir.Z * Config.SprintSpeed)
+        hum:MoveTo(root.Position + totalMoveDir * 10)
 
         if Config.BunnyHop and tick() - lastJumpTime >= 0.35 then
             hum.Jump = true
@@ -419,12 +485,12 @@ local function executeGroundRescue(onBoardCallback)
 end
 
 -- ==============================================================================
--- 6. GUARDIÁN DE SALUD (INTERVALO 0.35s SIN GASTO DE CPU)
+-- 6. GUARDIÁN DE SALUD Y DEFENSA UNIVERSAL (ESQUIVE A 200 STUDS)
 -- ==============================================================================
 
 task.spawn(function()
     while true do
-        task.wait(0.35)
+        task.wait(0.25)
         local truck = getCurrentVehicle()
 
         if truck then
@@ -437,37 +503,73 @@ task.spawn(function()
                 if not DefenseState.IsRetreating and ratio <= Config.LowHealthThreshold then
                     DefenseState.IsRetreating = true
                     Fluent:Notify({
-                        Title = "🛡️ RETIRADA TÁCTICA",
-                        Content = string.format("Vida al %.0f%%. Retrocediendo 30 studs.", ratio * 100),
+                        Title = "🛡️ RETIRADA / ESQUIVE ACTIVO",
+                        Content = string.format("Vida al %.0f%%. Evasión activada hasta 70%%.", ratio * 100),
                         Duration = 2.5
                     })
                 elseif DefenseState.IsRetreating and ratio >= Config.FullHealthThreshold then
                     DefenseState.IsRetreating = false
                     Fluent:Notify({
                         Title = "⚔️ SALUD RECUPERADA",
-                        Content = "Reanudando embestida Stalker al 100%.",
+                        Content = "Vida al 70%. Reanudando combate.",
                         Duration = 2.5
                     })
                 end
             else
                 DefenseState.IsRetreating = false
             end
+
+            -- CÁLCULO DE DEFENSA UNIVERSAL EN RADIO DE 200 STUDS (0 LAG)
+            if DefenseState.IsRetreating and Config.UniversalDefense then
+                local _, root = getCharacterParts()
+                if root then
+                    local repulseSum = Vector3.zero
+                    local count = 0
+                    local charFolder = workspace:FindFirstChild("Characters")
+
+                    if charFolder then
+                        for _, ent in ipairs(charFolder:GetChildren()) do
+                            if ent:IsA("Model") and ent ~= lp.Character then
+                                local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+                                if eRoot then
+                                    local diff = root.Position - eRoot.Position
+                                    local dist = diff.Magnitude
+                                    if dist <= 200 and dist > 1.0 then
+                                        repulseSum = repulseSum + (Vector3.new(diff.X, 0, diff.Z).Unit * (200 - dist))
+                                        count = count + 1
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    DefenseState.LocalEvadeVector = (count > 0) and repulseSum.Unit or Vector3.new(0, 0, 1)
+                end
+            end
         else
             DefenseState.IsRetreating = false
-            if Config.AutoRemountEnabled and Config.ZigZagEnabled and not IsInContingency then
-                local _, _, hum = getCharacterParts()
-                if hum and hum.Health > 0 and (not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat")) then
-                    task.spawn(executeGroundRescue)
+            -- AUTO-RESCATE EN COMBATE O AUTO-RESCATE MANUAL INDEPENDIENTE
+            local shouldRescue = false
+            local _, _, hum = getCharacterParts()
+
+            if hum and hum.Health > 0 and (not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat")) then
+                if Config.ZigZagEnabled and Config.AutoRemountEnabled then
+                    shouldRescue = true
+                elseif (not Config.ZigZagEnabled) and Config.ManualStandaloneRescue then
+                    shouldRescue = true
                 end
+            end
+
+            if shouldRescue and not IsInContingency then
+                task.spawn(executeGroundRescue)
             end
         end
     end
 end)
 
--- BUCLE DE BLOATERS LIGERO (0.5s)
+-- BUCLE DE BLOATERS
 task.spawn(function()
     while true do
-        task.wait(0.5)
+        task.wait(0.4)
         if Config.EvadeBloaters and not IsInContingency then
             local _, root = getCharacterParts()
             local myPos = root and root.Position or BaseCenter
@@ -502,7 +604,7 @@ end)
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | MASTER V13",
+    Title = "ZOMBIE HUB | MASTER V14",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(600, 520),
@@ -524,6 +626,13 @@ ZigZagToggleInstance = Tabs.Combat:AddToggle("ZigZagToggle", {
     Title = "Activar Movimiento Automático",
     Default = false,
     Callback = function(v) Config.ZigZagEnabled = v end
+})
+
+Tabs.Combat:AddDropdown("ModeDropdown", {
+    Title = "Modo de Ataque",
+    Values = { "Stalker", "Torbellino", "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico" },
+    Default = "Stalker",
+    Callback = function(v) Config.AttackMode = v end
 })
 
 Tabs.Combat:AddSlider("SpeedSlider", {
@@ -568,12 +677,20 @@ Tabs.Combat:AddToggle("AutoRouteToggle", {
     Callback = function(v) Config.AutoRouteToWave = v end
 })
 
-Tabs.Defense:AddSection("Retirada Táctica por Daño")
+-- PESTAÑA DEFENSA & ESQUIVE
+Tabs.Defense:AddSection("Retirada Táctica y Evasión Universal")
 
 Tabs.Defense:AddToggle("RetreatToggle", {
-    Title = "🛡️ Activar Retirada y Esquive (Baja Vida)",
+    Title = "🛡️ Activar Retirada y Esquive por Baja Vida",
     Default = true,
     Callback = function(v) Config.RetreatEnabled = v end
+})
+
+Tabs.Defense:AddToggle("UniversalDefenseToggle", {
+    Title = "🌐 Evasión Universal en Campo Abierto (200 studs)",
+    Description = "Esquiva en cualquier terreno alejándose del centro de zombies",
+    Default = true,
+    Callback = function(v) Config.UniversalDefense = v end
 })
 
 local DefenseStatusParagraph = Tabs.Defense:AddParagraph({
@@ -599,12 +716,20 @@ Tabs.Defense:AddSlider("FullHPSlider", {
     Callback = function(v) Config.FullHealthThreshold = v / 100 end
 })
 
-Tabs.Rescue:AddSection("Rescate Terrestre de Personaje")
+-- PESTAÑA RESCATE
+Tabs.Rescue:AddSection("Rescates Peatonales")
 
 Tabs.Rescue:AddToggle("AutoRemountToggle", {
-    Title = "🛡️ Auto-Rescate en Eyección",
+    Title = "🛡️ Auto-Rescate en Modo Combate",
     Default = true,
     Callback = function(v) Config.AutoRemountEnabled = v end
+})
+
+Tabs.Rescue:AddToggle("ManualStandaloneRescueToggle", {
+    Title = "🚗 Auto-Rescate Independiente (Conducción Manual)",
+    Description = "Te rescata aunque no tengas el bot de combate encendido",
+    Default = true,
+    Callback = function(v) Config.ManualStandaloneRescue = v end
 })
 
 Tabs.Rescue:AddSlider("SprintSpeedSlider", {
@@ -627,7 +752,7 @@ local HordeStatusParagraph = Tabs.Horde:AddParagraph({
 })
 
 -- ==============================================================================
--- 8. WIDGETS FLOTANTES: MENU HUB + AUTO-PILOTO (ON / OFF)
+-- 8. WIDGETS FLOTANTES: MENU HUB + AUTO-PILOTO
 -- ==============================================================================
 
 local ScreenGui = Instance.new("ScreenGui")
@@ -635,7 +760,7 @@ ScreenGui.Name = "ZombieHubMasterFloat"
 ScreenGui.ResetOnSpawn = false
 if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
--- BOTÓN MENÚ (Y = 0.72)
+-- BOTÓN MENÚ
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0)
@@ -655,7 +780,7 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- WIDGET AUTO-PILOTO (Y = 0.64)
+-- WIDGET AUTO-PILOTO
 local AutoPilotBtn = Instance.new("TextButton")
 AutoPilotBtn.Size = UDim2.new(0, 48, 0, 48)
 AutoPilotBtn.Position = UDim2.new(0.04, 0, 0.64, 0)
@@ -674,7 +799,6 @@ AutoPilotCorner.Parent = AutoPilotBtn
 
 local function toggleAutoPilot()
     if Config.ZigZagEnabled then
-        -- DESACTIVAR: FRENAR Y EXPULSAR PERSONAJE
         Config.ZigZagEnabled = false
         pcall(function() ZigZagToggleInstance:SetValue(false) end)
         TransitState.Active = false
@@ -690,7 +814,6 @@ local function toggleAutoPilot()
             Duration = 2
         })
     else
-        -- ACTIVAR: MONTAR Y ATACAR
         AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 70)
         AutoPilotBtn.Text = "⚡\nON"
 
@@ -705,7 +828,7 @@ end
 AutoPilotBtn.MouseButton1Click:Connect(toggleAutoPilot)
 Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (SUBIR / BAJAR)", Callback = toggleAutoPilot })
 
--- CONTROLES DE TECLADO ('T', '9', '0', 'V')
+-- CONTROLES DE TECLADO
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
 
@@ -747,7 +870,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     end
 end)
 
--- ACTUALIZACIÓN DE TEXTOS EN INTERFAZ
+-- ACTUALIZACIÓN EN INTERFAZ
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -755,7 +878,7 @@ task.spawn(function()
             "Vida Vehículo: %.0f / %.0f (%.0f%%)\nRetirada Automática: %s\nModo Actual: %s",
             DefenseState.CurrentHP, DefenseState.MaxHP, DefenseState.HPRatio * 100,
             Config.RetreatEnabled and "🟢 ACTIVA" or "🔴 OFF",
-            DefenseState.IsRetreating and "🛡️ Retirada (-30 studs)" or (TransitState.Active and "🚗 Enrutando Pistas" or "⚔️ Stalker Activo")
+            DefenseState.IsRetreating and "🛡️ Evasión Activa" or (TransitState.Active and "🚗 Enrutando Pistas" or "⚔️ " .. Config.AttackMode)
         ))
 
         HordeStatusParagraph:SetDesc(string.format(
@@ -768,9 +891,11 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 9. MOTOR CINÉTICO ZERO-LAG (HEARTBEAT DIRECTO)
+-- 9. MOTOR CINÉTICO: PISTAS DINÁMICAS + STALKER / TORBELLINO / EVASIÓN
 -- ==============================================================================
 
+local side = 1
+local lastSwitch = tick()
 local stalkerDir = 1
 local lastStalkerSwitch = tick()
 
@@ -781,7 +906,7 @@ RunService.Heartbeat:Connect(function()
     if not root or not hum or hum.Health <= 0 then return end
     if not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat") then return end
 
-    -- FASE 1: TRÁNSITO POR PISTAS DINÁMICAS
+    -- FASE 1: TRANSICIÓN DINÁMICA POR PISTAS
     if TransitState.Active then
         local wp = TransitState.Waypoints[TransitState.Index]
         if wp then
@@ -810,7 +935,7 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- FASE 2: ATAQUE STALKER & RETIRADA
+    -- FASE 2: COMBATE NORMAL Y RETIRADA
     local targetPos = nil
     local targetSize = Vector3.new(60, 10, 60)
 
@@ -830,12 +955,23 @@ RunService.Heartbeat:Connect(function()
         local roadLen = toRoad.Magnitude > 0 and toRoad.Unit or Vector3.new(0, 0, 1)
         local roadWid = Vector3.new(-roadLen.Z, 0, roadLen.X)
 
+        -- CASO 1: RETIRADA TÁCTICA / EVASIÓN EN CUALQUIER TERRENO
         if DefenseState.IsRetreating then
             speed = Config.RetreatSpeed
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
-            local anchor = targetPos - (roadLen * (hLen + Config.RetreatDistance))
-            destination = anchor + (roadWid * (math.sin(tick() * 4.0) * d))
-        else
+
+            if Config.UniversalDefense and DefenseState.LocalEvadeVector.Magnitude > 0.1 then
+                -- Esquiva universal alejándose de la masa de 200 studs
+                local evadeDir = DefenseState.LocalEvadeVector
+                local evadeOsc = (Vector3.new(-evadeDir.Z, 0, evadeDir.X) * math.sin(tick() * 4.0) * d)
+                destination = root.Position + (evadeDir * 25.0) + evadeOsc
+            else
+                local anchor = targetPos - (roadLen * (hLen + Config.RetreatDistance))
+                destination = anchor + (roadWid * (math.sin(tick() * 4.0) * d))
+            end
+
+        -- CASO 2: MODO STALKER (CON CLUSTER DE HORDA ORIGINAL)
+        elseif Config.AttackMode == "Stalker" then
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
             local reachAway = hLen + Config.StalkerFarOvershoot
             local reachBase = hLen + Config.StalkerBaseOvershoot
@@ -856,10 +992,35 @@ RunService.Heartbeat:Connect(function()
             end
 
             local tDist = (stalkerDir == 1) and reachAway or -reachBase
-            destination = targetPos + (roadLen * tDist) + (roadWid * (math.sin(tick() * 5.5) * d))
+            local totalLat = math.clamp((math.sin(tick() * 5.5) * d) + CachedHordeClusterOffset, -d, d)
+            destination = targetPos + (roadLen * tDist) + (roadWid * totalLat)
+
+        -- CASO 3: NUEVO MODO "TORBELLINO" (SINUSOIDAL PURA)
+        elseif Config.AttackMode == "Torbellino" then
+            local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
+            local reachAway = hLen + Config.StalkerFarOvershoot
+            local reachBase = hLen + Config.StalkerBaseOvershoot
+
+            local carAlong = (root.Position - targetPos):Dot(roadLen)
+
+            if stalkerDir == 1 and carAlong >= (reachAway - 3.5) then
+                stalkerDir = -1
+                lastStalkerSwitch = tick()
+            elseif stalkerDir == -1 and carAlong <= -(reachBase - 3.5) then
+                stalkerDir = 1
+                lastStalkerSwitch = tick()
+            end
+
+            if tick() - lastStalkerSwitch >= 3.2 then
+                stalkerDir = -stalkerDir
+                lastStalkerSwitch = tick()
+            end
+
+            local tDist = (stalkerDir == 1) and reachAway or -reachBase
+            destination = targetPos + (roadLen * tDist) + (roadWid * (math.sin(tick() * 6.0) * d))
         end
 
-        -- EVASIÓN DE BLOATERS RÁPIDA
+        -- EVASIÓN DE BLOATERS
         if Config.EvadeBloaters and #CachedBloaterDangers > 0 then
             for _, bPos in ipairs(CachedBloaterDangers) do
                 if (root.Position - bPos).Magnitude <= Config.BloaterDangerDist then
@@ -880,9 +1041,9 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB MASTER V13",
-    Content = "Zero-Lag Engine activo. 60 FPS estables.",
-    Duration = 3
+    Title = "ZOMBIE HUB MASTER V14",
+    Content = "Stalker original, Torbellino y Defensa Universal activos.",
+    Duration = 4
 })
 
 Window:SelectTab(1)
