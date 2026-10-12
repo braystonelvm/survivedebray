@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ZOMBIE HUB MASTER V14: RESCATE MANUAL + ESQUIVE IN-SITU + STALKER CLUSTER
+-- ZOMBIE HUB MASTER V15: RADAR HÍBRIDO + SALUD RESTAURADA + RUTEO PERIMETRAL
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -12,34 +12,34 @@ local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
 local BaseCenter = Vector3.new(0, 0, 0)
-local BASE_FORBIDDEN_RADIUS = 105 -- Radio central que el auto tiene prohibido cruzar en línea recta
+local BASE_FORBIDDEN_RADIUS = 105 -- Prohibido cruzar la base central
 
--- COORDENADAS ORIGINALES RESTABLECIDAS (+Z = SUR, -Z = NORTE)
+-- COORDENADAS ORIGINALES (+Z = SUR, -Z = NORTE)
 local SECTOR_ROUTES = {
-    SUR   = { Gate = Vector3.new(0, -1.9, 120.0), Combat = Vector3.new(0, 14.5, 180.0) },
-    NORTE = { Gate = Vector3.new(0, -1.7, -120.0), Combat = Vector3.new(0, 14.5, -180.0) },
-    ESTE  = { Gate = Vector3.new(120.0, -1.9, 0.0), Combat = Vector3.new(180.0, 14.5, 0.0) },
+    SUR   = { Gate = Vector3.new(0, -1.9, 120.0),   Combat = Vector3.new(0, 14.5, 180.0) },
+    NORTE = { Gate = Vector3.new(0, -1.7, -120.0),  Combat = Vector3.new(0, 14.5, -180.0) },
+    ESTE  = { Gate = Vector3.new(120.0, -1.9, 0.0),  Combat = Vector3.new(180.0, 14.5, 0.0) },
     OESTE = { Gate = Vector3.new(-120.0, -1.9, 0.0), Combat = Vector3.new(-180.0, 14.5, 0.0) }
 }
 
--- ANILLO PERIMETRAL VIAL (ENLACE OBLIGATORIO)
+-- ANILLO PERIMETRAL DE PISTAS (ENLACE EXTERIOR)
 local PERIMETER_NODES = {
-    { Name = "T_SUR",   Pos = Vector3.new(0, -1.9, 120.0),   Sector = "SUR" },
+    { Name = "T_SUR",   Pos = Vector3.new(0, -1.9, 120.0),    Sector = "SUR" },
     { Name = "C_SE",    Pos = Vector3.new(115.0, -1.9, 115.0), Sector = nil },
-    { Name = "T_ESTE",  Pos = Vector3.new(120.0, -1.9, 0.0),    Sector = "ESTE" },
+    { Name = "T_ESTE",  Pos = Vector3.new(120.0, -1.9, 0.0),   Sector = "ESTE" },
     { Name = "C_NE",    Pos = Vector3.new(115.0, -1.7, -115.0),Sector = nil },
-    { Name = "T_NORTE", Pos = Vector3.new(0, -1.7, -120.0),  Sector = "NORTE" },
+    { Name = "T_NORTE", Pos = Vector3.new(0, -1.7, -120.0),   Sector = "NORTE" },
     { Name = "C_NW",    Pos = Vector3.new(-115.0, -1.7, -115.0),Sector = nil },
-    { Name = "T_OESTE", Pos = Vector3.new(-120.0, -1.9, 0.0),   Sector = "OESTE" },
+    { Name = "T_OESTE", Pos = Vector3.new(-120.0, -1.9, 0.0),  Sector = "OESTE" },
     { Name = "C_SW",    Pos = Vector3.new(-115.0, -1.9, 115.0), Sector = nil }
 }
 
 local Config = {
     ZigZagEnabled = false,
-    AttackMode = "Stalker",       -- "Stalker", "Torbellino", "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico"
+    AttackMode = "Stalker",       -- "Stalker", "Torbellino", "Zigzag Clásico", etc.
     SwitchInterval = 0.5,
     LateralDist = 25,
-    MoveSpeed = 150,              -- Velocidad por defecto en 150
+    MoveSpeed = 150,              -- 150 studs/s por defecto
     EvadeBloaters = true,
     BloaterDangerDist = 30,
     AutoRouteToWave = true,
@@ -48,20 +48,19 @@ local Config = {
     StalkerBaseOvershoot = 5.0,    -- 5 studs hacia la base
     StalkerFarOvershoot = 25.0,    -- 25 studs hacia la horda
 
-    -- RETIRADA TÁCTICA Y ESQUIVE IN-SITU
+    -- RETIRADA TÁCTICA Y PREVENCIÓN DEL VEHÍCULO
     RetreatEnabled = true,
-    InSituDefenseEnabled = true,   -- Esquive local en cualquier terreno sin ir a base
-    LowHealthThreshold = 0.20,     -- 20% activa retirada/esquive
-    FullHealthThreshold = 0.70,    -- 70% reanuda combate
-    RetreatDistance = 30.0,        -- Retroceso hacia base si está en carretera
+    LowHealthThreshold = 0.20,     -- 20% activa retirada
+    FullHealthThreshold = 0.70,    -- 70% reanuda ataque
+    RetreatDistance = 30.0,        -- Retrocede 30 studs hacia base
     RetreatSpeed = 110,
 
-    -- RESCATES TERRESTRES
-    CombatAutoRescue = true,       -- Auto-rescate durante combate automático
-    ManualDriveAutoRescue = true,  -- NUEVO: Auto-rescate independiente mientras conduces manual
+    -- RESCATES PEATONALES
+    CombatAutoRescue = true,       -- Rescate en combate automático
+    ManualDriveAutoRescue = true,  -- Rescate independiente si conduces manual
     SprintSpeed = 34,
     BunnyHop = true,
-    RescueZombieScanDist = 100,    -- Escaneo peatonal limitado a 100 studs (Cero Lag)
+    RescueZombieScanDist = 100,    -- Filtro de 100 studs (Cero Lag)
     MaxCarSearchDist = 350
 }
 
@@ -75,7 +74,6 @@ local CachedBloaterDangers = {}
 local CachedHordeClusterOffset = 0
 local LastDrivenVehicle = nil
 local IsInContingency = false
-local LocalEvasionVector = Vector3.zero
 
 local DefenseState = {
     IsRetreating = false,
@@ -93,7 +91,7 @@ local TransitState = {
 }
 
 -- ==============================================================================
--- 1. DETECCIÓN ROBUSTA DE SALUD Y PARTES
+-- 1. DETECCIÓN ROBUSTA DE SALUD (ORIGINAL RESTAURADA)
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -133,23 +131,72 @@ end
 
 local function getTruckHealth(truck)
     if not truck then return 2500, 2500, 1.0, "Sin auto" end
+    local foundHP, foundMax = nil, nil
+    local src = "Desconocido"
 
-    local cfg = truck:FindFirstChild("Configuration")
-    local hp = cfg and cfg:GetAttribute("Health") or truck:GetAttribute("Health")
-    local maxHp = cfg and cfg:GetAttribute("MaxHealth") or truck:GetAttribute("MaxHealth") or 2500
+    -- Búsqueda recursiva profunda original
+    local config = truck:FindFirstChild("Configuration", true) or truck:FindFirstChild("Config", true)
+    if config then
+        local h = config:GetAttribute("Health") or config:GetAttribute("HP")
+        local mh = config:GetAttribute("MaxHealth") or config:GetAttribute("MaxHP")
+        if h and type(h) == "number" then foundHP = h; src = "Config.Attr" end
+        if mh and type(mh) == "number" then foundMax = mh end
 
-    if not hp then
-        local v = cfg and cfg:FindFirstChild("Health")
-        if v and v:IsA("ValueBase") then hp = v.Value end
+        if not foundHP then
+            local vH = config:FindFirstChild("Health") or config:FindFirstChild("HP")
+            if vH and vH:IsA("ValueBase") then foundHP = vH.Value; src = "Config.Value" end
+            local vM = config:FindFirstChild("MaxHealth") or config:FindFirstChild("MaxHP")
+            if vM and vM:IsA("ValueBase") then foundMax = vM.Value end
+        end
     end
 
-    hp = hp or maxHp
-    local ratio = (maxHp > 0) and (hp / maxHp) or 1.0
-    return hp, maxHp, ratio, "RAM"
+    if not foundHP then
+        for _, obj in ipairs({truck, truck.PrimaryPart}) do
+            if obj then
+                for _, attr in ipairs({"Health", "HP", "Durability", "Vida"}) do
+                    local val = obj:GetAttribute(attr)
+                    if val and type(val) == "number" then
+                        foundHP = val
+                        foundMax = obj:GetAttribute("Max" .. attr) or 2500
+                        src = "Model.Attr"
+                        break
+                    end
+                end
+            end
+            if foundHP then break end
+        end
+    end
+
+    if not foundHP then
+        for _, desc in ipairs(truck:GetDescendants()) do
+            if desc:IsA("NumberValue") or desc:IsA("IntValue") then
+                local n = desc.Name:lower()
+                if n == "health" or n == "hp" or n == "durability" then
+                    foundHP = desc.Value
+                    src = "Descendant.Value"
+                    break
+                end
+            end
+        end
+    end
+
+    if not foundHP then
+        local mock = truck:FindFirstChild("MockHumanoid", true) or truck:FindFirstChildOfClass("Humanoid")
+        if mock then
+            foundHP = mock:GetAttribute("Health") or (mock:IsA("Humanoid") and mock.Health)
+            foundMax = mock:GetAttribute("MaxHealth") or (mock:IsA("Humanoid") and mock.MaxHealth)
+            src = "MockHumanoid"
+        end
+    end
+
+    foundMax = foundMax or 2500
+    foundHP = foundHP or foundMax
+    local ratio = (foundMax > 0) and (foundHP / foundMax) or 1.0
+    return foundHP, foundMax, ratio, src
 end
 
 -- ==============================================================================
--- 2. CACHÉ DE PISTAS FRONTALES (ESCANEO ÚNICO AL INICIAR)
+-- 2. RUTEO PERIMETRAL DINÁMICO (BORDEANDO LA BASE SIN CORTAR EL CENTRO)
 -- ==============================================================================
 
 local function clearHighlight()
@@ -169,6 +216,7 @@ local function applyHighlight(obj)
     end
 end
 
+-- Mapeo único de StraightRoads frontales
 task.spawn(function()
     task.wait(1.0)
     local mapFolder = workspace:FindFirstChild("Map") or workspace:FindFirstChild("Tiles") or workspace
@@ -200,21 +248,14 @@ local function getCombatStraightRoad(secName)
     return nil
 end
 
--- ==============================================================================
--- 3. NAVEGACIÓN PERIMETRAL DINÁMICA (ANTI-CORTE DE BASE)
--- ==============================================================================
-
--- Comprueba si una línea recta entre dos puntos corta el centro prohibido de la base
 local function lineCrossesBaseCenter(p1, p2)
     local d = p2 - p1
     local dLen = d.Magnitude
     if dLen == 0 then return false end
     local dUnit = d.Unit
 
-    -- Proyección del centro sobre el segmento
     local toCenter = BaseCenter - p1
-    local t = toCenter:Dot(dUnit)
-    t = math.clamp(t, 0, dLen)
+    local t = math.clamp(toCenter:Dot(dUnit), 0, dLen)
     local closestPoint = p1 + (dUnit * t)
 
     return (Vector3.new(closestPoint.X, 0, closestPoint.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude < BASE_FORBIDDEN_RADIUS
@@ -229,12 +270,10 @@ local function calculateDynamicRoadPath(currentPos, targetSector)
         end
     end
 
-    -- 1. Hallar el nodo del anillo perimetral más cercano sin cortar la base
     local closestIdx = 1
     local minDist = math.huge
     for idx, node in ipairs(PERIMETER_NODES) do
         local d = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(node.Pos.X, 0, node.Pos.Z)).Magnitude
-        -- Penalizar caminos que intenten atravesar el centro
         if lineCrossesBaseCenter(currentPos, node.Pos) then
             d = d + 500
         end
@@ -247,7 +286,6 @@ local function calculateDynamicRoadPath(currentPos, targetSector)
     local waypoints = {}
     table.insert(waypoints, PERIMETER_NODES[closestIdx].Pos)
 
-    -- 2. Transitar por el anillo en el sentido más corto
     if closestIdx ~= targetGateIdx then
         local total = #PERIMETER_NODES
         local fSteps = (targetGateIdx - closestIdx) % total
@@ -280,16 +318,52 @@ local function startDynamicSectorTransition(newSector)
     clearHighlight()
 
     Fluent:Notify({
-        Title = "🚗 ENRUTANDO: " .. newSector,
-        Content = string.format("Bordeando la base por pistas (%d tramos)...", #wps),
+        Title = "🚗 RUTA PERIMETRAL: " .. newSector,
+        Content = string.format("Bordeando la base hacia la entrada del %s...", newSector),
         Duration = 3
     })
 end
 
 -- ==============================================================================
--- 4. BUCLE ORIGINAL DE CONCENTRACIÓN DE HORDAS (RESTABLECIDO)
+-- 3. RADAR HÍBRIDO DEFINITIVO (INCOMINGPOSITION + RADAR DE ZOMBIES VIVOS)
 -- ==============================================================================
 
+local function parseSectorFromAttribute(val)
+    local vec = nil
+    if typeof(val) == "Vector3" then
+        vec = val
+    elseif type(val) == "string" then
+        local x, y, z = val:match("([^,]+)%s*,%s*([^,]+)%s*,%s*([^,]+)")
+        if x and y and z then
+            vec = Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+        end
+    end
+
+    if not vec then return "DESCONOCIDO" end
+    -- UNIFICADO: +Z = SUR (+180), -Z = NORTE (-180)
+    if math.abs(vec.Z) > math.abs(vec.X) then
+        return (vec.Z > 0) and "SUR" or "NORTE"
+    else
+        return (vec.X > 0) and "ESTE" or "OESTE"
+    end
+end
+
+-- 1. Disparo inmediato por evento de servidor (0ms Lag)
+workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(function()
+    local rawVal = workspace:GetAttribute("IncomingPosition")
+    if rawVal then
+        local sec = parseSectorFromAttribute(rawVal)
+        if sec ~= "DESCONOCIDO" and sec ~= CurrentActiveSector then
+            if Config.AutoRouteToWave and Config.ZigZagEnabled then
+                startDynamicSectorTransition(sec)
+            else
+                CurrentActiveSector = sec
+            end
+        end
+    end
+end)
+
+-- 2. Respaldo por densidad de zombies vivos (Resuelve cambios mid-wave o hordas dobles)
 local function isValidZombie(entity)
     if not entity or not entity:IsA("Model") or entity == lp.Character or Players:GetPlayerFromCharacter(entity) then
         return false
@@ -306,7 +380,53 @@ local function isValidZombie(entity)
     return root ~= nil, root
 end
 
--- Bucle de rastreo de densidad lateral (Modo Stalker Original)
+task.spawn(function()
+    while true do
+        task.wait(2.5)
+        local counts = { NORTE = 0, SUR = 0, ESTE = 0, OESTE = 0 }
+        local totalZombies = 0
+        local charFolder = workspace:FindFirstChild("Characters") or workspace
+
+        for _, entity in ipairs(charFolder:GetChildren()) do
+            local valid, eRoot = isValidZombie(entity)
+            if valid then
+                local p = eRoot.Position - BaseCenter
+                if p.Magnitude <= 900 then
+                    totalZombies = totalZombies + 1
+                    -- UNIFICADO: +Z = SUR, -Z = NORTE
+                    if math.abs(p.Z) > math.abs(p.X) then
+                        if p.Z > 0 then counts.SUR = counts.SUR + 1 else counts.NORTE = counts.NORTE + 1 end
+                    else
+                        if p.X > 0 then counts.ESTE = counts.ESTE + 1 else counts.OESTE = counts.OESTE + 1 end
+                    end
+                end
+            end
+        end
+
+        local topSector = CurrentActiveSector
+        local maxCount = 0
+        for s, c in pairs(counts) do
+            if c > maxCount then
+                maxCount = c
+                topSector = s
+            end
+        end
+
+        -- Si hay más de 12 zombies concentrados en otra puerta, reorienta el auto automáticamente
+        if maxCount >= 12 and topSector ~= CurrentActiveSector then
+            if Config.AutoRouteToWave and Config.ZigZagEnabled then
+                startDynamicSectorTransition(topSector)
+            else
+                CurrentActiveSector = topSector
+            end
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 4. BUCLE ORIGINAL DE DENSIDAD LATERAL DE HORDA (STALKER CLUSTER)
+-- ==============================================================================
+
 task.spawn(function()
     while true do
         task.wait(0.15)
@@ -335,93 +455,14 @@ task.spawn(function()
                 end
                 CachedHordeClusterOffset = count > 0 and math.clamp(lateralSum / count, -Config.LateralDist * 0.8, Config.LateralDist * 0.8) or 0
             end
-        end
-    end
-end)
-
--- Bucle de esquive en terreno actual (In-Situ a 200 studs - Cero Lag)
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-        if DefenseState.IsRetreating and Config.InSituDefenseEnabled then
-            local _, root = getCharacterParts()
-            if root then
-                local myPos = root.Position
-                local avoidVec = Vector3.zero
-                local charFolder = workspace:FindFirstChild("Characters") or workspace
-
-                -- 1. Repulsión de zombies en 200 studs
-                for _, entity in ipairs(charFolder:GetChildren()) do
-                    local valid, eRoot = isValidZombie(entity)
-                    if valid then
-                        local diff = myPos - eRoot.Position
-                        local d = diff.Magnitude
-                        if d <= 50 and d > 1.0 then
-                            avoidVec = avoidVec + (Vector3.new(diff.X, 0, diff.Z).Unit * (50 - d) * 1.5)
-                        end
-                    end
-                end
-
-                -- 2. Sensores frontales por Raycast para esquivar obstáculos sólidos (rocas, muros, postes)
-                local lookDir = root.CFrame.LookVector
-                local rayParams = RaycastParams.new()
-                rayParams.FilterDescendantsInstances = {lp.Character, LastDrivenVehicle}
-                rayParams.FilterType = Enum.RaycastFilterType.Exclude
-
-                local frontHit = workspace:Raycast(myPos, lookDir * 28, rayParams)
-                if frontHit then
-                    local rightDir = root.CFrame.RightVector
-                    avoidVec = avoidVec + (rightDir * 40)
-                end
-
-                LocalEvasionVector = avoidVec
-            end
         else
-            LocalEvasionVector = Vector3.zero
+            CachedHordeClusterOffset = 0
         end
     end
 end)
 
 -- ==============================================================================
--- 5. PARSER ORIGINAL DE INCOMINGPOSITION (+Z = SUR, -Z = NORTE)
--- ==============================================================================
-
-local function parseSectorFromAttribute(val)
-    local vec = nil
-    if typeof(val) == "Vector3" then
-        vec = val
-    elseif type(val) == "string" then
-        local x, y, z = val:match("([^,]+)%s*,%s*([^,]+)%s*,%s*([^,]+)")
-        if x and y and z then
-            vec = Vector3.new(tonumber(x), tonumber(y), tonumber(z))
-        end
-    end
-
-    if not vec then return "DESCONOCIDO" end
-    -- RESTABLECIDO: +Z = SUR, -Z = NORTE
-    if math.abs(vec.Z) > math.abs(vec.X) then
-        return (vec.Z > 0) and "SUR" or "NORTE"
-    else
-        return (vec.X > 0) and "ESTE" or "OESTE"
-    end
-end
-
-workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(function()
-    local rawVal = workspace:GetAttribute("IncomingPosition")
-    if rawVal then
-        local sec = parseSectorFromAttribute(rawVal)
-        if sec ~= "DESCONOCIDO" and sec ~= CurrentActiveSector then
-            if Config.AutoRouteToWave and Config.ZigZagEnabled then
-                startDynamicSectorTransition(sec)
-            else
-                CurrentActiveSector = sec
-            end
-        end
-    end
-end)
-
--- ==============================================================================
--- 6. RESCATES PEATONALES Y DESMONTE LIMPIO (ESCANEO EN 100 STUDS)
+-- 5. RESCATES PEATONALES Y DESMONTE LIMPIO (FILTRADO A 100 STUDS)
 -- ==============================================================================
 
 local function applyBrake(duration)
@@ -533,7 +574,6 @@ local function executeGroundRescue(onBoardCallback)
             break
         end
 
-        -- ESQUIVE PEATONAL LIMITADO ESTRICTAMENTE A 100 STUDS (CERO LAG)
         local avoidVector = Vector3.zero
         local charFolder = workspace:FindFirstChild("Characters") or workspace
 
@@ -543,7 +583,6 @@ local function executeGroundRescue(onBoardCallback)
                 if eRoot then
                     local offset = root.Position - eRoot.Position
                     local eDist = offset.Magnitude
-                    -- Solo evalúa si está dentro de 100 studs, esquivando si se acerca a menos de 14 studs
                     if eDist <= Config.RescueZombieScanDist and eDist <= 14.0 and eDist > 0.5 then
                         avoidVector = avoidVector + (Vector3.new(offset.X, 0, offset.Z).Unit * (15.0 - eDist) * 1.8)
                     end
@@ -566,26 +605,27 @@ local function executeGroundRescue(onBoardCallback)
 end
 
 -- ==============================================================================
--- 7. GUARDIÁN DE SALUD Y AUTO-RESCATE INDEPENDIENTE
+-- 6. GUARDIÁN DE SALUD Y DETECTOR DE RESCATE DUAL
 -- ==============================================================================
 
 task.spawn(function()
     while true do
-        task.wait(0.3)
+        task.wait(0.25)
         local truck = getCurrentVehicle()
 
         if truck then
-            local hp, maxHp, ratio = getTruckHealth(truck)
+            local hp, maxHp, ratio, src = getTruckHealth(truck)
             DefenseState.CurrentHP = hp
             DefenseState.MaxHP = maxHp
             DefenseState.HPRatio = ratio
+            DefenseState.Source = src
 
             if Config.RetreatEnabled then
                 if not DefenseState.IsRetreating and ratio <= Config.LowHealthThreshold then
                     DefenseState.IsRetreating = true
                     Fluent:Notify({
-                        Title = "🛡️ ESQUIVE DE DEFENSA ACTIVADO",
-                        Content = string.format("Vida al %.0f%%. Iniciando maniobras de evasión.", ratio * 100),
+                        Title = "🛡️ RETIRADA TÁCTICA",
+                        Content = string.format("Vida al %.0f%%. Retrocediendo 30 studs a esquivar.", ratio * 100),
                         Duration = 2.5
                     })
                 elseif DefenseState.IsRetreating and ratio >= Config.FullHealthThreshold then
@@ -602,36 +642,36 @@ task.spawn(function()
         else
             DefenseState.IsRetreating = false
 
-            -- DETECTOR DE RESCATE: Funciona tanto en combate automático como en MANEJO MANUAL INDEPENDIENTE
+            -- RESCATE DUAL: EN COMBATE AUTOMÁTICO O CONDUCCIÓN MANUAL
             local shouldRescue = false
-            if Config.ZigZagEnabled and Config.CombatAutoRescue then
-                shouldRescue = true
-            elseif not Config.ZigZagEnabled and Config.ManualDriveAutoRescue then
-                shouldRescue = true
+            local _, _, hum = getCharacterParts()
+
+            if hum and hum.Health > 0 and (not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat")) then
+                if Config.ZigZagEnabled and Config.CombatAutoRescue then
+                    shouldRescue = true
+                elseif (not Config.ZigZagEnabled) and Config.ManualDriveAutoRescue then
+                    shouldRescue = true
+                end
             end
 
             if shouldRescue and not IsInContingency then
-                local _, _, hum = getCharacterParts()
-                if hum and hum.Health > 0 and (not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat")) then
-                    task.spawn(function()
-                        executeGroundRescue(function()
-                            -- Si era manejo manual, queda sentado listo para que sigas conduciendo tú mismo
-                            if not Config.ZigZagEnabled then
-                                Fluent:Notify({
-                                    Title = "🚗 RESCATE MANUAL COMPLETADO",
-                                    Content = "Subido al vehículo con éxito. Conducción manual activa.",
-                                    Duration = 3
-                                })
-                            end
-                        end)
+                task.spawn(function()
+                    executeGroundRescue(function()
+                        if not Config.ZigZagEnabled then
+                            Fluent:Notify({
+                                Title = "🚗 RESCATE MANUAL LISTO",
+                                Content = "A bordo del vehículo. Conducción manual activa.",
+                                Duration = 2.5
+                            })
+                        end
                     end)
-                end
+                end)
             end
         end
     end
 end)
 
--- BUCLE DE BLOATERS LIGERO
+-- BUCLE DE BLOATERS
 task.spawn(function()
     while true do
         task.wait(0.4)
@@ -665,11 +705,11 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 8. INTERFAZ FLUENT
+-- 7. INTERFAZ FLUENT
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | MASTER V14",
+    Title = "ZOMBIE HUB | MASTER V15",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(600, 520),
@@ -738,34 +778,26 @@ Tabs.Combat:AddSlider("StalkerBaseSlider", {
 
 Tabs.Combat:AddToggle("AutoRouteToggle", {
     Title = "🚗 Auto-Ruta Dinámica por Pistas",
-    Description = "Bordea la base sin cortar por el centro",
     Default = true,
     Callback = function(v) Config.AutoRouteToWave = v end
 })
 
--- PESTAÑA DEFENSA & ESQUIVE
-Tabs.Defense:AddSection("Retirada Táctica y Esquive In-Situ")
+-- PESTAÑA DEFENSA & RETIRADA
+Tabs.Defense:AddSection("Retirada Táctica por Daño (100% Terrestre)")
 
 Tabs.Defense:AddToggle("RetreatToggle", {
-    Title = "🛡️ Activar Esquive / Retirada por Baja Vida",
+    Title = "🛡️ Activar Retirada y Esquive por Baja Vida",
     Default = true,
     Callback = function(v) Config.RetreatEnabled = v end
 })
 
-Tabs.Defense:AddToggle("InSituToggle", {
-    Title = "📍 Modo In-Situ (Esquivar en Terreno Actual)",
-    Description = "Si baja del 20%, esquiva zombies y obstáculos a 200 studs sin importar dónde esté",
-    Default = true,
-    Callback = function(v) Config.InSituDefenseEnabled = v end
-})
-
 local DefenseStatusParagraph = Tabs.Defense:AddParagraph({
     Title = "Estado del Vehículo",
-    Content = "Monitoreando..."
+    Content = "Monitoreando salud..."
 })
 
 Tabs.Defense:AddSlider("LowHPSlider", {
-    Title = "Umbral de Peligro (% Vida)",
+    Title = "Umbral de Retirada (% Vida)",
     Default = 20,
     Min = 10,
     Max = 40,
@@ -780,6 +812,15 @@ Tabs.Defense:AddSlider("FullHPSlider", {
     Max = 95,
     Rounding = 0,
     Callback = function(v) Config.FullHealthThreshold = v / 100 end
+})
+
+Tabs.Defense:AddSlider("RetreatDistSlider", {
+    Title = "Distancia de Retroceso hacia Base (Studs)",
+    Default = 30,
+    Min = 15,
+    Max = 65,
+    Rounding = 0,
+    Callback = function(v) Config.RetreatDistance = v end
 })
 
 -- PESTAÑA RESCATES
@@ -798,18 +839,8 @@ Tabs.Rescue:AddToggle("CombatRescueToggle", {
     Callback = function(v) Config.CombatAutoRescue = v end
 })
 
-Tabs.Rescue:AddSlider("ScanDistSlider", {
-    Title = "Rango de Escaneo Peatonal (Studs)",
-    Description = "100 studs = Cero Lag garantizado",
-    Default = 100,
-    Min = 50,
-    Max = 200,
-    Rounding = 0,
-    Callback = function(v) Config.RescueZombieScanDist = v end
-})
-
 Tabs.Rescue:AddSlider("SprintSpeedSlider", {
-    Title = "Velocidad al Correr hacia el Auto",
+    Title = "Velocidad de Carrera al Auto",
     Default = 34,
     Min = 20,
     Max = 55,
@@ -828,7 +859,7 @@ local HordeStatusParagraph = Tabs.Horde:AddParagraph({
 })
 
 -- ==============================================================================
--- 9. WIDGETS FLOTANTES: MENU HUB + AUTO-PILOTO (ON / OFF)
+-- 8. WIDGETS FLOTANTES: MENU HUB + AUTO-PILOTO (ON / OFF)
 -- ==============================================================================
 
 local ScreenGui = Instance.new("ScreenGui")
@@ -836,7 +867,7 @@ ScreenGui.Name = "ZombieHubMasterFloat"
 ScreenGui.ResetOnSpawn = false
 if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
--- BOTÓN MENÚ
+-- BOTÓN MENÚ (Y = 0.72)
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0)
@@ -856,7 +887,7 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- WIDGET AUTO-PILOTO
+-- WIDGET AUTO-PILOTO (Y = 0.64)
 local AutoPilotBtn = Instance.new("TextButton")
 AutoPilotBtn.Size = UDim2.new(0, 48, 0, 48)
 AutoPilotBtn.Position = UDim2.new(0.04, 0, 0.64, 0)
@@ -886,7 +917,7 @@ local function toggleAutoPilot()
 
         Fluent:Notify({
             Title = "⏹ AUTO-PILOTO OFF",
-            Content = "Vehículo frenado y personaje desmontado.",
+            Content = "Vehículo detenido y personaje desmontado.",
             Duration = 2
         })
     else
@@ -902,7 +933,7 @@ local function toggleAutoPilot()
 end
 
 AutoPilotBtn.MouseButton1Click:Connect(toggleAutoPilot)
-Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (MONTAR / DESMONTAR)", Callback = toggleAutoPilot })
+Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (SUBIR / BAJAR)", Callback = toggleAutoPilot })
 
 -- CONTROLES DE TECLADO ('T', '9', '0', 'V')
 UserInputService.InputBegan:Connect(function(input, gpe)
@@ -946,15 +977,15 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     end
 end)
 
--- ACTUALIZACIÓN DE INTERFAZ
+-- ACTUALIZACIÓN DE TEXTOS EN INTERFAZ
 task.spawn(function()
     while true do
         task.wait(0.5)
         DefenseStatusParagraph:SetDesc(string.format(
-            "Vida Vehículo: %.0f / %.0f (%.0f%%)\nAuto-Rescate Manual: %s\nModo Actual: %s",
-            DefenseState.CurrentHP, DefenseState.MaxHP, DefenseState.HPRatio * 100,
-            Config.ManualDriveAutoRescue and "🟢 ACTIVO" or "🔴 OFF",
-            DefenseState.IsRetreating and "🛡️ Evasión Activa" or (TransitState.Active and "🚗 Enrutando Pistas" or "⚔️ Combate Activo")
+            "Vida Vehículo: %.0f / %.0f (%.0f%%) [%s]\nRetirada Automática: %s\nModo Actual: %s",
+            DefenseState.CurrentHP, DefenseState.MaxHP, DefenseState.HPRatio * 100, DefenseState.Source,
+            Config.RetreatEnabled and "🟢 ACTIVA" or "🔴 OFF",
+            DefenseState.IsRetreating and "🛡️ Retirada (-30 studs)" or (TransitState.Active and "🚗 Enrutando Pistas" or "⚔️ " .. Config.AttackMode)
         ))
 
         HordeStatusParagraph:SetDesc(string.format(
@@ -967,7 +998,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 10. MOTOR CINÉTICO ZERO-LAG (HEARTBEAT)
+-- 9. MOTOR CINÉTICO ZERO-LAG (HEARTBEAT)
 -- ==============================================================================
 
 local side = 1
@@ -982,7 +1013,7 @@ RunService.Heartbeat:Connect(function()
     if not root or not hum or hum.Health <= 0 then return end
     if not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat") then return end
 
-    -- FASE A: ENRUTAMIENTO DINÁMICO POR PISTAS
+    -- FASE A: TRANSICIÓN DINÁMICA POR PISTAS
     if TransitState.Active then
         local wp = TransitState.Waypoints[TransitState.Index]
         if wp then
@@ -1011,7 +1042,7 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- FASE B: COMBATE / STALKER / TORBELLINO / ESQUIVE
+    -- FASE B: COMBATE / STALKER / TORBELLINO / RETIRADA
     local targetPos = nil
     local targetSize = Vector3.new(60, 10, 60)
 
@@ -1031,15 +1062,12 @@ RunService.Heartbeat:Connect(function()
         local roadLen = toRoad.Magnitude > 0 and toRoad.Unit or Vector3.new(0, 0, 1)
         local roadWid = Vector3.new(-roadLen.Z, 0, roadLen.X)
 
-        -- 1. ESQUIVE IN-SITU Y RETIRADA POR BAJA VIDA
+        -- 1. RETIRADA TÁCTICA ACTIVA (VIDA <= 20%)
         if DefenseState.IsRetreating then
             speed = Config.RetreatSpeed
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
             local anchor = targetPos - (roadLen * (hLen + Config.RetreatDistance))
-            local evadeOsc = roadWid * (math.sin(tick() * 4.0) * d)
-
-            -- Sumar el vector de evasión local de 200 studs (obstáculos + zombies)
-            destination = anchor + evadeOsc + LocalEvasionVector
+            destination = anchor + (roadWid * (math.sin(tick() * 4.0) * d))
 
         -- 2. MODO STALKER (CON CLUSTER DE HORDAS RESTABLECIDO)
         elseif Config.AttackMode == "Stalker" then
@@ -1064,12 +1092,11 @@ RunService.Heartbeat:Connect(function()
 
             local tDist = (stalkerDir == 1) and reachAway or -reachBase
             local weaveWave = math.sin(tick() * 5.5) * d
-            -- Fusión del barrido con el centro de masa de la horda original
             local totalLateral = math.clamp(weaveWave + CachedHordeClusterOffset, -d, d)
 
             destination = targetPos + (roadLen * tDist) + (roadWid * totalLateral)
 
-        -- 3. NUEVO MODO: TORBELLINO (BARRIDO SINUSOIDAL PURO DE ALTA FRECUENCIA)
+        -- 3. MODO TORBELLINO (SINUSOIDAL PURA)
         elseif Config.AttackMode == "Torbellino" then
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
             local reachAway = hLen + Config.StalkerFarOvershoot
@@ -1083,21 +1110,10 @@ RunService.Heartbeat:Connect(function()
             end
 
             local tDist = (stalkerDir == 1) and reachAway or -reachBase
-            -- Oscilación pura sin tracking de hordas
-            local waveTorbellino = math.sin(tick() * 7.5) * d
-
-            destination = targetPos + (roadLen * tDist) + (roadWid * waveTorbellino)
-
-        -- 4. ZIGZAG CLÁSICO
-        elseif Config.AttackMode == "Zigzag Clásico" then
-            if tick() - lastSwitch >= Config.SwitchInterval then
-                side = -side
-                lastSwitch = tick()
-            end
-            destination = targetPos + (roadWid * (side * d))
+            destination = targetPos + (roadLen * tDist) + (roadWid * (math.sin(tick() * 7.5) * d))
         end
 
-        -- EVASIÓN DE BLOATERS RÁPIDA
+        -- EVASIÓN DE BLOATERS
         if Config.EvadeBloaters and #CachedBloaterDangers > 0 then
             for _, bPos in ipairs(CachedBloaterDangers) do
                 if (root.Position - bPos).Magnitude <= Config.BloaterDangerDist then
@@ -1118,8 +1134,8 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB MASTER V14 LISTO",
-    Content = "Stalker Cluster + Torbellino + Rescate Manual + Esquive In-Situ activos.",
+    Title = "ZOMBIE HUB MASTER V15 LISTO",
+    Content = "Radar híbrido unificado, salud V11 restaurada y ruteo perimetral activos.",
     Duration = 4
 })
 
