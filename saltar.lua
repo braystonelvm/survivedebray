@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ZOMBIE HUB MASTER V15: RADAR HÍBRIDO + SALUD RESTAURADA + RUTEO PERIMETRAL
+-- ZOMBIE HUB MASTER V15.2: RADAR HÍBRIDO + SALUD RESTAURADA + RUTEO PERIMETRAL
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -48,16 +48,16 @@ local Config = {
     StalkerBaseOvershoot = 5.0,    -- 5 studs hacia la base
     StalkerFarOvershoot = 25.0,    -- 25 studs hacia la horda
 
-    -- RETIRADA TÁCTICA Y PREVENCIÓN DEL VEHÍCULO
+    -- RETIRADA TÁCTICA: MÍNIMO 30% Y MÁXIMO 95%
     RetreatEnabled = true,
-    LowHealthThreshold = 0.20,     -- 20% activa retirada
-    FullHealthThreshold = 0.70,    -- 70% reanuda ataque
+    LowHealthThreshold = 0.30,     -- 30% activa retirada
+    FullHealthThreshold = 0.95,    -- 95% reanuda ataque
     RetreatDistance = 30.0,        -- Retrocede 30 studs hacia base
     RetreatSpeed = 110,
 
     -- RESCATES PEATONALES
-    CombatAutoRescue = true,       -- Rescate en combate automático
-    ManualDriveAutoRescue = true,  -- Rescate independiente si conduces manual
+    CombatAutoRescue = true,       -- Rescate en combate automático (ON)
+    ManualDriveAutoRescue = false, -- Conducción manual (OFF por defecto, lo activas tú)
     SprintSpeed = 34,
     BunnyHop = true,
     RescueZombieScanDist = 100,    -- Filtro de 100 studs (Cero Lag)
@@ -89,6 +89,13 @@ local TransitState = {
     Index = 1,
     TargetSector = "SUR"
 }
+
+-- ==============================================================================
+-- CURSOR DEL MOUSE SIEMPRE VISIBLE (NUNCA SE OCULTA AL CONDUCIR)
+-- ==============================================================================
+RunService.RenderStepped:Connect(function()
+    UserInputService.MouseIconEnabled = true
+end)
 
 -- ==============================================================================
 -- 1. DETECCIÓN ROBUSTA DE SALUD (ORIGINAL RESTAURADA)
@@ -462,7 +469,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 5. RESCATES PEATONALES Y DESMONTE LIMPIO (FILTRADO A 100 STUDS)
+-- 5. RESCATES PEATONALES Y FRENADO
 -- ==============================================================================
 
 local function applyBrake(duration)
@@ -479,19 +486,6 @@ local function applyBrake(duration)
             RunService.Heartbeat:Wait()
         end
     end)
-end
-
-local function forceDismountVehicle()
-    local _, root, hum = getCharacterParts()
-    if hum and hum.SeatPart then
-        hum.Sit = false
-        hum:ChangeState(Enum.HumanoidStateType.Jumping)
-        task.wait(0.05)
-        if root then
-            root.CFrame = root.CFrame * CFrame.new(6.0, 1.2, 0)
-            root.AssemblyLinearVelocity = Vector3.zero
-        end
-    end
 end
 
 local function locateTargetCar()
@@ -605,7 +599,7 @@ local function executeGroundRescue(onBoardCallback)
 end
 
 -- ==============================================================================
--- 6. GUARDIÁN DE SALUD Y DETECTOR DE RESCATE DUAL
+-- 6. GUARDIÁN DE SALUD (RETIRADA AL 30%, REANUDACIÓN AL 95%)
 -- ==============================================================================
 
 task.spawn(function()
@@ -632,7 +626,7 @@ task.spawn(function()
                     DefenseState.IsRetreating = false
                     Fluent:Notify({
                         Title = "⚔️ SALUD RECUPERADA",
-                        Content = "Vida al 70%. Reanudando combate normal.",
+                        Content = "Vida al 95%. Reanudando combate normal.",
                         Duration = 2.5
                     })
                 end
@@ -642,7 +636,6 @@ task.spawn(function()
         else
             DefenseState.IsRetreating = false
 
-            -- RESCATE DUAL: EN COMBATE AUTOMÁTICO O CONDUCCIÓN MANUAL
             local shouldRescue = false
             local _, _, hum = getCharacterParts()
 
@@ -709,7 +702,7 @@ end)
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | MASTER V15",
+    Title = "ZOMBIE HUB | MASTER V15.2",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(600, 520),
@@ -798,18 +791,18 @@ local DefenseStatusParagraph = Tabs.Defense:AddParagraph({
 
 Tabs.Defense:AddSlider("LowHPSlider", {
     Title = "Umbral de Retirada (% Vida)",
-    Default = 20,
+    Default = 30, -- 30% por defecto
     Min = 10,
-    Max = 40,
+    Max = 50,
     Rounding = 0,
     Callback = function(v) Config.LowHealthThreshold = v / 100 end
 })
 
 Tabs.Defense:AddSlider("FullHPSlider", {
     Title = "Umbral de Reanudación (% Vida)",
-    Default = 70,
+    Default = 95, -- 95% por defecto
     Min = 50,
-    Max = 95,
+    Max = 100,
     Rounding = 0,
     Callback = function(v) Config.FullHealthThreshold = v / 100 end
 })
@@ -828,8 +821,8 @@ Tabs.Rescue:AddSection("Sistemas de Auto-Rescate Terrestre")
 
 Tabs.Rescue:AddToggle("ManualRescueToggle", {
     Title = "🚗 Auto-Rescate en Conducción MANUAL",
-    Description = "Si estás manejando tú mismo y te expulsan, corre, salta, repara y se monta solo",
-    Default = true,
+    Description = "Te rescata si manejas tú mismo y te expulsan",
+    Default = false, -- Desactivado por defecto hasta que lo enciendas
     Callback = function(v) Config.ManualDriveAutoRescue = v end
 })
 
@@ -859,7 +852,7 @@ local HordeStatusParagraph = Tabs.Horde:AddParagraph({
 })
 
 -- ==============================================================================
--- 8. WIDGETS FLOTANTES: MENU HUB + AUTO-PILOTO (ON / OFF)
+-- 8. WIDGETS FLOTANTES: MENU HUB + AUTO-PILOTO (ON / OFF SIN BOTAR DEL AUTO)
 -- ==============================================================================
 
 local ScreenGui = Instance.new("ScreenGui")
@@ -867,7 +860,7 @@ ScreenGui.Name = "ZombieHubMasterFloat"
 ScreenGui.ResetOnSpawn = false
 if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
--- BOTÓN MENÚ (Y = 0.72)
+-- BOTÓN MENÚ
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0)
@@ -887,7 +880,7 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- WIDGET AUTO-PILOTO (Y = 0.64)
+-- WIDGET AUTO-PILOTO
 local AutoPilotBtn = Instance.new("TextButton")
 AutoPilotBtn.Size = UDim2.new(0, 48, 0, 48)
 AutoPilotBtn.Position = UDim2.new(0.04, 0, 0.64, 0)
@@ -906,18 +899,18 @@ AutoPilotCorner.Parent = AutoPilotBtn
 
 local function toggleAutoPilot()
     if Config.ZigZagEnabled then
+        -- AL APAGAR: FRENA PERO NO EXPULSA AL PERSONAJE (TE QUEDAS SENTADO)
         Config.ZigZagEnabled = false
         pcall(function() ZigZagToggleInstance:SetValue(false) end)
         TransitState.Active = false
         applyBrake(1.0)
-        forceDismountVehicle()
 
         AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
         AutoPilotBtn.Text = "⚡\nOFF"
 
         Fluent:Notify({
             Title = "⏹ AUTO-PILOTO OFF",
-            Content = "Vehículo detenido y personaje desmontado.",
+            Content = "Auto-movimiento apagado y frenado. Sigues sentado.",
             Duration = 2
         })
     else
@@ -933,7 +926,7 @@ local function toggleAutoPilot()
 end
 
 AutoPilotBtn.MouseButton1Click:Connect(toggleAutoPilot)
-Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (SUBIR / BAJAR)", Callback = toggleAutoPilot })
+Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (ON / OFF)", Callback = toggleAutoPilot })
 
 -- CONTROLES DE TECLADO ('T', '9', '0', 'V')
 UserInputService.InputBegan:Connect(function(input, gpe)
@@ -998,7 +991,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 9. MOTOR CINÉTICO ZERO-LAG (HEARTBEAT)
+-- 9. MOTOR CINÉTICO ZERO-LAG
 -- ==============================================================================
 
 local side = 1
@@ -1062,7 +1055,7 @@ RunService.Heartbeat:Connect(function()
         local roadLen = toRoad.Magnitude > 0 and toRoad.Unit or Vector3.new(0, 0, 1)
         local roadWid = Vector3.new(-roadLen.Z, 0, roadLen.X)
 
-        -- 1. RETIRADA TÁCTICA ACTIVA (VIDA <= 20%)
+        -- 1. RETIRADA TÁCTICA ACTIVA (VIDA <= 30%, HASTA 95%)
         if DefenseState.IsRetreating then
             speed = Config.RetreatSpeed
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
@@ -1134,8 +1127,8 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB MASTER V15 LISTO",
-    Content = "Radar híbrido unificado, salud V11 restaurada y ruteo perimetral activos.",
+    Title = "ZOMBIE HUB MASTER V15.2 LISTO",
+    Content = "Umbrales 30%/95% calibrados. Expulsión en OFF desactivada y cursor siempre visible.",
     Duration = 4
 })
 
