@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ZOMBIE HUB MASTER V11: RADAR INSTANTÁNEO + RUTA PERIMETRAL + AUTO-STRAIGHTROAD
+-- ZOMBIE HUB MASTER V13: ZERO-LAG ENGINE + RUTEO DINÁMICO + WIDGET AUTO-PILOT
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -21,19 +21,16 @@ local SECTOR_ROUTES = {
     OESTE = { Gate = Vector3.new(-120.0, -1.9, 0.0), Combat = Vector3.new(-180.0, 14.5, 0.0) }
 }
 
--- PUNTOS DE TRÁNSITO PARA BORDEAR LA BASE (TSECTION & CORNERROADS)
-local P_GATES = {
-    NORTE = Vector3.new(0, -1.9, 120.0),
-    SUR   = Vector3.new(0, -1.7, -120.0),
-    ESTE  = Vector3.new(120.0, -1.9, 0.0),
-    OESTE = Vector3.new(-120.0, -1.9, 0.0)
-}
-
-local P_CORNERS = {
-    N_E = Vector3.new(115.0, -1.9, 115.0),
-    N_W = Vector3.new(-115.0, -1.9, 115.0),
-    S_E = Vector3.new(115.0, -1.7, -115.0),
-    S_W = Vector3.new(-115.0, -1.7, -115.0)
+-- RED DE PISTAS PERIMETRALES (T-SECTIONS Y CORNERS)
+local PERIMETER_NODES = {
+    { Name = "T_NORTE", Pos = Vector3.new(0, -1.9, 120.0),   Sector = "NORTE" },
+    { Name = "C_NE",    Pos = Vector3.new(115.0, -1.9, 115.0), Sector = nil },
+    { Name = "T_ESTE",  Pos = Vector3.new(120.0, -1.9, 0.0),    Sector = "ESTE" },
+    { Name = "C_SE",    Pos = Vector3.new(115.0, -1.7, -115.0),Sector = nil },
+    { Name = "T_SUR",   Pos = Vector3.new(0, -1.7, -120.0),  Sector = "SUR" },
+    { Name = "C_SW",    Pos = Vector3.new(-115.0, -1.7, -115.0),Sector = nil },
+    { Name = "T_OESTE", Pos = Vector3.new(-120.0, -1.9, 0.0),   Sector = "OESTE" },
+    { Name = "C_NW",    Pos = Vector3.new(-115.0, -1.9, 115.0), Sector = nil }
 }
 
 local Config = {
@@ -41,23 +38,23 @@ local Config = {
     AttackMode = "Stalker",
     SwitchInterval = 0.5,
     LateralDist = 25,
-    MoveSpeed = 150,              -- Velocidad por defecto en 150
+    MoveSpeed = 150,              -- 150 studs/s por defecto
     EvadeBloaters = true,
     BloaterDangerDist = 30,
-    AutoRouteToWave = true,       -- Auto-ruta activa con radar instantáneo
+    AutoRouteToWave = true,
 
-    -- VALORES DE EMBESTIDA STALKER
+    -- LÍMITES STALKER
     StalkerBaseOvershoot = 5.0,    -- 5 studs hacia la base
     StalkerFarOvershoot = 25.0,    -- 25 studs hacia la horda
 
-    -- RETIRADA TÁCTICA POR DAÑO (100% TERRESTRE)
+    -- RETIRADA TÁCTICA TERRESTRE
     RetreatEnabled = true,
     LowHealthThreshold = 0.20,     -- 20% activa retirada
     FullHealthThreshold = 0.70,    -- 70% reanuda combate
-    RetreatDistance = 30.0,        -- Distancia de retroceso hacia base
+    RetreatDistance = 30.0,        -- 30 studs de retroceso
     RetreatSpeed = 110,
 
-    -- RESCATE TERRESTRE DE CONTINGENCIA
+    -- RESCATE PEATONAL
     AutoRemountEnabled = true,
     SprintSpeed = 34,
     BunnyHop = true,
@@ -69,6 +66,8 @@ local TargetHighlight = nil
 local ZigZagToggleInstance = nil
 local CurrentActiveSector = "NORTE"
 
+-- CACHÉS LIGERAS PARA EVITAR CONSUMO DE CPU
+local CachedCombatRoads = {} -- [Sector] = Instance
 local CachedBloaterDangers = {}
 local CachedHordeClusterOffset = 0
 local LastDrivenVehicle = nil
@@ -78,11 +77,9 @@ local DefenseState = {
     IsRetreating = false,
     CurrentHP = 2500,
     MaxHP = 2500,
-    HPRatio = 1.0,
-    Source = "Desconocido"
+    HPRatio = 1.0
 }
 
--- ESTADO DE TRÁNSITO PERIMETRAL ENTRE ENTRADAS
 local TransitState = {
     Active = false,
     Waypoints = {},
@@ -91,7 +88,7 @@ local TransitState = {
 }
 
 -- ==============================================================================
--- 1. DETECCIÓN ROBUSTA DE SALUD Y PARTES
+-- 1. DETECCIÓN LIGERA DE VEHÍCULO Y SALUD (CERO LAG)
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -101,160 +98,42 @@ local function getCharacterParts()
     return char, root, hum
 end
 
-local function getVehicleRootModel(seat)
-    if not seat then return nil end
-    local current = seat
-    local topModel = seat:FindFirstAncestorOfClass("Model")
-    while current and current ~= workspace do
-        if current:IsA("Model") then
-            topModel = current
-            local pName = current.Parent and current.Parent.Name:lower() or ""
-            if current.Parent == workspace or pName == "structures" or pName == "vehicles" or pName == "map" then
-                return current
-            end
-        end
-        current = current.Parent
-    end
-    return topModel
-end
-
 local function getCurrentVehicle()
     local _, _, hum = getCharacterParts()
     if hum and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
         local seat = hum.SeatPart
-        local model = getVehicleRootModel(seat)
-        if model then LastDrivenVehicle = model end
+        local model = seat:FindFirstAncestorOfClass("Model")
+        if model and model.Parent ~= workspace then
+            local higher = model:FindFirstAncestorOfClass("Model")
+            if higher then model = higher end
+        end
+        LastDrivenVehicle = model
         return model, seat
     end
     return nil, nil
 end
 
+-- Consulta directa en memoria sin escanear descendientes
 local function getTruckHealth(truck)
-    if not truck then return 2500, 2500, 1.0, "Sin auto" end
-    local foundHP, foundMax = nil, nil
-    local src = "Desconocido"
+    if not truck then return 2500, 2500, 1.0 end
 
-    local config = truck:FindFirstChild("Configuration", true) or truck:FindFirstChild("Config", true)
-    if config then
-        local h = config:GetAttribute("Health") or config:GetAttribute("HP")
-        local mh = config:GetAttribute("MaxHealth") or config:GetAttribute("MaxHP")
-        if h and type(h) == "number" then foundHP = h; src = "Config.Attr" end
-        if mh and type(mh) == "number" then foundMax = mh end
+    local cfg = truck:FindFirstChild("Configuration")
+    local hp = cfg and cfg:GetAttribute("Health") or truck:GetAttribute("Health")
+    local maxHp = cfg and cfg:GetAttribute("MaxHealth") or truck:GetAttribute("MaxHealth") or 2500
 
-        if not foundHP then
-            local vH = config:FindFirstChild("Health") or config:FindFirstChild("HP")
-            if vH and vH:IsA("ValueBase") then foundHP = vH.Value; src = "Config.Value" end
-            local vM = config:FindFirstChild("MaxHealth") or config:FindFirstChild("MaxHP")
-            if vM and vM:IsA("ValueBase") then foundMax = vM.Value end
-        end
+    if not hp then
+        local v = cfg and cfg:FindFirstChild("Health")
+        if v and v:IsA("ValueBase") then hp = v.Value end
     end
 
-    if not foundHP then
-        for _, obj in ipairs({truck, truck.PrimaryPart}) do
-            if obj then
-                for _, attr in ipairs({"Health", "HP", "Durability", "Vida"}) do
-                    local val = obj:GetAttribute(attr)
-                    if val and type(val) == "number" then
-                        foundHP = val
-                        foundMax = obj:GetAttribute("Max" .. attr) or 2500
-                        src = "Model.Attr"
-                        break
-                    end
-                end
-            end
-            if foundHP then break end
-        end
-    end
-
-    if not foundHP then
-        for _, desc in ipairs(truck:GetDescendants()) do
-            if desc:IsA("NumberValue") or desc:IsA("IntValue") then
-                local n = desc.Name:lower()
-                if n == "health" or n == "hp" or n == "durability" then
-                    foundHP = desc.Value
-                    src = "Descendant.Value"
-                    break
-                end
-            end
-        end
-    end
-
-    foundMax = foundMax or 2500
-    foundHP = foundHP or foundMax
-    local ratio = (foundMax > 0) and (foundHP / foundMax) or 1.0
-    return foundHP, foundMax, ratio, src
+    hp = hp or maxHp
+    local ratio = (maxHp > 0) and (hp / maxHp) or 1.0
+    return hp, maxHp, ratio
 end
 
 -- ==============================================================================
--- 2. RUTAS PERIMETRALES Y SELECCIÓN DEL STRAIGHTROAD FRONTAL
+-- 2. CACHÉ INICIAL DE PISTAS FRONTALES (ESCANEO ÚNICO AL ENTRAR)
 -- ==============================================================================
-
--- Genera la lista de waypoints para bordear la base sin atravesarla
-local function getPerimeterRoute(fromSec, toSec)
-    if fromSec == toSec then
-        return { SECTOR_ROUTES[toSec].Combat }
-    end
-
-    local waypoints = {}
-    table.insert(waypoints, P_GATES[fromSec])
-
-    if fromSec == "NORTE" then
-        if toSec == "ESTE" then
-            table.insert(waypoints, P_CORNERS.N_E)
-            table.insert(waypoints, P_GATES.ESTE)
-        elseif toSec == "OESTE" then
-            table.insert(waypoints, P_CORNERS.N_W)
-            table.insert(waypoints, P_GATES.OESTE)
-        elseif toSec == "SUR" then
-            table.insert(waypoints, P_CORNERS.N_E)
-            table.insert(waypoints, P_GATES.ESTE)
-            table.insert(waypoints, P_CORNERS.S_E)
-            table.insert(waypoints, P_GATES.SUR)
-        end
-    elseif fromSec == "SUR" then
-        if toSec == "ESTE" then
-            table.insert(waypoints, P_CORNERS.S_E)
-            table.insert(waypoints, P_GATES.ESTE)
-        elseif toSec == "OESTE" then
-            table.insert(waypoints, P_CORNERS.S_W)
-            table.insert(waypoints, P_GATES.OESTE)
-        elseif toSec == "NORTE" then
-            table.insert(waypoints, P_CORNERS.S_E)
-            table.insert(waypoints, P_GATES.ESTE)
-            table.insert(waypoints, P_CORNERS.N_E)
-            table.insert(waypoints, P_GATES.NORTE)
-        end
-    elseif fromSec == "ESTE" then
-        if toSec == "NORTE" then
-            table.insert(waypoints, P_CORNERS.N_E)
-            table.insert(waypoints, P_GATES.NORTE)
-        elseif toSec == "SUR" then
-            table.insert(waypoints, P_CORNERS.S_E)
-            table.insert(waypoints, P_GATES.SUR)
-        elseif toSec == "OESTE" then
-            table.insert(waypoints, P_CORNERS.N_E)
-            table.insert(waypoints, P_GATES.NORTE)
-            table.insert(waypoints, P_CORNERS.N_W)
-            table.insert(waypoints, P_GATES.OESTE)
-        end
-    elseif fromSec == "OESTE" then
-        if toSec == "NORTE" then
-            table.insert(waypoints, P_CORNERS.N_W)
-            table.insert(waypoints, P_GATES.NORTE)
-        elseif toSec == "SUR" then
-            table.insert(waypoints, P_CORNERS.S_W)
-            table.insert(waypoints, P_GATES.SUR)
-        elseif toSec == "ESTE" then
-            table.insert(waypoints, P_CORNERS.N_W)
-            table.insert(waypoints, P_GATES.NORTE)
-            table.insert(waypoints, P_CORNERS.N_E)
-            table.insert(waypoints, P_GATES.ESTE)
-        end
-    end
-
-    table.insert(waypoints, SECTOR_ROUTES[toSec].Combat)
-    return waypoints
-end
 
 local function clearHighlight()
     if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
@@ -273,40 +152,90 @@ local function applyHighlight(obj)
     end
 end
 
--- Encuentra exclusivamente el StraightRoad frontal de la entrada activa
-local function findCombatStraightRoad(sectorName)
-    local route = SECTOR_ROUTES[sectorName]
-    if not route then return nil end
-    local combatPos = route.Combat
-    local bestObj = nil
-    local shortestDist = 80
+-- Mapea las carreteras una sola vez en segundo plano sin congelar el juego
+task.spawn(function()
+    task.wait(1.0)
+    local mapFolder = workspace:FindFirstChild("Map") or workspace:FindFirstChild("Tiles") or workspace
 
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("Model") or obj:IsA("BasePart") then
-            local n = obj.Name:lower()
-            if (n:find("straight") or n:find("road") or n:find("pista")) then
-                -- Descarta esquinas y uniones T
-                if not n:find("corner") and not n:find("tsection") and not n:find("section") then
-                    local pos = obj:IsA("Model") and select(1, obj:GetBoundingBox()).Position or obj.Position
-                    local dist = (pos - combatPos).Magnitude
-                    -- Solo selecciona el que esté en el eje frontal (>140 studs del centro)
-                    if dist < shortestDist and (pos - BaseCenter).Magnitude >= 140 then
-                        shortestDist = dist
-                        bestObj = obj
+    for secName, routeData in pairs(SECTOR_ROUTES) do
+        local cPos = routeData.Combat
+        local best, shortest = nil, 90
+
+        for _, obj in ipairs(mapFolder:GetDescendants()) do
+            if obj:IsA("BasePart") or obj:IsA("Model") then
+                local n = obj.Name:lower()
+                if (n:find("straight") or n:find("road") or n:find("pista")) and not n:find("corner") and not n:find("tsection") and not n:find("section") then
+                    local p = obj:IsA("Model") and select(1, obj:GetBoundingBox()).Position or obj.Position
+                    local dist = (p - cPos).Magnitude
+                    if dist < shortest and (p - BaseCenter).Magnitude >= 135 then
+                        shortest = dist
+                        best = obj
                     end
                 end
             end
         end
+        CachedCombatRoads[secName] = best
     end
-    return bestObj
+end)
+
+local function getCombatStraightRoad(secName)
+    if CachedCombatRoads[secName] and CachedCombatRoads[secName].Parent then
+        return CachedCombatRoads[secName]
+    end
+    return nil
 end
 
--- Inicia la transición por el perímetro
-local function startSectorTransition(newSector)
-    if TransitState.Active and TransitState.TargetSector == newSector then return end
-    if CurrentActiveSector == newSector and not TransitState.Active then return end
+-- ==============================================================================
+-- 3. ENCAMINAMIENTO POR LA PISTA MÁS CERCANA (ANILLO PERIMETRAL)
+-- ==============================================================================
 
-    local wps = getPerimeterRoute(CurrentActiveSector, newSector)
+local function calculateDynamicRoadPath(currentPos, targetSector)
+    local targetGateIdx = 1
+    for idx, node in ipairs(PERIMETER_NODES) do
+        if node.Sector == targetSector then
+            targetGateIdx = idx
+            break
+        end
+    end
+
+    -- Nodo perimetral más próximo a la posición actual
+    local closestIdx = 1
+    local minDist = math.huge
+    for idx, node in ipairs(PERIMETER_NODES) do
+        local d = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(node.Pos.X, 0, node.Pos.Z)).Magnitude
+        if d < minDist then
+            minDist = d
+            closestIdx = idx
+        end
+    end
+
+    local wps = {}
+    table.insert(wps, PERIMETER_NODES[closestIdx].Pos)
+
+    if closestIdx ~= targetGateIdx then
+        local total = #PERIMETER_NODES
+        local fSteps = (targetGateIdx - closestIdx) % total
+        local bSteps = (closestIdx - targetGateIdx) % total
+        local dir = (fSteps <= bSteps) and 1 or -1
+        local cur = closestIdx
+
+        while cur ~= targetGateIdx do
+            cur = cur + dir
+            if cur > total then cur = 1 end
+            if cur < 1 then cur = total end
+            table.insert(wps, PERIMETER_NODES[cur].Pos)
+        end
+    end
+
+    table.insert(wps, SECTOR_ROUTES[targetSector].Combat)
+    return wps
+end
+
+local function startDynamicSectorTransition(newSector)
+    local _, root = getCharacterParts()
+    local carPos = root and root.Position or BaseCenter
+
+    local wps = calculateDynamicRoadPath(carPos, newSector)
     TransitState.Active = true
     TransitState.Waypoints = wps
     TransitState.Index = 1
@@ -315,14 +244,14 @@ local function startSectorTransition(newSector)
     clearHighlight()
 
     Fluent:Notify({
-        Title = "🚨 CAMBIO DE FRENTE: " .. newSector,
-        Content = string.format("Bordeando la base hacia la entrada del %s...", newSector),
-        Duration = 3.5
+        Title = "🚗 ENRUTANDO: " .. newSector,
+        Content = string.format("Tomando pista perimetral (%d tramos)...", #wps),
+        Duration = 3
     })
 end
 
 -- ==============================================================================
--- 3. PARSER DEL ATRIBUTO INCOMINGPOSITION (0ms LAG)
+-- 4. PARSER ULTRA-LIGERO DE INCOMINGPOSITION (0ms LAG)
 -- ==============================================================================
 
 local function parseSectorFromAttribute(val)
@@ -336,51 +265,61 @@ local function parseSectorFromAttribute(val)
         end
     end
 
-    if not vec then return "DESCONOCIDO", Vector3.zero end
-
-    local sector = "DESCONOCIDO"
-    -- POLOS CALIBRADOS (+Z = NORTE, -Z = SUR)
+    if not vec then return "DESCONOCIDO" end
+    -- +Z = NORTE, -Z = SUR
     if math.abs(vec.Z) > math.abs(vec.X) then
-        sector = (vec.Z > 0) and "NORTE" or "SUR"
+        return (vec.Z > 0) and "NORTE" or "SUR"
     else
-        sector = (vec.X > 0) and "ESTE" or "OESTE"
+        return (vec.X > 0) and "ESTE" or "OESTE"
     end
-
-    return sector, vec
 end
 
-local function onIncomingPositionChanged()
+workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(function()
     local rawVal = workspace:GetAttribute("IncomingPosition")
     if rawVal then
-        local sec, _ = parseSectorFromAttribute(rawVal)
+        local sec = parseSectorFromAttribute(rawVal)
         if sec ~= "DESCONOCIDO" and sec ~= CurrentActiveSector then
             if Config.AutoRouteToWave and Config.ZigZagEnabled then
-                startSectorTransition(sec)
+                startDynamicSectorTransition(sec)
             else
                 CurrentActiveSector = sec
             end
         end
     end
+end)
+
+-- ==============================================================================
+-- 5. RESCATE PEATONAL Y DESMONTE LIMPIO
+-- ==============================================================================
+
+local function applyBrake(duration)
+    duration = duration or 1.0
+    task.spawn(function()
+        local endTime = tick() + duration
+        while tick() < endTime do
+            local carModel, seat = getCurrentVehicle()
+            local primary = carModel and (carModel.PrimaryPart or seat)
+            if primary then
+                primary.AssemblyLinearVelocity = Vector3.new(0, primary.AssemblyLinearVelocity.Y, 0)
+                primary.AssemblyAngularVelocity = Vector3.zero
+            end
+            RunService.Heartbeat:Wait()
+        end
+    end)
 end
 
-workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(onIncomingPositionChanged)
-
--- ==============================================================================
--- 4. RESCATE TERRESTRE DE CONTINGENCIA (CORRER/SALTAR AL CAPÓ)
--- ==============================================================================
-
-local function getActiveRepairPrompt(carModel)
-    for _, prompt in ipairs(carModel:GetDescendants()) do
-        if prompt:IsA("ProximityPrompt") and prompt.Enabled then
-            local n = prompt.Name:lower()
-            local a = prompt.ActionText:lower()
-            local o = prompt.ObjectText:lower()
-            if n:find("repair") or a:find("repair") or a:find("repar") or o:find("repar") then
-                return prompt
-            end
+-- Baja al personaje y lo coloca seguro al costado
+local function forceDismountVehicle()
+    local _, root, hum = getCharacterParts()
+    if hum and hum.SeatPart then
+        hum.Sit = false
+        hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        task.wait(0.05)
+        if root then
+            root.CFrame = root.CFrame * CFrame.new(6.0, 1.2, 0)
+            root.AssemblyLinearVelocity = Vector3.zero
         end
     end
-    return nil
 end
 
 local function locateTargetCar()
@@ -413,11 +352,15 @@ local function locateTargetCar()
     return bestModel, bestSeat
 end
 
-local function executeGroundRescue()
+local function executeGroundRescue(onBoardCallback)
     if IsInContingency then return end
     local char, root, hum = getCharacterParts()
     if not root or not hum or hum.Health <= 0 then return end
-    if hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then return end
+
+    if hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
+        if onBoardCallback then onBoardCallback() end
+        return
+    end
 
     local carModel, seat = locateTargetCar()
     if not carModel or not seat then return end
@@ -425,40 +368,35 @@ local function executeGroundRescue()
     IsInContingency = true
     LastDrivenVehicle = carModel
 
-    local runTimeout = tick() + 9.0
+    local runTimeout = tick() + 8.0
     local lastJumpTime = 0
 
     while IsInContingency and tick() < runTimeout do
         RunService.Heartbeat:Wait()
-
         if not hum or hum.Health <= 0 then break end
         if hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then break end
 
         local hoodPos = (seat.CFrame * CFrame.new(0, 0, -6.5)).Position
         local diff = hoodPos - root.Position
-        local horizontalDiff = Vector3.new(diff.X, 0, diff.Z)
-        local distToHood = horizontalDiff.Magnitude
+        local horiz = Vector3.new(diff.X, 0, diff.Z)
+        local dist = horiz.Magnitude
 
-        if distToHood <= 6.5 then
-            local isDead = carModel:GetAttribute("Dead") == true
-            local repairPrompt = getActiveRepairPrompt(carModel)
-
-            if isDead or repairPrompt then
-                local repStart = tick()
-                while (carModel:GetAttribute("Dead") == true or repairPrompt) and tick() - repStart < 2.5 do
-                    repairPrompt = getActiveRepairPrompt(carModel)
-                    if repairPrompt and fireproximityprompt then
-                        pcall(function() fireproximityprompt(repairPrompt) end)
-                        pcall(function() fireproximityprompt(repairPrompt, 0) end)
-                    end
-                    task.wait(0.2)
+        if dist <= 6.5 then
+            -- Reparación si está muerto
+            if carModel:GetAttribute("Dead") == true then
+                local p = carModel:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if p and fireproximityprompt then
+                    pcall(function() fireproximityprompt(p) end)
+                    pcall(function() fireproximityprompt(p, 0) end)
                 end
+                task.wait(0.2)
             end
 
-            local sitPrompt = seat:FindFirstChild("SitPrompt") or seat:FindFirstChildOfClass("ProximityPrompt")
-            if sitPrompt and fireproximityprompt then
-                pcall(function() fireproximityprompt(sitPrompt) end)
-                pcall(function() fireproximityprompt(sitPrompt, 0) end)
+            -- Montaje inmediato
+            local sitP = seat:FindFirstChild("SitPrompt") or seat:FindFirstChildOfClass("ProximityPrompt")
+            if sitP and fireproximityprompt then
+                pcall(function() fireproximityprompt(sitP) end)
+                pcall(function() fireproximityprompt(sitP, 0) end)
             end
             hum:ChangeState(Enum.HumanoidStateType.Seated)
             pcall(function() seat:Sit(hum) end)
@@ -466,28 +404,9 @@ local function executeGroundRescue()
             break
         end
 
-        local avoidVector = Vector3.zero
-        local charFolder = workspace:FindFirstChild("Characters") or workspace
-
-        for _, ent in ipairs(charFolder:GetChildren()) do
-            if ent:IsA("Model") and ent ~= char and not Players:GetPlayerFromCharacter(ent) then
-                local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent:FindFirstChild("Torso") or ent.PrimaryPart
-                if eRoot then
-                    local eOffset = root.Position - eRoot.Position
-                    local eDist = eOffset.Magnitude
-                    if eDist <= 14.0 and eDist > 0.5 then
-                        avoidVector = avoidVector + (Vector3.new(eOffset.X, 0, eOffset.Z).Unit * (15.0 - eDist) * 1.8)
-                    end
-                end
-            end
-        end
-
-        local runDir = horizontalDiff.Unit
-        local totalMoveDir = (runDir + avoidVector).Unit
-        local sprintSpeed = Config.SprintSpeed
-
-        root.AssemblyLinearVelocity = Vector3.new(totalMoveDir.X * sprintSpeed, root.AssemblyLinearVelocity.Y, totalMoveDir.Z * sprintSpeed)
-        hum:MoveTo(root.Position + totalMoveDir * 10)
+        local runDir = horiz.Unit
+        root.AssemblyLinearVelocity = Vector3.new(runDir.X * Config.SprintSpeed, root.AssemblyLinearVelocity.Y, runDir.Z * Config.SprintSpeed)
+        hum:MoveTo(root.Position + runDir * 10)
 
         if Config.BunnyHop and tick() - lastJumpTime >= 0.35 then
             hum.Jump = true
@@ -496,38 +415,38 @@ local function executeGroundRescue()
     end
 
     IsInContingency = false
+    if onBoardCallback then onBoardCallback() end
 end
 
 -- ==============================================================================
--- 5. MONITOR DE SALUD DEL VEHÍCULO
+-- 6. GUARDIÁN DE SALUD (INTERVALO 0.35s SIN GASTO DE CPU)
 -- ==============================================================================
 
 task.spawn(function()
     while true do
-        task.wait(0.25)
+        task.wait(0.35)
         local truck = getCurrentVehicle()
 
         if truck then
-            local hp, maxHp, ratio, src = getTruckHealth(truck)
+            local hp, maxHp, ratio = getTruckHealth(truck)
             DefenseState.CurrentHP = hp
             DefenseState.MaxHP = maxHp
             DefenseState.HPRatio = ratio
-            DefenseState.Source = src
 
             if Config.RetreatEnabled then
                 if not DefenseState.IsRetreating and ratio <= Config.LowHealthThreshold then
                     DefenseState.IsRetreating = true
                     Fluent:Notify({
                         Title = "🛡️ RETIRADA TÁCTICA",
-                        Content = string.format("Vida al %.0f%%. Retrocediendo 30 studs a esquivar.", ratio * 100),
-                        Duration = 3
+                        Content = string.format("Vida al %.0f%%. Retrocediendo 30 studs.", ratio * 100),
+                        Duration = 2.5
                     })
                 elseif DefenseState.IsRetreating and ratio >= Config.FullHealthThreshold then
                     DefenseState.IsRetreating = false
                     Fluent:Notify({
                         Title = "⚔️ SALUD RECUPERADA",
-                        Content = string.format("Vida al %.0f%%. Reanudando embestida Stalker.", ratio * 100),
-                        Duration = 3
+                        Content = "Reanudando embestida Stalker al 100%.",
+                        Duration = 2.5
                     })
                 end
             else
@@ -545,130 +464,35 @@ task.spawn(function()
     end
 end)
 
--- ==============================================================================
--- 6. UTILIDADES DE COMBATE (FRENO, HIGHLIGHT, FILTROS)
--- ==============================================================================
-
-local function applyBrake(duration)
-    duration = duration or 1.0
-    task.spawn(function()
-        local endTime = tick() + duration
-        while tick() < endTime do
-            local carModel, seat = getCurrentVehicle()
-            local primary = carModel and (carModel.PrimaryPart or seat)
-            if primary then
-                primary.AssemblyLinearVelocity = Vector3.new(0, primary.AssemblyLinearVelocity.Y, 0)
-                primary.AssemblyAngularVelocity = Vector3.zero
-            end
-            RunService.Heartbeat:Wait()
-        end
-    end)
-end
-
-local function isValidZombie(entity)
-    if not entity or not entity:IsA("Model") or entity == lp.Character or Players:GetPlayerFromCharacter(entity) then
-        return false
-    end
-    local name = entity.Name:lower()
-    if name:find("dropped") or name:find("bag") or name:find("loot") or name:find("item") 
-       or name:find("crate") or name:find("debris") or name:find("corpse") or name:find("ragdoll") 
-       or name:find("car") or name:find("fence") or name:find("door") then
-        return false
-    end
-    local hum = entity:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-    local root = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-    return root ~= nil, root
-end
-
-local function getCompleteObject(target)
-    if not target or target == lp.Character or target:IsDescendantOf(lp.Character) then return nil end
-    local humModel = target:FindFirstAncestorOfClass("Model")
-    while humModel and not humModel:FindFirstChildOfClass("Humanoid") and humModel.Parent ~= workspace do
-        local higherModel = humModel.Parent:FindFirstAncestorOfClass("Model")
-        if higherModel then humModel = higherModel else break end
-    end
-    if humModel and humModel:FindFirstChildOfClass("Humanoid") then return humModel end
-
-    local current = target
-    local topModel = nil
-    while current and current ~= workspace do
-        if current:IsA("Model") then
-            topModel = current
-            local pName = current.Parent and current.Parent.Name:lower() or ""
-            if current.Parent == workspace or pName == "characters" or pName == "structures" or pName == "tiles" or pName == "map" or pName == "roads" then
-                return current
-            end
-        end
-        current = current.Parent
-    end
-    return topModel or target
-end
-
--- EVASIÓN DE BLOATERS
+-- BUCLE DE BLOATERS LIGERO (0.5s)
 task.spawn(function()
     while true do
-        task.wait(0.3)
+        task.wait(0.5)
         if Config.EvadeBloaters and not IsInContingency then
             local _, root = getCharacterParts()
             local myPos = root and root.Position or BaseCenter
-            local newDangers = {}
-            local charFolder = workspace:FindFirstChild("Characters") or workspace
+            local list = {}
+            local folder = workspace:FindFirstChild("Characters")
 
-            for _, entity in ipairs(charFolder:GetChildren()) do
-                if entity:IsA("Model") and entity ~= lp.Character then
-                    local name = entity.Name:lower()
-                    local variant = tostring(entity:GetAttribute("Variant") or ""):lower()
-                    local isBloater = name:find("bloat") or name:find("boom") or name:find("explod") or variant:find("bloat") or variant:find("boom")
-
-                    if isBloater then
-                        local eRoot = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
-                        if eRoot and (eRoot.Position - myPos).Magnitude <= 80 then
-                            local hum = entity:FindFirstChildOfClass("Humanoid")
-                            local isDowned = (hum and hum.Health <= 0) or entity:GetAttribute("Exploding") == true or entity:GetAttribute("Dead") == true
-                            if isDowned or (hum and hum.Health <= 50) then
-                                table.insert(newDangers, eRoot.Position)
+            if folder then
+                for _, ent in ipairs(folder:GetChildren()) do
+                    if ent:IsA("Model") and ent ~= lp.Character then
+                        local n = ent.Name:lower()
+                        if n:find("bloat") or n:find("boom") then
+                            local r = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+                            if r and (r.Position - myPos).Magnitude <= 75 then
+                                local h = ent:FindFirstChildOfClass("Humanoid")
+                                if (h and h.Health <= 50) or ent:GetAttribute("Dead") == true then
+                                    table.insert(list, r.Position)
+                                end
                             end
                         end
                     end
                 end
             end
-            CachedBloaterDangers = newDangers
+            CachedBloaterDangers = list
         else
             table.clear(CachedBloaterDangers)
-        end
-    end
-end)
-
--- RASTREO LATERAL DE HORDAS
-task.spawn(function()
-    while true do
-        task.wait(0.15)
-        if Config.ZigZagEnabled and Config.AttackMode == "Stalker" and CurrentTarget and not IsInContingency and not TransitState.Active then
-            local tPos = CurrentTarget:IsA("BasePart") and CurrentTarget.Position or (CurrentTarget:IsA("Model") and select(1, CurrentTarget:GetBoundingBox()).Position)
-            if tPos then
-                local radialVec = Vector3.new(tPos.X - BaseCenter.X, 0, tPos.Z - BaseCenter.Z)
-                local roadLengthDir = radialVec.Magnitude > 0 and radialVec.Unit or Vector3.new(0, 0, 1)
-                local roadWidthDir = Vector3.new(-roadLengthDir.Z, 0, roadLengthDir.X)
-
-                local charFolder = workspace:FindFirstChild("Characters") or workspace
-                local lateralSum, count = 0, 0
-
-                for _, entity in ipairs(charFolder:GetChildren()) do
-                    local valid, eRoot = isValidZombie(entity)
-                    if valid then
-                        local offset = eRoot.Position - tPos
-                        local distAlong = math.abs(offset:Dot(roadLengthDir))
-                        local distLateral = offset:Dot(roadWidthDir)
-
-                        if distAlong <= 55 and math.abs(distLateral) <= Config.LateralDist + 10 then
-                            lateralSum = lateralSum + distLateral
-                            count = count + 1
-                        end
-                    end
-                end
-                CachedHordeClusterOffset = count > 0 and math.clamp(lateralSum / count, -Config.LateralDist * 0.8, Config.LateralDist * 0.8) or 0
-            end
         end
     end
 end)
@@ -678,7 +502,7 @@ end)
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | MASTER V11",
+    Title = "ZOMBIE HUB | MASTER V13",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(600, 520),
@@ -694,20 +518,12 @@ local Tabs = {
     Horde = Window:AddTab({ Title = "Radar", Icon = "radar" })
 }
 
--- PESTAÑA COMBATE
-Tabs.Combat:AddSection("Controles de Embestida (Stalker)")
+Tabs.Combat:AddSection("Controles de Embestida (Stalker 150)")
 
 ZigZagToggleInstance = Tabs.Combat:AddToggle("ZigZagToggle", {
     Title = "Activar Movimiento Automático",
     Default = false,
     Callback = function(v) Config.ZigZagEnabled = v end
-})
-
-Tabs.Combat:AddDropdown("ModeDropdown", {
-    Title = "Modo de Ataque",
-    Values = { "Stalker", "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico" },
-    Default = "Stalker",
-    Callback = function(v) Config.AttackMode = v end
 })
 
 Tabs.Combat:AddSlider("SpeedSlider", {
@@ -721,7 +537,6 @@ Tabs.Combat:AddSlider("SpeedSlider", {
 
 Tabs.Combat:AddSlider("DistSlider", {
     Title = "Amplitud Lateral Zigzag (Studs)",
-    Description = "Ancho del barrido sobre la calzada",
     Default = 25,
     Min = 2,
     Max = 70,
@@ -731,7 +546,6 @@ Tabs.Combat:AddSlider("DistSlider", {
 
 Tabs.Combat:AddSlider("StalkerFarSlider", {
     Title = "Rebase Hacia Afuera / Horda (Studs)",
-    Description = "Distancia extra hacia el frente de ataque",
     Default = 25,
     Min = 0,
     Max = 60,
@@ -741,7 +555,6 @@ Tabs.Combat:AddSlider("StalkerFarSlider", {
 
 Tabs.Combat:AddSlider("StalkerBaseSlider", {
     Title = "Rebase Hacia la Base (Studs)",
-    Description = "Distancia extra que retrocede hacia la puerta",
     Default = 5,
     Min = 0,
     Max = 40,
@@ -750,31 +563,22 @@ Tabs.Combat:AddSlider("StalkerBaseSlider", {
 })
 
 Tabs.Combat:AddToggle("AutoRouteToggle", {
-    Title = "🚗 Auto-Ruta con Radar Instantáneo",
-    Description = "Bordea la base y cambia de pista al instante",
+    Title = "🚗 Auto-Ruta Dinámica por Pistas",
     Default = true,
     Callback = function(v) Config.AutoRouteToWave = v end
 })
 
-Tabs.Combat:AddToggle("BloaterEvadeToggle", {
-    Title = "🛡️ Evasión de Bloaters",
-    Default = true,
-    Callback = function(v) Config.EvadeBloaters = v end
-})
-
--- PESTAÑA DEFENSA & RETIRADA
-Tabs.Defense:AddSection("Retirada Táctica por Daño (100% Terrestre)")
+Tabs.Defense:AddSection("Retirada Táctica por Daño")
 
 Tabs.Defense:AddToggle("RetreatToggle", {
-    Title = "🛡️ Activar Retirada y Esquive por Baja Vida",
-    Description = "Retrocede hacia la base y esquiva zombies mientras se cura",
+    Title = "🛡️ Activar Retirada y Esquive (Baja Vida)",
     Default = true,
     Callback = function(v) Config.RetreatEnabled = v end
 })
 
 local DefenseStatusParagraph = Tabs.Defense:AddParagraph({
     Title = "Estado del Vehículo",
-    Content = "Leyendo datos de salud..."
+    Content = "Monitoreando salud..."
 })
 
 Tabs.Defense:AddSlider("LowHPSlider", {
@@ -787,7 +591,7 @@ Tabs.Defense:AddSlider("LowHPSlider", {
 })
 
 Tabs.Defense:AddSlider("FullHPSlider", {
-    Title = "Umbral de Reanudación de Ataque (% Vida)",
+    Title = "Umbral de Reanudación (% Vida)",
     Default = 70,
     Min = 50,
     Max = 95,
@@ -795,33 +599,16 @@ Tabs.Defense:AddSlider("FullHPSlider", {
     Callback = function(v) Config.FullHealthThreshold = v / 100 end
 })
 
-Tabs.Defense:AddSlider("RetreatDistSlider", {
-    Title = "Distancia de Retroceso hacia Base (Studs)",
-    Default = 30,
-    Min = 15,
-    Max = 65,
-    Rounding = 0,
-    Callback = function(v) Config.RetreatDistance = v end
-})
-
--- PESTAÑA RESCATE
 Tabs.Rescue:AddSection("Rescate Terrestre de Personaje")
 
 Tabs.Rescue:AddToggle("AutoRemountToggle", {
     Title = "🛡️ Auto-Rescate en Eyección",
-    Description = "Corre y salta hacia el auto esquivando zombies",
     Default = true,
     Callback = function(v) Config.AutoRemountEnabled = v end
 })
 
-Tabs.Rescue:AddToggle("BunnyHopToggle", {
-    Title = "🐇 Saltar Continuamente al Correr (Bunny Hop)",
-    Default = true,
-    Callback = function(v) Config.BunnyHop = v end
-})
-
 Tabs.Rescue:AddSlider("SprintSpeedSlider", {
-    Title = "Velocidad de Carrera hacia el Auto",
+    Title = "Velocidad de Carrera al Auto",
     Default = 34,
     Min = 20,
     Max = 55,
@@ -834,51 +621,21 @@ Tabs.Rescue:AddButton({
     Callback = function() executeGroundRescue() end
 })
 
--- PESTAÑA RADAR
-Tabs.Horde:AddSection("Radar de Oleadas de Noche")
-
 local HordeStatusParagraph = Tabs.Horde:AddParagraph({
     Title = "Frente Dominante",
-    Content = "Esperando que inicie la noche..."
+    Content = "Escaneando..."
 })
 
--- ACTUALIZACIÓN EN VIVO DEL MONITOR
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        local statusText = "⚔️ En Combate Normal"
-        if TransitState.Active then
-            statusText = string.format("🚗 TRANSICIÓN: Bordeando base hacia %s (Paso %d/%d)...", TransitState.TargetSector, TransitState.Index, #TransitState.Waypoints)
-        elseif DefenseState.IsRetreating then
-            statusText = "🛡️ RETIRADA: Esquivando a 30 studs de base (Cura al 70%)..."
-        elseif IsInContingency then
-            statusText = "🏃 RESCATE: Corriendo y saltando hacia el auto con esquive..."
-        end
+-- ==============================================================================
+-- 8. WIDGETS FLOTANTES: MENU HUB + AUTO-PILOTO (ON / OFF)
+-- ==============================================================================
 
-        DefenseStatusParagraph:SetDesc(string.format(
-            "Vida Vehículo: %.0f / %.0f (%.0f%%) [%s]\nRetirada Automática: %s\nModo Actual: %s",
-            DefenseState.CurrentHP, DefenseState.MaxHP, DefenseState.HPRatio * 100, DefenseState.Source,
-            Config.RetreatEnabled and "🟢 ACTIVA" or "🔴 OFF",
-            statusText
-        ))
-
-        local incoming = tostring(workspace:GetAttribute("IncomingPosition") or "Sin alerta")
-        local mobs = workspace:GetAttribute("RemainingMobs") or 0
-        local wave = workspace:GetAttribute("WaveActive") == true
-
-        HordeStatusParagraph:SetDesc(string.format(
-            "Frente Activo: %s\nIncomingPosition: %s\nZombies restantes: %d | Oleada Activa: %s",
-            CurrentActiveSector, incoming, mobs, wave and "SÍ" or "NO"
-        ))
-    end
-end)
-
--- BOTÓN FLOTANTE COMBINADO
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "ZombieHubMasterFloat"
 ScreenGui.ResetOnSpawn = false
 if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
+-- BOTÓN MENÚ (Y = 0.72)
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0)
@@ -898,28 +655,71 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
-RunService.RenderStepped:Connect(function()
-    UserInputService.MouseIconEnabled = true
-end)
+-- WIDGET AUTO-PILOTO (Y = 0.64)
+local AutoPilotBtn = Instance.new("TextButton")
+AutoPilotBtn.Size = UDim2.new(0, 48, 0, 48)
+AutoPilotBtn.Position = UDim2.new(0.04, 0, 0.64, 0)
+AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
+AutoPilotBtn.Text = "⚡\nOFF"
+AutoPilotBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoPilotBtn.TextSize = 11
+AutoPilotBtn.Font = Enum.Font.GothamBold
+AutoPilotBtn.Active = true
+AutoPilotBtn.Draggable = true
+AutoPilotBtn.Parent = ScreenGui
+
+local AutoPilotCorner = Instance.new("UICorner")
+AutoPilotCorner.CornerRadius = UDim.new(1, 0)
+AutoPilotCorner.Parent = AutoPilotBtn
+
+local function toggleAutoPilot()
+    if Config.ZigZagEnabled then
+        -- DESACTIVAR: FRENAR Y EXPULSAR PERSONAJE
+        Config.ZigZagEnabled = false
+        pcall(function() ZigZagToggleInstance:SetValue(false) end)
+        TransitState.Active = false
+        applyBrake(1.0)
+        forceDismountVehicle()
+
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
+        AutoPilotBtn.Text = "⚡\nOFF"
+
+        Fluent:Notify({
+            Title = "⏹ AUTO-PILOTO OFF",
+            Content = "Auto detenido y personaje bajado con éxito.",
+            Duration = 2
+        })
+    else
+        -- ACTIVAR: MONTAR Y ATACAR
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 70)
+        AutoPilotBtn.Text = "⚡\nON"
+
+        executeGroundRescue(function()
+            Config.ZigZagEnabled = true
+            pcall(function() ZigZagToggleInstance:SetValue(true) end)
+            startDynamicSectorTransition(CurrentActiveSector)
+        end)
+    end
+end
+
+AutoPilotBtn.MouseButton1Click:Connect(toggleAutoPilot)
+Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (SUBIR / BAJAR)", Callback = toggleAutoPilot })
 
 -- CONTROLES DE TECLADO ('T', '9', '0', 'V')
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
 
     if input.KeyCode == Enum.KeyCode.T then
-        local rawTarget = mouse.Target
-        if rawTarget then
-            local chosen = getCompleteObject(rawTarget)
+        local raw = mouse.Target
+        if raw then
+            local chosen = getCompleteObject(raw)
             if chosen then
                 CurrentTarget = chosen
                 applyHighlight(chosen)
                 Config.ZigZagEnabled = true
                 pcall(function() ZigZagToggleInstance:SetValue(true) end)
-                Fluent:Notify({
-                    Title = "Objetivo Fijado [T]",
-                    Content = string.format("Fijado: %s | Modo: %s", chosen.Name, Config.AttackMode),
-                    Duration = 2.5
-                })
+                AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 70)
+                AutoPilotBtn.Text = "⚡\nON"
             end
         end
     end
@@ -927,8 +727,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if input.KeyCode == Enum.KeyCode.Nine or input.KeyCode == Enum.KeyCode.KeypadNine then
         Config.ZigZagEnabled = false
         pcall(function() ZigZagToggleInstance:SetValue(false) end)
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
+        AutoPilotBtn.Text = "⚡\nOFF"
         applyBrake(1.0)
-        Fluent:Notify({ Title = "Pausado [9]", Content = "Frenando 1s. Objetivo guardado.", Duration = 2 })
     end
 
     if input.KeyCode == Enum.KeyCode.Zero or input.KeyCode == Enum.KeyCode.KeypadZero then
@@ -936,8 +737,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
         clearHighlight()
         Config.ZigZagEnabled = false
         pcall(function() ZigZagToggleInstance:SetValue(false) end)
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
+        AutoPilotBtn.Text = "⚡\nOFF"
         applyBrake(1.0)
-        Fluent:Notify({ Title = "Limpiado [0]", Content = "Movimiento apagado.", Duration = 2 })
     end
 
     if input.KeyCode == Enum.KeyCode.V then
@@ -945,29 +747,30 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
     end
 end)
 
--- INICIALIZACIÓN DEL RADAR EN SEGUNDO PLANO
+-- ACTUALIZACIÓN DE TEXTOS EN INTERFAZ
 task.spawn(function()
-    task.wait(0.5)
-    local raw = workspace:GetAttribute("IncomingPosition")
-    if raw then
-        local sec, _ = parseSectorFromAttribute(raw)
-        if sec ~= "DESCONOCIDO" then
-            CurrentActiveSector = sec
-            local road = findCombatStraightRoad(sec)
-            if road then
-                CurrentTarget = road
-                applyHighlight(road)
-            end
-        end
+    while true do
+        task.wait(0.5)
+        DefenseStatusParagraph:SetDesc(string.format(
+            "Vida Vehículo: %.0f / %.0f (%.0f%%)\nRetirada Automática: %s\nModo Actual: %s",
+            DefenseState.CurrentHP, DefenseState.MaxHP, DefenseState.HPRatio * 100,
+            Config.RetreatEnabled and "🟢 ACTIVA" or "🔴 OFF",
+            DefenseState.IsRetreating and "🛡️ Retirada (-30 studs)" or (TransitState.Active and "🚗 Enrutando Pistas" or "⚔️ Stalker Activo")
+        ))
+
+        HordeStatusParagraph:SetDesc(string.format(
+            "Frente Dominante: %s\nIncomingPosition: %s\nZombies Restantes: %d",
+            CurrentActiveSector,
+            tostring(workspace:GetAttribute("IncomingPosition") or "N/A"),
+            workspace:GetAttribute("RemainingMobs") or 0
+        ))
     end
 end)
 
 -- ==============================================================================
--- 8. MOTOR CINÉTICO: TRANSICIÓN PERIMETRAL + STALKER
+-- 9. MOTOR CINÉTICO ZERO-LAG (HEARTBEAT DIRECTO)
 -- ==============================================================================
 
-local side = 1
-local lastSwitch = tick()
 local stalkerDir = 1
 local lastStalkerSwitch = tick()
 
@@ -978,38 +781,28 @@ RunService.Heartbeat:Connect(function()
     if not root or not hum or hum.Health <= 0 then return end
     if not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat") then return end
 
-    -- =========================================================================
-    -- FASE A: TRÁNSITO PERIMETRAL (BORDEANDO LA BASE SIN TOCAR EL CENTRO)
-    -- =========================================================================
+    -- FASE 1: TRÁNSITO POR PISTAS DINÁMICAS
     if TransitState.Active then
-        local currentWP = TransitState.Waypoints[TransitState.Index]
-        if currentWP then
-            local diff = currentWP - root.Position
-            local horizDiff = Vector3.new(diff.X, 0, diff.Z)
+        local wp = TransitState.Waypoints[TransitState.Index]
+        if wp then
+            local diff = wp - root.Position
+            local horiz = Vector3.new(diff.X, 0, diff.Z)
 
-            if horizDiff.Magnitude <= 18.0 then
+            if horiz.Magnitude <= 22.0 then
                 TransitState.Index = TransitState.Index + 1
                 if TransitState.Index > #TransitState.Waypoints then
-                    -- Llegó a la entrada activa
                     TransitState.Active = false
                     CurrentActiveSector = TransitState.TargetSector
 
-                    -- Auto-selecciona el StraightRoad frontal
-                    local road = findCombatStraightRoad(CurrentActiveSector)
+                    local road = getCombatStraightRoad(CurrentActiveSector)
                     if road then
                         CurrentTarget = road
                         applyHighlight(road)
                     end
-
-                    Fluent:Notify({
-                        Title = "⚔️ EN POSICIÓN: " .. CurrentActiveSector,
-                        Content = "StraightRoad frontal fijado. Iniciando embestida.",
-                        Duration = 3
-                    })
                 end
             else
-                local moveDir = horizDiff.Unit
-                root.AssemblyLinearVelocity = Vector3.new(moveDir.X * Config.MoveSpeed, root.AssemblyLinearVelocity.Y, moveDir.Z * Config.MoveSpeed)
+                local mDir = horiz.Unit
+                root.AssemblyLinearVelocity = Vector3.new(mDir.X * Config.MoveSpeed, root.AssemblyLinearVelocity.Y, mDir.Z * Config.MoveSpeed)
             end
         else
             TransitState.Active = false
@@ -1017,66 +810,42 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- =========================================================================
-    -- FASE B: COMBATE NORMAL / STALKER / RETIRADA
-    -- =========================================================================
+    -- FASE 2: ATAQUE STALKER & RETIRADA
     local targetPos = nil
-    local targetCF = nil
     local targetSize = Vector3.new(60, 10, 60)
 
     if CurrentTarget then
-        if CurrentTarget:IsA("BasePart") then
-            targetPos = CurrentTarget.Position
-            targetCF = CurrentTarget.CFrame
-            targetSize = CurrentTarget.Size
-        elseif CurrentTarget:IsA("Model") then
-            local bbCF, bbSize = CurrentTarget:GetBoundingBox()
-            targetPos = bbCF.Position
-            targetCF = bbCF
-            targetSize = bbSize
-        end
+        targetPos = CurrentTarget:IsA("BasePart") and CurrentTarget.Position or select(1, CurrentTarget:GetBoundingBox()).Position
+        targetSize = CurrentTarget:IsA("BasePart") and CurrentTarget.Size or select(2, CurrentTarget:GetBoundingBox())
     elseif SECTOR_ROUTES[CurrentActiveSector] then
-        local routeData = SECTOR_ROUTES[CurrentActiveSector]
-        targetPos = routeData.Combat
-        targetCF = CFrame.new(routeData.Combat)
+        targetPos = SECTOR_ROUTES[CurrentActiveSector].Combat
     end
 
-    if targetPos and targetCF then
+    if targetPos then
         local destination = targetPos
         local d = Config.LateralDist
         local speed = Config.MoveSpeed
 
-        -- CASO 1: RETIRADA TÁCTICA ACTIVA (VIDA <= 20%)
+        local toRoad = Vector3.new(targetPos.X - BaseCenter.X, 0, targetPos.Z - BaseCenter.Z)
+        local roadLen = toRoad.Magnitude > 0 and toRoad.Unit or Vector3.new(0, 0, 1)
+        local roadWid = Vector3.new(-roadLen.Z, 0, roadLen.X)
+
         if DefenseState.IsRetreating then
             speed = Config.RetreatSpeed
-            local toRoadVec = Vector3.new(targetPos.X - BaseCenter.X, 0, targetPos.Z - BaseCenter.Z)
-            local roadLengthDir = toRoadVec.Magnitude > 0 and toRoadVec.Unit or Vector3.new(0, 0, 1)
-            local roadWidthDir = Vector3.new(-roadLengthDir.Z, 0, roadLengthDir.X)
+            local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
+            local anchor = targetPos - (roadLen * (hLen + Config.RetreatDistance))
+            destination = anchor + (roadWid * (math.sin(tick() * 4.0) * d))
+        else
+            local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
+            local reachAway = hLen + Config.StalkerFarOvershoot
+            local reachBase = hLen + Config.StalkerBaseOvershoot
 
-            local halfLength = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
-            local retreatAnchor = targetPos - (roadLengthDir * (halfLength + Config.RetreatDistance))
+            local carAlong = (root.Position - targetPos):Dot(roadLen)
 
-            local evadeOscillation = math.sin(tick() * 4.0) * d
-            destination = retreatAnchor + (roadWidthDir * evadeOscillation)
-
-        -- CASO 2: ATAQUE STALKER NORMAL (VIDA >= 70%)
-        elseif Config.AttackMode == "Stalker" then
-            local toRoadVec = Vector3.new(targetPos.X - BaseCenter.X, 0, targetPos.Z - BaseCenter.Z)
-            local roadLengthDir = toRoadVec.Magnitude > 0 and toRoadVec.Unit or Vector3.new(0, 0, 1)
-            local roadWidthDir = Vector3.new(-roadLengthDir.Z, 0, roadLengthDir.X)
-
-            local halfLength = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
-
-            local reachAway = halfLength + Config.StalkerFarOvershoot
-            local reachBase = halfLength + Config.StalkerBaseOvershoot
-
-            local carOffset = root.Position - targetPos
-            local carAlongRoad = carOffset:Dot(roadLengthDir)
-
-            if stalkerDir == 1 and carAlongRoad >= (reachAway - 3.5) then
+            if stalkerDir == 1 and carAlong >= (reachAway - 3.5) then
                 stalkerDir = -1
                 lastStalkerSwitch = tick()
-            elseif stalkerDir == -1 and carAlongRoad <= -(reachBase - 3.5) then
+            elseif stalkerDir == -1 and carAlong <= -(reachBase - 3.5) then
                 stalkerDir = 1
                 lastStalkerSwitch = tick()
             end
@@ -1086,43 +855,34 @@ RunService.Heartbeat:Connect(function()
                 lastStalkerSwitch = tick()
             end
 
-            local targetDistance = (stalkerDir == 1) and reachAway or -reachBase
-            local longitudinalTarget = targetPos + (roadLengthDir * targetDistance)
-
-            local weaveWave = math.sin(tick() * 5.5) * d
-            local totalLateral = math.clamp(weaveWave + CachedHordeClusterOffset, -d, d)
-
-            destination = longitudinalTarget + (roadWidthDir * totalLateral)
+            local tDist = (stalkerDir == 1) and reachAway or -reachBase
+            destination = targetPos + (roadLen * tDist) + (roadWid * (math.sin(tick() * 5.5) * d))
         end
 
-        -- EVASIÓN DE BLOATERS
+        -- EVASIÓN DE BLOATERS RÁPIDA
         if Config.EvadeBloaters and #CachedBloaterDangers > 0 then
-            for _, bombPos in ipairs(CachedBloaterDangers) do
-                local distToBomb = (root.Position - bombPos).Magnitude
-                if distToBomb <= Config.BloaterDangerDist then
-                    local avoidDir = (root.Position - bombPos).Unit
-                    if avoidDir.Magnitude == 0 or avoidDir ~= avoidDir then
-                        avoidDir = targetCF.RightVector * side
-                    end
-                    destination = destination + Vector3.new(avoidDir.X, 0, avoidDir.Z) * 26
+            for _, bPos in ipairs(CachedBloaterDangers) do
+                if (root.Position - bPos).Magnitude <= Config.BloaterDangerDist then
+                    local aDir = (root.Position - bPos).Unit
+                    destination = destination + Vector3.new(aDir.X, 0, aDir.Z) * 26
                 end
             end
         end
 
-        local direction = (destination - root.Position)
-        local horizontalDir = Vector3.new(direction.X, 0, direction.Z)
+        local dir = (destination - root.Position)
+        local hDir = Vector3.new(dir.X, 0, dir.Z)
 
-        if horizontalDir.Magnitude > 1.2 then
-            local targetVelocity = horizontalDir.Unit * speed
-            root.AssemblyLinearVelocity = Vector3.new(targetVelocity.X, root.AssemblyLinearVelocity.Y, targetVelocity.Z)
+        if hDir.Magnitude > 1.2 then
+            local vel = hDir.Unit * speed
+            root.AssemblyLinearVelocity = Vector3.new(vel.X, root.AssemblyLinearVelocity.Y, vel.Z)
         end
     end
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB MASTER V11",
-    Content = "Radar instantáneo, ruta perimetral y auto-StraightRoad listos.",
-    Duration = 4
+    Title = "ZOMBIE HUB MASTER V13",
+    Content = "Zero-Lag Engine activo. 60 FPS estables.",
+    Duration = 3
 })
 
 Window:SelectTab(1)
