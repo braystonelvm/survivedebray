@@ -1,199 +1,146 @@
 -- ==============================================================================
--- RADAR FORENSE DE OLEADAS: DETECTOR DE ALERTAS DE NOCHE & REMOTES
+-- ESCÁNER FORENSE PROFUNDO DE OLEADAS Y NOCHES (DUMP COMPLETO)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
 local CoreGui = game:GetService("CoreGui")
 local lp = Players.LocalPlayer
 
-local BaseCenter = Vector3.new(0, 0, 0)
-
-local SECTORS = {
-    SUR = Vector3.new(0, 0, 150),
-    NORTE = Vector3.new(0, 0, -150),
-    ESTE = Vector3.new(150, 0, 0),
-    OESTE = Vector3.new(-150, 0, 0)
-}
-
-local RadarData = {
-    ActiveSector = "ESPERANDO OLEADA...",
-    DetectionMethod = "Ninguno",
-    LastAlertTime = "Nunca",
-    ActiveAlertsCount = 0,
-    Logs = {}
-}
+local DumpLogs = {}
 
 local function addLog(txt)
-    local timestamp = os.date("%X")
-    local entry = string.format("[%s] %s", timestamp, txt)
-    table.insert(RadarData.Logs, 1, entry)
-    if #RadarData.Logs > 40 then table.remove(RadarData.Logs) end
-    print("[RADAR FORENSE]: " .. entry)
-end
-
--- Determinar sector cardinal a partir de coordenadas 3D
-local function resolveSectorFromVector(pos)
-    local diff = pos - BaseCenter
-    if math.abs(diff.Z) > math.abs(diff.X) then
-        return (diff.Z < 0) and "NORTE" or "SUR"
-    else
-        return (diff.X > 0) and "ESTE" or "OESTE"
-    end
+    local entry = string.format("[%s] %s", os.date("%X"), txt)
+    table.insert(DumpLogs, 1, entry)
+    if #DumpLogs > 50 then table.remove(DumpLogs) end
+    print(entry)
 end
 
 -- ==============================================================================
--- 1. ESPÍA DE REMOTES EN REPLICATEDSTORAGE (AVISO INSTANTÁNEO DEL SERVIDOR)
+-- 1. INSPECCIÓN GENERAL DE VARIABLES, TIEMPO Y ATRIBUTOS
+-- ==============================================================================
+local function getGlobalGameState()
+    local report = {}
+    table.insert(report, string.format("Reloj Lighting (Hora): %.2f (%s)", Lighting.ClockTime, Lighting.TimeOfDay))
+
+    -- Atributos en Lighting
+    for k, v in pairs(Lighting:GetAttributes()) do
+        table.insert(report, string.format("Lighting [Attr]: %s = %s", k, tostring(v)))
+    end
+
+    -- Atributos en ReplicatedStorage
+    for k, v in pairs(ReplicatedStorage:GetAttributes()) do
+        table.insert(report, string.format("ReplicatedStorage [Attr]: %s = %s", k, tostring(v)))
+    end
+
+    -- Values dentro de ReplicatedStorage
+    for _, desc in ipairs(ReplicatedStorage:GetDescendants()) do
+        if desc:IsA("ValueBase") then
+            local n = desc.Name:lower()
+            if n:find("wave") or n:find("night") or n:find("time") or n:find("day") or n:find("state") or n:find("horde") then
+                table.insert(report, string.format("RS Value: %s = %s", desc:GetFullName(), tostring(desc.Value)))
+            end
+        end
+    end
+
+    -- Atributos en Workspace
+    for k, v in pairs(workspace:GetAttributes()) do
+        table.insert(report, string.format("Workspace [Attr]: %s = %s", k, tostring(v)))
+    end
+
+    return report
+end
+
+-- ==============================================================================
+-- 2. RASTREO PROFUNDO DE ESE ICONO (!) EN WORKSPACE Y PLAYERGUI
+-- ==============================================================================
+local function findActiveAlertObjects()
+    local found = {}
+
+    -- A) RASTREO EN WORKSPACE (BillboardGuis en 3D)
+    for _, desc in ipairs(workspace:GetDescendants()) do
+        if desc:IsA("BillboardGui") and desc.Enabled then
+            local p = desc.Parent
+            local adornee = desc.Adornee or p
+            local pos = adornee and (adornee:IsA("BasePart") and adornee.Position or (adornee:IsA("Model") and adornee:GetPivot().Position)) or Vector3.zero
+            table.insert(found, {
+                Type = "BillboardGui en Workspace",
+                Name = desc.Name,
+                FullName = desc:GetFullName(),
+                WorldPos = pos,
+                Details = string.format("Adornee: %s | Pos: Vector3(%.1f, %.1f, %.1f)", tostring(adornee), pos.X, pos.Y, pos.Z)
+            })
+        end
+    end
+
+    -- B) RASTREO EN PLAYERGUI (ScreenGuis activas)
+    local pGui = lp:FindFirstChild("PlayerGui")
+    if pGui then
+        for _, desc in ipairs(pGui:GetDescendants()) do
+            if desc:IsA("ImageLabel") and desc.Visible and desc.Image ~= "" then
+                local img = desc.Image:lower()
+                local name = desc.Name:lower()
+                -- Si tiene nombre o imagen sospechosa de alerta
+                if name:find("alert") or name:find("warn") or name:find("icon") or name:find("horde") or name:find("wave") or name:find("marker") or img:find("rbxassetid") then
+                    local parentName = desc.Parent and desc.Parent.Name or ""
+                    table.insert(found, {
+                        Type = "ImageLabel en PlayerGui",
+                        Name = desc.Name,
+                        FullName = desc:GetFullName(),
+                        WorldPos = Vector3.zero,
+                        Details = string.format("Image: %s | Parent: %s | Size: %s", desc.Image, parentName, tostring(desc.Size))
+                    })
+                end
+            elseif desc:IsA("TextLabel") and desc.Visible and (desc.Text:find("!") or desc.Text:lower():find("wave") or desc.Text:lower():find("horde")) then
+                table.insert(found, {
+                    Type = "TextLabel en PlayerGui",
+                    Name = desc.Name,
+                    FullName = desc:GetFullName(),
+                    WorldPos = Vector3.zero,
+                    Details = string.format("Text: '%s'", desc.Text)
+                })
+            end
+        end
+    end
+
+    return found
+end
+
+-- ==============================================================================
+-- 3. VIGILANCIA EN VIVO (HOOKS DE VISIBILIDAD)
 -- ==============================================================================
 task.spawn(function()
-    for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
-        if obj:IsA("RemoteEvent") then
-            local rName = obj.Name:lower()
-            -- Filtrar remotes que puedan estar vinculados al ciclo de noche u oleadas
-            if rName:find("wave") or rName:find("horde") or rName:find("night") or rName:find("alert") or rName:find("spawn") or rName:find("sector") then
-                obj.OnClientEvent:Connect(function(...)
-                    local args = {...}
-                    local argDump = {}
-                    for i, v in ipairs(args) do
-                        table.insert(argDump, tostring(v))
+    local pGui = lp:WaitForChild("PlayerGui")
+    for _, desc in ipairs(pGui:GetDescendants()) do
+        if desc:IsA("GuiObject") then
+            desc:GetPropertyChangedSignal("Visible"):Connect(function()
+                if desc.Visible then
+                    local n = desc.Name:lower()
+                    if n:find("alert") or n:find("warn") or n:find("horde") or n:find("icon") or n:find("wave") then
+                        addLog(string.format("🟢 Cambio a Visible: %s (%s)", desc.Name, desc:GetFullName()))
                     end
-                    local details = table.concat(argDump, ", ")
-                    addLog(string.format("📡 RemoteEvent disparado: '%s' | Args: [%s]", obj.Name, details))
-
-                    -- Intentar resolver el sector por texto en argumentos
-                    local strAll = (obj.Name .. " " .. details):lower()
-                    for secName, _ in pairs(SECTORS) do
-                        if strAll:find(secName:lower()) then
-                            RadarData.ActiveSector = secName
-                            RadarData.DetectionMethod = "RemoteEvent (" .. obj.Name .. ")"
-                            RadarData.LastAlertTime = os.date("%X")
-                        end
-                    end
-                end)
-            end
+                end
+            end)
+        elseif desc:IsA("BillboardGui") then
+            desc:GetPropertyChangedSignal("Enabled"):Connect(function()
+                if desc.Enabled then
+                    addLog(string.format("🟢 Billboard Activado: %s (%s)", desc.Name, desc:GetFullName()))
+                end
+            end)
         end
     end
 end)
 
 -- ==============================================================================
--- 2. ESPÍA DE ALERTAS VISUALES EN PLAYERGUI (DISCRIMINA LA MÁS NUEVA)
--- ==============================================================================
-local TrackedAlertInstances = {} -- [Instancia] = CreationTick
-
-local function inspectGuiObject(obj)
-    if not obj:IsA("GuiObject") and not obj:IsA("BillboardGui") then return end
-
-    local name = obj.Name:lower()
-    local isCandidate = false
-
-    -- Detección por nombre o tipo de interfaz de alerta
-    if name:find("alert") or name:find("warning") or name:find("horde") or name:find("wave") or name:find("marker") or name:find("arrow") or name:find("sign") or name:find("indicator") then
-        isCandidate = true
-    end
-
-    if obj:IsA("ImageLabel") and obj.Visible then
-        local img = tostring(obj.Image):lower()
-        if img:find("alert") or img:find("warning") or img:find("exclamation") or img:find("arrow") then
-            isCandidate = true
-        end
-    end
-
-    if isCandidate and not TrackedAlertInstances[obj] then
-        TrackedAlertInstances[obj] = tick()
-        addLog(string.format("⚠️ Nueva Alerta en Pantalla: '%s' (%s)", obj.Name, obj.ClassName))
-
-        -- Si es un BillboardGui, tiene una posición en el mundo real (Adornee)
-        local worldPos = nil
-        if obj:IsA("BillboardGui") and obj.Adornee then
-            local adornee = obj.Adornee
-            worldPos = adornee:IsA("BasePart") and adornee.Position or (adornee:IsA("Model") and adornee:GetPivot().Position)
-        elseif obj:IsA("GuiObject") then
-            -- Si tiene atributos guardados por los desarrolladores
-            for _, attr in ipairs({"Position", "Target", "Gate", "Sector", "WorldPosition"}) do
-                local val = obj:GetAttribute(attr)
-                if typeof(val) == "Vector3" then
-                    worldPos = val
-                    break
-                elseif type(val) == "string" and SECTORS[val:upper()] then
-                    RadarData.ActiveSector = val:upper()
-                    RadarData.DetectionMethod = "Attribute (" .. attr .. ")"
-                    RadarData.LastAlertTime = os.date("%X")
-                    return
-                end
-            end
-        end
-
-        if worldPos then
-            local sec = resolveSectorFromVector(worldPos)
-            RadarData.ActiveSector = sec
-            RadarData.DetectionMethod = string.format("3D Marker (%s -> %s)", obj.Name, sec)
-            RadarData.LastAlertTime = os.date("%X")
-            addLog(string.format("📍 Alerta 3D localizada en: Vector3(%.1f, %.1f, %.1f) -> Sector: %s", worldPos.X, worldPos.Y, worldPos.Z, sec))
-        end
-    end
-end
-
--- Monitorear nuevas alertas creadas en PlayerGui
-local pGui = lp:WaitForChild("PlayerGui")
-pGui.DescendantAdded:Connect(inspectGuiObject)
-workspace.DescendantAdded:Connect(inspectGuiObject)
-
--- ==============================================================================
--- 3. GESTOR DE CONFLICTO (CUANDO HAY 2 O MÁS ALERTAS ACTIVAS)
--- ==============================================================================
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-
-        local validAlerts = {}
-        for inst, birthTime in pairs(TrackedAlertInstances) do
-            if inst.Parent and (inst:IsA("GuiObject") and inst.Visible or inst:IsA("BillboardGui") and inst.Enabled) then
-                table.insert(validAlerts, { Instance = inst, Time = birthTime, Age = tick() - birthTime })
-            else
-                TrackedAlertInstances[inst] = nil
-            end
-        end
-
-        RadarData.ActiveAlertsCount = #validAlerts
-
-        -- Si hay múltiples alertas en pantalla, ordenamos por la MÁS NUEVA
-        if #validAlerts > 1 then
-            table.sort(validAlerts, function(a, b) return a.Time > b.Time end)
-            local newest = validAlerts[1]
-            local oldest = validAlerts[2]
-
-            -- Si la alerta más nueva tiene menos de 4 segundos de vida, la tomamos como la activa
-            if newest.Age <= 4.0 then
-                -- Inspeccionar texto o etiquetas dentro de la nueva alerta
-                for _, desc in ipairs(newest.Instance:GetDescendants()) do
-                    if desc:IsA("TextLabel") and desc.Text ~= "" then
-                        local txt = desc.Text:upper()
-                        for sName, _ in pairs(SECTORS) do
-                            if txt:find(sName) then
-                                RadarData.ActiveSector = sName
-                                RadarData.DetectionMethod = "Alerta Más Reciente (Text: " .. desc.Text .. ")"
-                                RadarData.LastAlertTime = os.date("%X")
-                                break
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-end)
-
--- ==============================================================================
--- 4. INTERFAZ VISUAL NATIVA (PANEL DE MONITOREO Y COPIA)
+-- 4. INTERFAZ NATIVA
 -- ==============================================================================
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "NightRadarDiagnosticsGui"
+ScreenGui.Name = "DeepForensicDumpGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
--- Botón Flotante Rojo
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.35, 0)
@@ -209,16 +156,15 @@ BtnCorner.Parent = FloatBtn
 local BtnIcon = Instance.new("TextLabel")
 BtnIcon.Size = UDim2.new(1, 0, 1, 0)
 BtnIcon.BackgroundTransparency = 1
-BtnIcon.Text = "📡"
+BtnIcon.Text = "🔬"
 BtnIcon.TextSize = 22
 BtnIcon.TextColor3 = Color3.fromRGB(255, 255, 255)
 BtnIcon.Parent = FloatBtn
 
--- Ventana Principal
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 460, 0, 380)
-MainFrame.Position = UDim2.new(0.5, -230, 0.5, -190)
-MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+MainFrame.Size = UDim2.new(0, 520, 0, 440)
+MainFrame.Position = UDim2.new(0.5, -260, 0.5, -220)
+MainFrame.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
 MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
@@ -229,8 +175,8 @@ FrameCorner.Parent = MainFrame
 
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
-TitleBar.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
-TitleBar.Text = "  RADAR FORENSE: ANALIZADOR DE OLEADAS DE NOCHE"
+TitleBar.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
+TitleBar.Text = "  INSPECTOR PROFUNDO: DETECTOR DEL ICONO (!) Y NOCHE"
 TitleBar.TextColor3 = Color3.fromRGB(255, 255, 255)
 TitleBar.TextSize = 12
 TitleBar.Font = Enum.Font.GothamBold
@@ -241,29 +187,27 @@ local TitleCorner = Instance.new("UICorner")
 TitleCorner.CornerRadius = UDim.new(0, 10)
 TitleCorner.Parent = TitleBar
 
--- Panel de Estado Principal
 local StatusPanel = Instance.new("TextLabel")
-StatusPanel.Size = UDim2.new(1, -20, 0, 80)
-StatusPanel.Position = UDim2.new(0, 10, 0, 44)
-StatusPanel.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+StatusPanel.Size = UDim2.new(1, -20, 0, 65)
+StatusPanel.Position = UDim2.new(0, 10, 0, 42)
+StatusPanel.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
 StatusPanel.TextColor3 = Color3.fromRGB(0, 255, 170)
 StatusPanel.TextSize = 11
 StatusPanel.Font = Enum.Font.Code
 StatusPanel.TextXAlignment = Enum.TextXAlignment.Left
 StatusPanel.TextYAlignment = Enum.TextYAlignment.Top
-StatusPanel.Text = " Inicializando sensores de noche..."
+StatusPanel.Text = " Analizando objetos en vivo..."
 StatusPanel.Parent = MainFrame
 
 local StatusCorner = Instance.new("UICorner")
 StatusCorner.CornerRadius = UDim.new(0, 6)
 StatusCorner.Parent = StatusPanel
 
--- Registro de Eventos en Vivo
 local LogBox = Instance.new("TextBox")
-LogBox.Size = UDim2.new(1, -20, 0, 180)
-LogBox.Position = UDim2.new(0, 10, 0, 132)
-LogBox.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
-LogBox.TextColor3 = Color3.fromRGB(200, 200, 200)
+LogBox.Size = UDim2.new(1, -20, 0, 235)
+LogBox.Position = UDim2.new(0, 10, 0, 114)
+LogBox.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
+LogBox.TextColor3 = Color3.fromRGB(220, 220, 220)
 LogBox.TextSize = 10
 LogBox.Font = Enum.Font.Code
 LogBox.TextXAlignment = Enum.TextXAlignment.Left
@@ -271,19 +215,32 @@ LogBox.TextYAlignment = Enum.TextYAlignment.Top
 LogBox.ClearTextOnFocus = false
 LogBox.MultiLine = true
 LogBox.TextEditable = false
-LogBox.Text = "Esperando que comience la noche o cambie la oleada..."
+LogBox.Text = "Presiona 'VOLCADO COMPLETO' cuando aparezca el icono (!) en pantalla..."
 LogBox.Parent = MainFrame
 
 local LogCorner = Instance.new("UICorner")
 LogCorner.CornerRadius = UDim.new(0, 6)
 LogCorner.Parent = LogBox
 
--- Botón Copiar Informe
+local ScanBtn = Instance.new("TextButton")
+ScanBtn.Size = UDim2.new(0.48, -10, 0, 36)
+ScanBtn.Position = UDim2.new(0, 10, 0, 390)
+ScanBtn.BackgroundColor3 = Color3.fromRGB(30, 120, 70)
+ScanBtn.Text = "🔍 FORZAR ESCANEO"
+ScanBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ScanBtn.TextSize = 11
+ScanBtn.Font = Enum.Font.GothamBold
+ScanBtn.Parent = MainFrame
+
+local ScanCorner = Instance.new("UICorner")
+ScanCorner.CornerRadius = UDim.new(0, 6)
+ScanCorner.Parent = ScanBtn
+
 local CopyBtn = Instance.new("TextButton")
-CopyBtn.Size = UDim2.new(1, -20, 0, 36)
-CopyBtn.Position = UDim2.new(0, 10, 0, 324)
+CopyBtn.Size = UDim2.new(0.48, -10, 0, 36)
+CopyBtn.Position = UDim2.new(0.52, 5, 0, 390)
 CopyBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 160)
-CopyBtn.Text = "📋 COPIAR REPORTE AL PORTAPAPELES"
+CopyBtn.Text = "📋 COPIAR VOLCADO COMPLETO"
 CopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 CopyBtn.TextSize = 11
 CopyBtn.Font = Enum.Font.GothamBold
@@ -293,21 +250,50 @@ local CopyCorner = Instance.new("UICorner")
 CopyCorner.CornerRadius = UDim.new(0, 6)
 CopyCorner.Parent = CopyBtn
 
-CopyBtn.MouseButton1Click:Connect(function()
-    local report = {
-        "=== REPORTE DE DETECCIÓN DE OLEADA DE NOCHE ===",
-        "Sector detectado: " .. RadarData.ActiveSector,
-        "Método de detección: " .. RadarData.DetectionMethod,
-        "Hora de alerta: " .. RadarData.LastAlertTime,
-        "Alertas simultáneas en pantalla: " .. RadarData.ActiveAlertsCount,
-        "\n[REGISTRO DE EVENTOS]:"
+local function generateFullDump()
+    local dump = {
+        "==================================================================",
+        "               VOLCADO FORENSE COMPLETO DE LA NOCHE               ",
+        "==================================================================",
+        "Hora local: " .. os.date("%X"),
+        "\n[1. ESTADO GLOBAL Y VARIABLES]:"
     }
-    for _, l in ipairs(RadarData.Logs) do table.insert(report, l) end
-    local fullText = table.concat(report, "\n")
-    if setclipboard then setclipboard(fullText) elseif toclipboard then toclipboard(fullText) end
-    CopyBtn.Text = "✅ ¡REPORTE COPIADO!"
+
+    local globals = getGlobalGameState()
+    for _, g in ipairs(globals) do table.insert(dump, " • " .. g) end
+
+    table.insert(dump, "\n[2. OBJETOS DE ALERTA ACTIVOS DETECTADOS]:")
+    local alerts = findActiveAlertObjects()
+    if #alerts == 0 then
+        table.insert(dump, " • Ninguna alerta visible detectada con filtros comunes.")
+    else
+        for i, a in ipairs(alerts) do
+            table.insert(dump, string.format(" [%d] %s (%s)", i, a.Name, a.Type))
+            table.insert(dump, "     Ruta: " .. a.FullName)
+            table.insert(dump, "     Info: " .. a.Details)
+        end
+    end
+
+    table.insert(dump, "\n[3. HISTORIAL DE EVENTOS RECIENTES]:")
+    for _, l in ipairs(DumpLogs) do table.insert(dump, " " .. l) end
+    table.insert(dump, "==================================================================")
+
+    return table.concat(dump, "\n")
+end
+
+ScanBtn.MouseButton1Click:Connect(function()
+    local alerts = findActiveAlertObjects()
+    addLog(string.format("Escaneo manual: %d objetos candidatos encontrados.", #alerts))
+    local text = generateFullDump()
+    LogBox.Text = text
+end)
+
+CopyBtn.MouseButton1Click:Connect(function()
+    local text = generateFullDump()
+    if setclipboard then setclipboard(text) elseif toclipboard then toclipboard(text) end
+    CopyBtn.Text = "✅ ¡COPIADO AL PORTAPAPELES!"
     task.wait(1.5)
-    CopyBtn.Text = "📋 COPIAR REPORTE AL PORTAPAPELES"
+    CopyBtn.Text = "📋 COPIAR VOLCADO COMPLETO"
 end)
 
 local isVis = true
@@ -316,20 +302,14 @@ FloatBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = isVis
 end)
 
--- Bucle de actualización en tiempo real
+-- Monitoreo continuo
 task.spawn(function()
     while true do
-        task.wait(0.3)
+        task.wait(0.5)
+        local alerts = findActiveAlertObjects()
         StatusPanel.Text = string.format(
-            " 🚨 SECTOR ACTIVO: %s\n Método: %s\n Hora del evento: %s\n Alertas simultáneas detectadas: %d",
-            RadarData.ActiveSector,
-            RadarData.DetectionMethod,
-            RadarData.LastAlertTime,
-            RadarData.ActiveAlertsCount
+            " Hora Lighting: %.2f (%s)\n Alertas/Iconos Activos Detectados: %d\n Presiona 'COPIAR VOLCADO COMPLETO' mientras ves el icono en pantalla.",
+            Lighting.ClockTime, Lighting.TimeOfDay, #alerts
         )
-
-        LogBox.Text = table.concat(RadarData.Logs, "\n")
     end
 end)
-
-print("[RADAR FORENSE]: Cargado con éxito.")
