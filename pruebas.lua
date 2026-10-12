@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ESCÁNER FORENSE PROFUNDO DE OLEADAS Y NOCHES (DUMP COMPLETO)
+-- ESCÁNER FORENSE PROFUNDO DE OLEADAS Y NOCHES (DUMP COMPLETO)xd
 -- ==============================================================================
 
 local Players = game:GetService("Players")
