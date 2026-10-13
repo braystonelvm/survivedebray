@@ -36,7 +36,7 @@ local PERIMETER_NODES = {
 
 local Config = {
     ZigZagEnabled = false,
-    AttackMode = "Stalker",       -- "Stalker", "Torbellino", "Zigzag Clásico", etc.
+    AttackMode = "Depredador",     -- "Depredador", "Torbellino", "Zigzag Clásico", etc.
     SwitchInterval = 0.5,
     LateralDist = 25,
     MoveSpeed = 150,              -- 150 studs/s por defecto
@@ -44,9 +44,9 @@ local Config = {
     BloaterDangerDist = 30,
     AutoRouteToWave = true,
 
-    -- VALORES DE EMBESTIDA STALKER
-    StalkerBaseOvershoot = 5.0,    -- 5 studs hacia la base
-    StalkerFarOvershoot = 25.0,    -- 25 studs hacia la horda
+    -- VALORES DE EMBESTIDA DEPREDADOR
+    DepredadorBaseOvershoot = 5.0,    -- 5 studs hacia la base
+    DepredadorFarOvershoot = 25.0,    -- 25 studs hacia la horda
 
     -- RETIRADA TÁCTICA: MÍNIMO 30% Y MÁXIMO 95%
     RetreatEnabled = true,
@@ -141,7 +141,6 @@ local function getTruckHealth(truck)
     local foundHP, foundMax = nil, nil
     local src = "Desconocido"
 
-    -- Búsqueda recursiva profunda original
     local config = truck:FindFirstChild("Configuration", true) or truck:FindFirstChild("Config", true)
     if config then
         local h = config:GetAttribute("Health") or config:GetAttribute("HP")
@@ -431,13 +430,13 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 4. BUCLE ORIGINAL DE DENSIDAD LATERAL DE HORDA (STALKER CLUSTER)
+-- 4. BUCLE ORIGINAL DE DENSIDAD LATERAL DE HORDA (DEPREDADOR CLUSTER)
 -- ==============================================================================
 
 task.spawn(function()
     while true do
         task.wait(0.15)
-        if Config.ZigZagEnabled and Config.AttackMode == "Stalker" and CurrentTarget and not IsInContingency and not TransitState.Active then
+        if Config.ZigZagEnabled and Config.AttackMode == "Depredador" and CurrentTarget and not IsInContingency and not TransitState.Active then
             local tPos = CurrentTarget:IsA("BasePart") and CurrentTarget.Position or select(1, CurrentTarget:GetBoundingBox()).Position
             if tPos then
                 local radialVec = Vector3.new(tPos.X - BaseCenter.X, 0, tPos.Z - BaseCenter.Z)
@@ -728,8 +727,8 @@ ZigZagToggleInstance = Tabs.Combat:AddToggle("ZigZagToggle", {
 
 Tabs.Combat:AddDropdown("ModeDropdown", {
     Title = "Modo de Ataque / Patrón",
-    Values = { "Stalker", "Torbellino", "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico" },
-    Default = "Stalker",
+    Values = { "Depredador", "Torbellino", "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico" },
+    Default = "Depredador",
     Callback = function(v) Config.AttackMode = v end
 })
 
@@ -751,22 +750,22 @@ Tabs.Combat:AddSlider("DistSlider", {
     Callback = function(v) Config.LateralDist = v end
 })
 
-Tabs.Combat:AddSlider("StalkerFarSlider", {
-    Title = "Stalker: Rebase Hacia Horda (Studs)",
+Tabs.Combat:AddSlider("DepredadorFarSlider", {
+    Title = "Depredador: Rebase Hacia Horda (Studs)",
     Default = 25,
     Min = 0,
     Max = 60,
     Rounding = 0,
-    Callback = function(v) Config.StalkerFarOvershoot = v end
+    Callback = function(v) Config.DepredadorFarOvershoot = v end
 })
 
-Tabs.Combat:AddSlider("StalkerBaseSlider", {
-    Title = "Stalker: Rebase Hacia Base (Studs)",
+Tabs.Combat:AddSlider("DepredadorBaseSlider", {
+    Title = "Depredador: Rebase Hacia Base (Studs)",
     Default = 5,
     Min = 0,
     Max = 40,
     Rounding = 0,
-    Callback = function(v) Config.StalkerBaseOvershoot = v end
+    Callback = function(v) Config.DepredadorBaseOvershoot = v end
 })
 
 Tabs.Combat:AddToggle("AutoRouteToggle", {
@@ -996,8 +995,8 @@ end)
 
 local side = 1
 local lastSwitch = tick()
-local stalkerDir = 1
-local lastStalkerSwitch = tick()
+local depredadorDir = 1
+local lastDepredadorSwitch = tick()
 
 RunService.Heartbeat:Connect(function()
     if not Config.ZigZagEnabled or IsInContingency then return end
@@ -1035,7 +1034,7 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- FASE B: COMBATE / STALKER / TORBELLINO / RETIRADA
+    -- FASE B: COMBATE / DEPREDADOR / TORBELLINO / RETIRADA
     local targetPos = nil
     local targetSize = Vector3.new(60, 10, 60)
 
@@ -1062,28 +1061,28 @@ RunService.Heartbeat:Connect(function()
             local anchor = targetPos - (roadLen * (hLen + Config.RetreatDistance))
             destination = anchor + (roadWid * (math.sin(tick() * 4.0) * d))
 
-        -- 2. MODO STALKER (CON CLUSTER DE HORDAS RESTABLECIDO)
-        elseif Config.AttackMode == "Stalker" then
+        -- 2. MODO DEPREDADOR (CON CLUSTER DE HORDAS RESTABLECIDO)
+        elseif Config.AttackMode == "Depredador" then
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
-            local reachAway = hLen + Config.StalkerFarOvershoot
-            local reachBase = hLen + Config.StalkerBaseOvershoot
+            local reachAway = hLen + Config.DepredadorFarOvershoot
+            local reachBase = hLen + Config.DepredadorBaseOvershoot
 
             local carAlong = (root.Position - targetPos):Dot(roadLen)
 
-            if stalkerDir == 1 and carAlong >= (reachAway - 3.5) then
-                stalkerDir = -1
-                lastStalkerSwitch = tick()
-            elseif stalkerDir == -1 and carAlong <= -(reachBase - 3.5) then
-                stalkerDir = 1
-                lastStalkerSwitch = tick()
+            if depredadorDir == 1 and carAlong >= (reachAway - 3.5) then
+                depredadorDir = -1
+                lastDepredadorSwitch = tick()
+            elseif depredadorDir == -1 and carAlong <= -(reachBase - 3.5) then
+                depredadorDir = 1
+                lastDepredadorSwitch = tick()
             end
 
-            if tick() - lastStalkerSwitch >= 3.2 then
-                stalkerDir = -stalkerDir
-                lastStalkerSwitch = tick()
+            if tick() - lastDepredadorSwitch >= 3.2 then
+                depredadorDir = -depredadorDir
+                lastDepredadorSwitch = tick()
             end
 
-            local tDist = (stalkerDir == 1) and reachAway or -reachBase
+            local tDist = (depredadorDir == 1) and reachAway or -reachBase
             local weaveWave = math.sin(tick() * 5.5) * d
             local totalLateral = math.clamp(weaveWave + CachedHordeClusterOffset, -d, d)
 
@@ -1092,17 +1091,17 @@ RunService.Heartbeat:Connect(function()
         -- 3. MODO TORBELLINO (SINUSOIDAL PURA)
         elseif Config.AttackMode == "Torbellino" then
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
-            local reachAway = hLen + Config.StalkerFarOvershoot
-            local reachBase = hLen + Config.StalkerBaseOvershoot
+            local reachAway = hLen + Config.DepredadorFarOvershoot
+            local reachBase = hLen + Config.DepredadorBaseOvershoot
 
             local carAlong = (root.Position - targetPos):Dot(roadLen)
-            if stalkerDir == 1 and carAlong >= (reachAway - 3.5) then
-                stalkerDir = -1
-            elseif stalkerDir == -1 and carAlong <= -(reachBase - 3.5) then
-                stalkerDir = 1
+            if depredadorDir == 1 and carAlong >= (reachAway - 3.5) then
+                depredadorDir = -1
+            elseif depredadorDir == -1 and carAlong <= -(reachBase - 3.5) then
+                depredadorDir = 1
             end
 
-            local tDist = (stalkerDir == 1) and reachAway or -reachBase
+            local tDist = (depredadorDir == 1) and reachAway or -reachBase
             destination = targetPos + (roadLen * tDist) + (roadWid * (math.sin(tick() * 7.5) * d))
         end
 
@@ -1128,7 +1127,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB MASTER V15.2 LISTO",
-    Content = "Umbrales 30%/95% calibrados. Expulsión en OFF desactivada y cursor siempre visible.",
+    Content = "Modo Depredador configurado. Cursor siempre visible y sin expulsión en OFF.",
     Duration = 4
 })
 
