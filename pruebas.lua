@@ -1,5 +1,5 @@
 -- ==============================================================================
--- HACKER UNDERGROUND AUTO-FARM V2: BURBUJA ANTI-GOLPE + BÚNKER EN ROCA + VIRUS
+-- HACKER UNDERGROUND AUTO-FARM V3: PREDICCIÓN DE MASAS (300 ZOMBIES) + ZANAHORIAS
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -13,23 +13,27 @@ local cam = workspace.CurrentCamera
 
 local Config = {
     Enabled = false,
-    UseRockBunker = false,        -- Si se activa, se mete dentro de la roca grande más cercana
-    UndergroundDepth = -5.5,      -- Profundidad en campo abierto
-    RockBunkerDepth = -1.8,       -- Profundidad dentro de roca (NO activa rollback del server)
-    SafeMoveSpeed = 26,           -- Debajo de KM_MAX_PLAYER_SPEED (28)
-    ScanRadius = 200,
+    UseRockBunker = false,
+    UndergroundDepth = -6.0,      -- Profundidad de ataque
+    LowHealthDepth = -10.5,       -- Profundidad si baja la vida
+    RockBunkerDepth = -1.8,
+    MoveSpeed = 38,               -- Velocidad aumentada para que nunca te alcancen
+    ScanRadius = 200,             -- Escaneo de 200 studs
 
-    -- BURBUJA HORIZONTAL (IMPIDE QUE SE PAREN ENCIMA DE TI)
-    NormalZombieSafeDist = 20,    -- Ningún zombie normal a menos de 20 studs en X,Z
-    LethalZombieSafeDist = 42,    -- Bloaters / Hazmats a más de 42 studs en X,Z
+    -- MOVIMIENTO CONSTANTE Y PREDICCIÓN DE MASAS
+    ConstantMotion = true,        -- Nunca se queda quieto: patrulla y esquiva sin parar
+    PatrolRadius = 65,            -- Amplitud de desplazamiento alrededor de tu zona
+    PredictionTime = 1.2,         -- Segundos hacia el futuro para predecir a dónde va la masa
+    NormalZombieSafeDist = 32,    -- Ampliado a 32 studs contra zombies normales
+    LethalZombieSafeDist = 55,    -- Ampliado a 55 studs contra Bloaters y Hazmats
 
-    -- PODERES DE HACKER
+    -- PODERES DE CLASE HACKER
     AutoInfiltrate = true,        -- Cada 15s al zombie con menos vida
     AutoSystemOverride = true,    -- Cada 120s
     AutoGunVirusChain = true,     -- Disparar al infectado con menos vida
     WaitAfterKill = 3.0,          -- Pausa de 3s tras matar al infectado
     ShotInterval = 0.28,
-    MaxAbilityRange = 48,
+    MaxAbilityRange = 52,
 
     -- COMIDA (ZANAHORIAS)
     AutoEatEnabled = true,
@@ -38,14 +42,18 @@ local Config = {
 }
 
 local FarmState = {
-    Mode = "IDLE",
+    Mode = "IDLE",                -- "ORBITING", "EVADING MASS", "EATING"
     AnchorPos = Vector3.new(0, 0, 120),
     NearestRockPos = nil,
-    SavedFarmPlots = {},
+    SavedFarmPlots = {},          -- Lista de parcelas detectadas o guardadas
+    ManualCarrotPos = nil,        -- Coordenada manual opcional de zanahorias
+    OrbitAngle = 0,
+    CurrentEscapeDir = Vector3.new(1, 0, 0),
     WaitingForChain = false,
     ChainWaitUntil = 0,
     CurrentHunger = 100,
     CurrentHP = 100,
+    TotalZombiesIn200 = 0,
     InfectedCount = 0
 }
 
@@ -94,21 +102,26 @@ local function isAbilityReady(tool)
 end
 
 -- ==============================================================================
--- 2. ESCÁNER DE PARCELAS (FARM PLOTS) Y ROCAS GRANDES (BÚNKER)
+-- 2. ESCÁNER Y REGISTRO DE PARCELAS DE ZANAHORIAS (FARM PLOTS)
 -- ==============================================================================
 
 local function scanAndSaveFarmPlots()
     local plots = {}
     local structures = workspace:FindFirstChild("Structures") or workspace
 
-    for _, obj in ipairs(structures:GetChildren()) do
-        if obj.Name == "Farm Plot" or obj.Name:lower():find("farm") then
-            local pos = obj:IsA("Model") and obj:GetPivot().Position or (obj:IsA("BasePart") and obj.Position)
-            if pos then
-                table.insert(plots, { Instance = obj, Position = pos })
+    -- Busca en Structures y también en Workspace general
+    for _, container in ipairs({structures, workspace}) do
+        for _, obj in ipairs(container:GetChildren()) do
+            local n = obj.Name:lower()
+            if obj.Name == "Farm Plot" or n:find("farm plot") or n:find("carrot") then
+                local pos = obj:IsA("Model") and obj:GetPivot().Position or (obj:IsA("BasePart") and obj.Position)
+                if pos then
+                    table.insert(plots, { Instance = obj, Position = pos })
+                end
             end
         end
     end
+
     FarmState.SavedFarmPlots = plots
     return #plots
 end
@@ -124,7 +137,6 @@ local function findBestRockBunker()
     for _, desc in ipairs(mapFolder:GetDescendants()) do
         if desc:IsA("BasePart") then
             local n = desc.Name:lower()
-            -- Busca rocas grandes (como las de 14x10x15 del reporte)
             if (n:find("rock") or n:find("stone") or n:find("boulder")) and desc.Size.X >= 7 and desc.Size.Z >= 7 then
                 local dist = (desc.Position - myPos).Magnitude
                 if dist < shortestDist then
@@ -140,7 +152,7 @@ local function findBestRockBunker()
 end
 
 -- ==============================================================================
--- 3. ESCÁNER DE ZOMBIES EN 200 STUDS (NORMALES, LETALES E INFECTADOS)
+-- 3. ESCÁNER PREDICTIVO DE MASAS (200 STUDS) Y BUSCADOR DE HUECOS LIBRES
 -- ==============================================================================
 
 local function isLethalZombie(entity)
@@ -159,19 +171,20 @@ local function hasHackerVirus(entity)
     return false
 end
 
-local function analyzeLocalZombies(originPos)
+local function analyzeHordeAndPredict(originPos)
     local charFolder = workspace:FindFirstChild("Characters")
-    if not charFolder then return {}, {}, nil, nil, 0 end
+    if not charFolder then return {}, nil, nil, 0 end
 
-    local normalPositions = {}
-    local lethalPositions = {}
-
+    local predictedThreats = {} -- { Pos, IsLethal }
     local lowestInfected = nil
     local lowestInfectedHP = math.huge
 
     local lowestUninfected = nil
     local lowestUninfectedHP = math.huge
     local infectedTotal = 0
+    local totalIn200 = 0
+
+    local myXZ = Vector3.new(originPos.X, 0, originPos.Z)
 
     for _, ent in ipairs(charFolder:GetChildren()) do
         if ent:IsA("Model") and ent ~= lp.Character and ent:GetAttribute("Zombie") == true then
@@ -179,15 +192,26 @@ local function analyzeLocalZombies(originPos)
             local hum = ent:FindFirstChildOfClass("Humanoid")
 
             if eRoot and hum and hum.Health > 0 then
-                local horizDist = (Vector3.new(eRoot.Position.X, 0, eRoot.Position.Z) - Vector3.new(originPos.X, 0, originPos.Z)).Magnitude
+                local zXZ = Vector3.new(eRoot.Position.X, 0, eRoot.Position.Z)
+                local horizDist = (zXZ - myXZ).Magnitude
 
                 if horizDist <= Config.ScanRadius then
-                    if isLethalZombie(ent) then
-                        table.insert(lethalPositions, eRoot.Position)
-                    else
-                        table.insert(normalPositions, eRoot.Position)
-                    end
+                    totalIn200 = totalIn200 + 1
+                    local lethal = isLethalZombie(ent)
 
+                    -- Predicción: Dónde estará este zombie en Config.PredictionTime segundos
+                    local vel = eRoot.AssemblyLinearVelocity
+                    local velXZ = Vector3.new(vel.X, 0, vel.Z)
+                    local predictedXZ = zXZ + (velXZ * Config.PredictionTime)
+
+                    table.insert(predictedThreats, {
+                        CurrentXZ = zXZ,
+                        PredictedXZ = predictedXZ,
+                        Dist = horizDist,
+                        IsLethal = lethal
+                    })
+
+                    -- Clasificación para poderes de Hacker
                     local infected = hasHackerVirus(ent)
                     if infected then
                         infectedTotal = infectedTotal + 1
@@ -206,8 +230,55 @@ local function analyzeLocalZombies(originPos)
         end
     end
 
+    FarmState.TotalZombiesIn200 = totalIn200
     FarmState.InfectedCount = infectedTotal
-    return normalPositions, lethalPositions, lowestInfected, lowestUninfected, infectedTotal
+    return predictedThreats, lowestInfected, lowestUninfected, infectedTotal
+end
+
+-- Calcula la dirección más despejada evaluando 12 ángulos alrededor del jugador
+local function findBestEscapeDirection(myXZ, anchorXZ, threats, tangentDir)
+    local bestDir = tangentDir
+    local lowestDangerScore = math.huge
+
+    for i = 1, 12 do
+        local angle = (i - 1) * (math.pi * 2 / 12)
+        local candidateDir = Vector3.new(math.cos(angle), 0, math.sin(angle))
+        -- Punto de prueba a 35 studs en esa dirección
+        local samplePoint = myXZ + (candidateDir * 35)
+
+        local dangerScore = 0
+
+        -- 1. Penalizar si esa dirección nos lleva directo hacia zombies o su trayectoria futura
+        for _, t in ipairs(threats) do
+            local dNow = (samplePoint - t.CurrentXZ).Magnitude
+            local dPred = (samplePoint - t.PredictedXZ).Magnitude
+            local minD = math.min(dNow, dPred)
+
+            local safeRadius = t.IsLethal and Config.LethalZombieSafeDist or Config.NormalZombieSafeDist
+            local weight = t.IsLethal and 4.5 or 1.0
+
+            if minD < safeRadius then
+                dangerScore = dangerScore + ((safeRadius - minD) ^ 2) * weight
+            end
+        end
+
+        -- 2. Penalizar suavemente si se aleja demasiado del radio máximo permitido (200 studs)
+        local distFromAnchor = (samplePoint - anchorXZ).Magnitude
+        if distFromAnchor > Config.PatrolRadius * 1.4 then
+            dangerScore = dangerScore + ((distFromAnchor - Config.PatrolRadius) * 15)
+        end
+
+        -- 3. Favorecer fluidez con la dirección de órbita actual para no dar giros bruscos
+        local alignment = candidateDir:Dot(tangentDir)
+        dangerScore = dangerScore - (alignment * 40)
+
+        if dangerScore < lowestDangerScore then
+            lowestDangerScore = dangerScore
+            bestDir = candidateDir
+        end
+    end
+
+    return bestDir.Unit
 end
 
 -- ==============================================================================
@@ -245,7 +316,7 @@ task.spawn(function()
         if Config.Enabled and FarmState.Mode ~= "EATING" then
             local char, root, hum = getCharParts()
             if char and root and hum and hum.Health > 0 then
-                local _, _, lowestInfected, lowestUninfected, infectedCount = analyzeLocalZombies(root.Position)
+                local _, lowestInfected, lowestUninfected, infectedCount = analyzeHordeAndPredict(root.Position)
 
                 -- 1. SYSTEM OVERRIDE (120s)
                 if Config.AutoSystemOverride then
@@ -316,27 +387,30 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 5. SISTEMA DE HAMBRE (ZANAHORIAS)
+-- 5. SISTEMA DE HAMBRE Y VIAJE A ZANAHORIAS
 -- ==============================================================================
 
 local function harvestAndEatCarrot(plotObj)
     local char, _, hum = getCharParts()
     if not char or not hum then return end
 
-    if plotObj then
-        for _, desc in ipairs(plotObj:GetDescendants()) do
-            if desc:IsA("ProximityPrompt") and desc.Enabled and fireproximityprompt then
+    -- Disparar cualquier ProximityPrompt de zanahorias cerca
+    local structures = workspace:FindFirstChild("Structures") or workspace
+    for _, desc in ipairs(structures:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") and desc.Enabled then
+            local pPos = desc.Parent:IsA("BasePart") and desc.Parent.Position or (desc.Parent:IsA("Model") and desc.Parent:GetPivot().Position)
+            if pPos and (pPos - char:GetPivot().Position).Magnitude <= 15 and fireproximityprompt then
                 pcall(function() fireproximityprompt(desc) end)
                 pcall(function() fireproximityprompt(desc, 0) end)
             end
         end
+    end
 
-        local pickRemote = ReplicatedStorage:FindFirstChild("PickUpItem", true)
-        if pickRemote and pickRemote:IsA("RemoteEvent") then
-            for _, child in ipairs(plotObj:GetChildren()) do
-                if child.Name:lower():find("carrot") then
-                    pcall(function() pickRemote:FireServer(child) end)
-                end
+    local pickRemote = ReplicatedStorage:FindFirstChild("PickUpItem", true)
+    if pickRemote and pickRemote:IsA("RemoteEvent") and plotObj then
+        for _, child in ipairs(plotObj:GetChildren()) do
+            if child.Name:lower():find("carrot") then
+                pcall(function() pickRemote:FireServer(child) end)
             end
         end
     end
@@ -367,19 +441,19 @@ task.spawn(function()
             if Config.Enabled and Config.AutoEatEnabled then
                 if FarmState.Mode ~= "EATING" and hunger <= Config.HungryThreshold then
                     if #FarmState.SavedFarmPlots == 0 then scanAndSaveFarmPlots() end
-                    if #FarmState.SavedFarmPlots > 0 then
+                    if #FarmState.SavedFarmPlots > 0 or FarmState.ManualCarrotPos then
                         FarmState.Mode = "EATING"
                         Fluent:Notify({
-                            Title = "🥕 YENDO A COMER (" .. math.floor(hunger) .. "%)",
-                            Content = "Desplazándose esquivando zombies hacia tus Farm Plots...",
+                            Title = "🥕 HAMBRE BAJA (" .. math.floor(hunger) .. "%)",
+                            Content = "Viajando bajo tierra a comer zanahorias...",
                             Duration = 3
                         })
                     end
                 elseif FarmState.Mode == "EATING" and hunger >= Config.FullHungerThreshold then
-                    FarmState.Mode = "FARMING"
+                    FarmState.Mode = "ORBITING"
                     Fluent:Notify({
-                        Title = "✅ HAMBRE RECUPERADA",
-                        Content = "Volviendo a tu punto de ataque.",
+                        Title = "✅ HAMBRE LLENA (" .. math.floor(hunger) .. "%)",
+                        Content = "Volviendo a la zona de cacería.",
                         Duration = 3
                     })
                 end
@@ -389,12 +463,11 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 6. MOTOR DOBLE CAPA (STEPPED + HEARTBEAT) CON BURBUJA HORIZONTAL 360°
+-- 6. MOTOR CINÉTICO CONSTANTE Y PREDICTIVO (NUNCA SE DEJA RODEAR)
 -- ==============================================================================
 
 local DesiredCFrame = nil
 
--- En Stepped (Antes de las físicas): Anula inmediatamente cualquier subida a Y=1.6
 RunService.Stepped:Connect(function()
     if not Config.Enabled then return end
     local char, root = getCharParts()
@@ -411,7 +484,6 @@ RunService.Stepped:Connect(function()
     end
 end)
 
--- En Heartbeat: Calcula el Kiting Horizontal para que NINGÚN zombie esté sobre tu (X, Z)
 RunService.Heartbeat:Connect(function(dt)
     if not Config.Enabled then
         DesiredCFrame = nil
@@ -421,71 +493,62 @@ RunService.Heartbeat:Connect(function(dt)
     local _, root, hum = getCharParts()
     if not root or not hum or hum.Health <= 0 then return end
 
-    local baseGoalXZ = Vector3.new(FarmState.AnchorPos.X, 0, FarmState.AnchorPos.Z)
-    local targetY = Config.UndergroundDepth
-
-    -- Si el modo Búnker de Roca está activo, usa la roca y una profundidad suave (-1.8) que no da rollback
-    if Config.UseRockBunker and FarmState.NearestRockPos then
-        baseGoalXZ = Vector3.new(FarmState.NearestRockPos.X, 0, FarmState.NearestRockPos.Z)
-        targetY = Config.RockBunkerDepth
-    end
-
-    -- Si está comiendo, el objetivo es la parcela de zanahorias
-    if FarmState.Mode == "EATING" and #FarmState.SavedFarmPlots > 0 then
-        local plot = FarmState.SavedFarmPlots[1]
-        baseGoalXZ = Vector3.new(plot.Position.X, 0, plot.Position.Z)
-        targetY = -3.2
-
-        local distToPlot = (Vector3.new(root.Position.X, 0, root.Position.Z) - baseGoalXZ).Magnitude
-        if distToPlot <= 8.0 then
-            harvestAndEatCarrot(plot.Instance)
-        end
-    end
-
-    -- CALCULAR REPULSIÓN HORIZONTAL CONTRA TODOS LOS ZOMBIES (EVITA GOLPES EN ROLLBACK)
-    local normalZombies, lethalZombies = analyzeLocalZombies(root.Position)
     local myXZ = Vector3.new(root.Position.X, 0, root.Position.Z)
-    local repulseVec = Vector3.zero
+    local anchorXZ = Vector3.new(FarmState.AnchorPos.X, 0, FarmState.AnchorPos.Z)
+    local targetY = (hum.Health < 60) and Config.LowHealthDepth or Config.UndergroundDepth
 
-    -- 1. Alejarse 42 studs de Bloaters y Hazmats
-    for _, lPos in ipairs(lethalZombies) do
-        local diff = myXZ - Vector3.new(lPos.X, 0, lPos.Z)
-        local d = diff.Magnitude
-        if d < Config.LethalZombieSafeDist then
-            local pushDir = (d > 0.1) and diff.Unit or Vector3.new(1, 0, 0)
-            repulseVec = repulseVec + (pushDir * (Config.LethalZombieSafeDist - d) * 2.5)
+    -- CASO 1: COMIENDO ZANAHORIAS
+    if FarmState.Mode == "EATING" then
+        local carrotTargetXZ = nil
+        local plotInstance = nil
+
+        if FarmState.ManualCarrotPos then
+            carrotTargetXZ = Vector3.new(FarmState.ManualCarrotPos.X, 0, FarmState.ManualCarrotPos.Z)
+        elseif #FarmState.SavedFarmPlots > 0 then
+            carrotTargetXZ = Vector3.new(FarmState.SavedFarmPlots[1].Position.X, 0, FarmState.SavedFarmPlots[1].Position.Z)
+            plotInstance = FarmState.SavedFarmPlots[1].Instance
         end
-    end
 
-    -- 2. Alejarse 20 studs de zombies normales (Si no estás dentro de un Búnker de Roca)
-    if not (Config.UseRockBunker and FarmState.NearestRockPos and (myXZ - baseGoalXZ).Magnitude < 6) then
-        for _, nPos in ipairs(normalZombies) do
-            local diff = myXZ - Vector3.new(nPos.X, 0, nPos.Z)
-            local d = diff.Magnitude
-            if d < Config.NormalZombieSafeDist then
-                local pushDir = (d > 0.1) and diff.Unit or Vector3.new(0, 0, 1)
-                repulseVec = repulseVec + (pushDir * (Config.NormalZombieSafeDist - d) * 1.8)
+        if carrotTargetXZ then
+            targetY = -3.2
+            local toCarrot = carrotTargetXZ - myXZ
+            if toCarrot.Magnitude <= 7.5 then
+                harvestAndEatCarrot(plotInstance)
+                DesiredCFrame = CFrame.new(myXZ.X, targetY, myXZ.Z)
+            else
+                local step = math.min(toCarrot.Magnitude, Config.MoveSpeed * dt)
+                local nextXZ = myXZ + (toCarrot.Unit * step)
+                DesiredCFrame = CFrame.new(nextXZ.X, targetY, nextXZ.Z)
             end
+            root.CFrame = DesiredCFrame
+            return
         end
     end
 
-    local finalTargetXZ = baseGoalXZ
-    if repulseVec.Magnitude > 0.5 then
-        if FarmState.Mode ~= "EATING" then FarmState.Mode = "EVADING" end
-        finalTargetXZ = myXZ + repulseVec
-    else
-        if FarmState.Mode ~= "EATING" then FarmState.Mode = "FARMING" end
-    end
+    -- CASO 2: CACERÍA EN MOVIMIENTO CONSTANTE + EVASIÓN PREDICTIVA DE 300 ZOMBIES
+    local threats = analyzeHordeAndPredict(root.Position)
 
-    -- Movimiento continuo a velocidad segura (<= 26 studs/s)
-    local toGoal = finalTargetXZ - myXZ
-    local dist = toGoal.Magnitude
-    local nextXZ = myXZ
+    -- Avance angular constante alrededor de tu zona de ataque
+    local angularSpeed = Config.MoveSpeed / math.max(25, Config.PatrolRadius)
+    FarmState.OrbitAngle = (FarmState.OrbitAngle + angularSpeed * dt) % (math.pi * 2)
 
-    if dist > 0.5 then
-        local step = math.min(dist, Config.SafeMoveSpeed * dt)
-        nextXZ = myXZ + (toGoal.Unit * step)
-    end
+    local orbitTargetXZ = anchorXZ + Vector3.new(
+        math.cos(FarmState.OrbitAngle) * Config.PatrolRadius,
+        0,
+        math.sin(FarmState.OrbitAngle) * Config.PatrolRadius
+    )
+
+    local toOrbit = orbitTargetXZ - myXZ
+    local baseTangentDir = (toOrbit.Magnitude > 0.1) and toOrbit.Unit or Vector3.new(1, 0, 0)
+
+    -- Buscar el corredor libre prediciendo hacia dónde van las masas
+    local bestMoveDir = findBestEscapeDirection(myXZ, anchorXZ, threats, baseTangentDir)
+
+    -- Suavizado de dirección para giro fluido y constante
+    FarmState.CurrentEscapeDir = (FarmState.CurrentEscapeDir * 0.75 + bestMoveDir * 0.25).Unit
+
+    local nextXZ = myXZ + (FarmState.CurrentEscapeDir * (Config.MoveSpeed * dt))
+    FarmState.Mode = (#threats > 0) and "KITING PREDICTIVO" or "ÓRBITA CONSTANTE"
 
     DesiredCFrame = CFrame.new(nextXZ.X, targetY, nextXZ.Z)
     root.AssemblyLinearVelocity = Vector3.zero
@@ -493,14 +556,14 @@ RunService.Heartbeat:Connect(function(dt)
 end)
 
 -- ==============================================================================
--- 7. INTERFAZ FLUENT
+-- 7. INTERFAZ FLUENT COMPLETA (SIN QUITAR NADA)
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "HACKER UNDERGROUND | FARM V2",
-    SubTitle = "Burbuja Anti-Golpe + Búnker en Roca + Virus",
+    Title = "HACKER UNDERGROUND | FARM V3",
+    SubTitle = "Kiting Predictivo (300 Zombies) + Virus + Zanahorias",
     TabWidth = 160,
-    Size = UDim2.fromOffset(580, 490),
+    Size = UDim2.fromOffset(600, 520),
     Acrylic = false,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
@@ -508,17 +571,18 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Main = Window:AddTab({ Title = "Farmeo Hacker", Icon = "terminal" }),
-    Safety = Window:AddTab({ Title = "Burbuja & Roca", Icon = "shield" }),
+    Safety = Window:AddTab({ Title = "Movimiento & Masas", Icon = "shield" }),
     Food = Window:AddTab({ Title = "Auto-Zanahorias", Icon = "apple" })
 }
 
 local StatusParagraph = Tabs.Main:AddParagraph({
-    Title = "Monitor en Vivo",
+    Title = "Estado del Sistema Hacker",
     Content = "Esperando activación..."
 })
 
 Tabs.Main:AddToggle("EnableHackerFarm", {
-    Title = "💻 Activar Farmeo Hacker V2",
+    Title = "💻 Activar Cacería Subterránea V3",
+    Description = "Movimiento constante predictivo + Poderes Hacker + Auto-Comida",
     Default = false,
     Callback = function(v)
         Config.Enabled = v
@@ -526,7 +590,11 @@ Tabs.Main:AddToggle("EnableHackerFarm", {
         if v and root then
             FarmState.AnchorPos = root.Position
             scanAndSaveFarmPlots()
-            findBestRockBunker()
+            Fluent:Notify({
+                Title = "💻 HACKER FARM V3 ACTIVO",
+                Content = string.format("Zona fijada. Parcelas registradas: %d", #FarmState.SavedFarmPlots),
+                Duration = 3
+            })
         elseif not v and root then
             DesiredCFrame = nil
             root.CFrame = CFrame.new(root.Position.X, 3.5, root.Position.Z)
@@ -534,19 +602,13 @@ Tabs.Main:AddToggle("EnableHackerFarm", {
     end
 })
 
-Tabs.Main:AddToggle("RockBunkerToggle", {
-    Title = "🪨 Modo Búnker en Roca Grande (Recomendado - 0 Rollback)",
-    Description = "Se mete dentro de la roca grande más cercana a Y=-1.8 donde los zombies chocan",
-    Default = false,
-    Callback = function(v)
-        Config.UseRockBunker = v
-        if v then
-            local rPos = findBestRockBunker()
-            if rPos then
-                Fluent:Notify({ Title = "🪨 Roca Encontrada", Content = "Moviéndose al interior de la roca.", Duration = 3 })
-            else
-                Fluent:Notify({ Title = "⚠️ Sin Roca Cerca", Content = "Acércate a menos de 200 studs de una roca grande.", Duration = 3 })
-            end
+Tabs.Main:AddButton({
+    Title = "📍 Fijar Mi Posición Actual como Centro de Cacería",
+    Callback = function()
+        local _, root = getCharParts()
+        if root then
+            FarmState.AnchorPos = root.Position
+            Fluent:Notify({ Title = "Zona Actualizada", Content = "Nuevo centro de órbita guardado.", Duration = 2.5 })
         end
     end
 })
@@ -569,25 +631,55 @@ Tabs.Main:AddToggle("GunChainToggle", {
     Callback = function(v) Config.AutoGunVirusChain = v end
 })
 
+-- PESTAÑA MOVIMIENTO & PREDICCIÓN DE MASAS
+Tabs.Safety:AddSlider("SpeedSlider", {
+    Title = "Velocidad de Desplazamiento Constante",
+    Description = "Súbelo si sientes que los zombies corredores se acercan",
+    Default = 38,
+    Min = 20,
+    Max = 75,
+    Rounding = 0,
+    Callback = function(v) Config.MoveSpeed = v end
+})
+
+Tabs.Safety:AddSlider("PatrolRadiusSlider", {
+    Title = "Amplitud de Desplazamiento / Órbita (Studs)",
+    Description = "Qué tan amplio se mueve tu muñeco para no quedar encerrado",
+    Default = 65,
+    Min = 30,
+    Max = 130,
+    Rounding = 0,
+    Callback = function(v) Config.PatrolRadius = v end
+})
+
 Tabs.Safety:AddSlider("NormalSafeSlider", {
-    Title = "Burbuja contra Zombies Normales (Studs)",
-    Description = "Impide que se paren encima de ti cuando ocurre un rollback",
-    Default = 20,
-    Min = 12,
-    Max = 35,
+    Title = "Distancia de Esquive Zombies Normales (Studs)",
+    Default = 32,
+    Min = 18,
+    Max = 55,
     Rounding = 0,
     Callback = function(v) Config.NormalZombieSafeDist = v end
 })
 
 Tabs.Safety:AddSlider("LethalSafeSlider", {
-    Title = "Burbuja contra Bloaters / Hazmats (Studs)",
-    Default = 42,
-    Min = 25,
-    Max = 70,
+    Title = "Distancia de Esquive Bloaters / Hazmats (Studs)",
+    Default = 55,
+    Min = 35,
+    Max = 85,
     Rounding = 0,
     Callback = function(v) Config.LethalZombieSafeDist = v end
 })
 
+Tabs.Safety:AddSlider("DepthSlider", {
+    Title = "Profundidad Subterránea (Y)",
+    Default = -6,
+    Min = -14,
+    Max = -3,
+    Rounding = 1,
+    Callback = function(v) Config.UndergroundDepth = v end
+})
+
+-- PESTAÑA ZANAHORIAS (CON REGISTRO AUTOMÁTICO Y MANUAL)
 Tabs.Food:AddToggle("AutoEatToggle", {
     Title = "🥕 Ir a Comer Zanahorias Automáticamente",
     Default = true,
@@ -603,15 +695,45 @@ Tabs.Food:AddSlider("HungrySlider", {
     Callback = function(v) Config.HungryThreshold = v end
 })
 
+Tabs.Food:AddButton({
+    Title = "🔍 Re-Escanear Mis Farm Plots Automáticamente",
+    Description = "Busca todas las parcelas plantadas en la base",
+    Callback = function()
+        local count = scanAndSaveFarmPlots()
+        Fluent:Notify({
+            Title = "Escaneo de Zanahorias",
+            Content = string.format("Se encontraron %d Farm Plots en el mapa.", count),
+            Duration = 3
+        })
+    end
+})
+
+Tabs.Food:AddButton({
+    Title = "📌 Guardar Mi Posición Actual como Punto de Zanahorias",
+    Description = "Párate sobre tus zanahorias y presiona aquí para forzar esa coordenada",
+    Callback = function()
+        local _, root = getCharParts()
+        if root then
+            FarmState.ManualCarrotPos = root.Position
+            Fluent:Notify({
+                Title = "🥕 Coordenada de Zanahorias Fijada",
+                Content = string.format("Guardado en: %.1f, %.1f", root.Position.X, root.Position.Z),
+                Duration = 3
+            })
+        end
+    end
+})
+
+-- MONITOR COMPLETO EN VIVO
 task.spawn(function()
     while true do
         task.wait(0.4)
+        local carrotStatus = FarmState.ManualCarrotPos and "Manual Fijado" or (tostring(#FarmState.SavedFarmPlots) .. " Plots")
         StatusParagraph:SetDesc(string.format(
-            "Estado: %s | Infectados: %d\nVida: %.0f%% | Hambre: %.0f%%\nBúnker Roca: %s | Pausa 3s Post-Kill: %s",
-            FarmState.Mode, FarmState.InfectedCount,
-            FarmState.CurrentHP, FarmState.CurrentHunger,
-            (Config.UseRockBunker and FarmState.NearestRockPos) and "🟢 ACTIVO" or "OFF (Kiting Abierto)",
-            FarmState.WaitingForChain and "⏳ ESPERANDO 3s" or "LISTO"
+            "Modo: %s | Zombies en 200 studs: %d\nInfectados con Virus: %d | Pausa 3s: %s\nVida: %.0f%% | Hambre: %.0f%% | Zanahorias: %s",
+            FarmState.Mode, FarmState.TotalZombiesIn200,
+            FarmState.InfectedCount, FarmState.WaitingForChain and "⏳ ESPERANDO" or "LISTO",
+            FarmState.CurrentHP, FarmState.CurrentHunger, carrotStatus
         ))
     end
 end)
