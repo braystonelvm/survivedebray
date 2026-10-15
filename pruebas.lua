@@ -1,351 +1,639 @@
 -- ==============================================================================
--- ESCÁNER SIN-HOOK DE DISPARO 360° (MÓDULOS, CONSTANTES Y EVENTOS INTERNOS)
+-- HACKER GROUND COMBAT V2: SLOTS 5 & 6 + DISPARO 360° + PAUSA 2s POST-KILL
 -- ==============================================================================
+
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
+local cam = workspace.CurrentCamera
 
-local ReportData = {
-    ExecutorCapabilities = {},
-    ToolHierarchy = {},
-    ModuleAnalysis = {},
-    ScriptConstants = {},
-    LiveEvents = {}
+local Config = {
+    Enabled = false,
+    ScanRadius = 100,             -- Escaneo de 100 studs a los lados
+
+    -- SLOTS DE ARMAS A UTILIZAR
+    UseSlot5 = true,              -- Usar arma en Slot 5 (ej. Infiltrator Uzi)
+    UseSlot6 = true,              -- Usar arma en Slot 6 (ej. Pistol)
+
+    -- 1. INFILTRARSE (CADA 15s AL DE MENOS VIDA)
+    AutoInfiltrate = true,
+    InfiltrateRange = 50,
+
+    -- 2. ANULACIÓN DEL SISTEMA (SOLO SI HAY > 7 INFECTADOS)
+    AutoSystemOverride = true,
+    MinInfectedForOverride = 7,   -- Más de 7 infectados (8+)
+
+    -- 3. DISPARO PAUSADO AL INFECTADO CON MENOS VIDA
+    AutoGunVirus = true,
+    GunRange = 100,
+    ShotInterval = 0.22,          -- Tiempo entre cada bala al disparar
+    WaitAfterKill = 2.0,          -- Espera 2 segundos tras matar al infectado
+    MaxShotsPerTarget = 5,        -- Balas máximas seguidas antes de re-evaluar
+    Silent360Mode = true          -- Disparar sin rotar tu vista (o micro-flick de 0.01s)
 }
 
-local function serializeVal(v, depth)
-    depth = depth or 0
-    if depth > 2 then return "..." end
-    local t = typeof(v)
-    if t == "Instance" then
-        return string.format("[%s: %s]", v.ClassName, v:GetFullName())
-    elseif t == "Vector3" then
-        return string.format("Vector3(%.1f, %.1f, %.1f)", v.X, v.Y, v.Z)
-    elseif t == "CFrame" then
-        local p = v.Position
-        return string.format("CFrame(%.1f, %.1f, %.1f)", p.X, p.Y, p.Z)
-    elseif t == "table" then
-        local s = {}
-        local count = 0
-        for k, val in pairs(v) do
-            count = count + 1
-            if count <= 15 then
-                table.insert(s, tostring(k) .. "=" .. serializeVal(val, depth + 1))
+local State = {
+    InfectedCount = 0,
+    TotalZombiesInRange = 0,
+    Slot5WeaponName = "Detectando...",
+    Slot6WeaponName = "Detectando...",
+    WaitingAfterKill = false,
+    WaitUntilTick = 0,
+    CurrentAction = "En espera"
+}
+
+local TargetHighlight = nil
+local MainToggleInstance = nil
+
+-- ==============================================================================
+-- CURSOR SIEMPRE VISIBLE
+-- ==============================================================================
+RunService.RenderStepped:Connect(function()
+    UserInputService.MouseIconEnabled = true
+end)
+
+-- ==============================================================================
+-- 1. LECTURA AUTOMÁTICA DE LOS SLOTS 5 Y 6 EN EL HOTBAR
+-- ==============================================================================
+
+local function getCharParts()
+    local char = lp.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    return char, root, hum
+end
+
+local function findToolByName(toolName)
+    if not toolName or toolName == "" then return nil end
+    local char = lp.Character
+    local bp = lp:FindFirstChild("Backpack")
+
+    for _, cont in ipairs({char, bp}) do
+        if cont then
+            for _, item in ipairs(cont:GetChildren()) do
+                if item:IsA("Tool") and item.Name:lower() == toolName:lower() then
+                    return item
+                end
             end
         end
-        return "{" .. table.concat(s, ", ") .. "}"
-    elseif t == "function" then
-        local infoStr = "function"
+    end
+    return nil
+end
+
+-- Lee qué arma está asignada al botón 5 o 6 en PlayerGui.BackpackGui.Backpack.Hotbar
+local function getToolFromHotbarSlot(slotNumber)
+    local pGui = lp:FindFirstChild("PlayerGui")
+    local bpGui = pGui and pGui:FindFirstChild("BackpackGui")
+    local bpFrame = bpGui and bpGui:FindFirstChild("Backpack")
+    local hotbar = bpFrame and bpFrame:FindFirstChild("Hotbar")
+    local slotBtn = hotbar and hotbar:FindFirstChild(tostring(slotNumber))
+
+    if slotBtn then
+        for _, child in ipairs(slotBtn:GetDescendants()) do
+            if child:IsA("TextLabel") then
+                local txt = child.Text
+                -- Ignorar el número del slot ('5', '6') y cantidades ('x1')
+                if txt ~= "" and txt ~= tostring(slotNumber) and not txt:match("^x%d+$") and not txt:match("^%d+s$") then
+                    local foundTool = findToolByName(txt)
+                    if foundTool then
+                        return foundTool, txt
+                    end
+                end
+            end
+        end
+    end
+    return nil, "Vacío"
+end
+
+-- Selecciona la mejor arma disponible entre el Slot 5 y el Slot 6
+local function getBestSlotWeapon()
+    local tool5, name5 = getToolFromHotbarSlot(5)
+    local tool6, name6 = getToolFromHotbarSlot(6)
+
+    State.Slot5WeaponName = name5
+    State.Slot6WeaponName = name6
+
+    -- Priorizar Slot 5 si tiene balas
+    if Config.UseSlot5 and tool5 then
+        local ammo5 = tool5:GetAttribute("Ammo")
+        if type(ammo5) ~= "number" or ammo5 > 0 then
+            return tool5
+        end
+    end
+
+    -- Si Slot 5 está vacío o sin balas, usar Slot 6
+    if Config.UseSlot6 and tool6 then
+        local ammo6 = tool6:GetAttribute("Ammo")
+        if type(ammo6) ~= "number" or ammo6 > 0 then
+            return tool6
+        end
+    end
+
+    -- Si ambas están en 0 balas, devolver la del Slot 5 o 6 para que el script la recargue
+    if Config.UseSlot5 and tool5 then return tool5 end
+    if Config.UseSlot6 and tool6 then return tool6 end
+
+    return nil
+end
+
+local function isAbilityReady(tool)
+    if not tool then return false end
+    local cd = tool:GetAttribute("Cooldown")
+    return (cd == nil) or (type(cd) == "number" and cd <= 0.05)
+end
+
+local function hasHackerVirus(entity)
+    if entity:GetAttribute("HackerVirus") == true then return true end
+    for k, v in pairs(entity:GetAttributes()) do
+        if k:lower():find("hackervirus") and v == true then
+            return true
+        end
+    end
+    if entity:FindFirstChild("VirusHighlight") then return true end
+    return false
+end
+
+local function updateTargetHighlight(zombieModel)
+    if TargetHighlight and TargetHighlight.Adornee == zombieModel then return end
+    if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
+
+    if zombieModel and Config.Enabled then
+        TargetHighlight = Instance.new("Highlight")
+        TargetHighlight.Name = "HackerTargetHighlight"
+        TargetHighlight.FillColor = Color3.fromRGB(0, 255, 180)
+        TargetHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        TargetHighlight.FillTransparency = 0.45
+        TargetHighlight.Adornee = zombieModel
+        TargetHighlight.Parent = zombieModel
+    end
+end
+
+-- ==============================================================================
+-- 2. ESCÁNER DE ZOMBIES EN 100 STUDS
+-- ==============================================================================
+
+local function scanZombiesIn100Studs()
+    local _, root = getCharParts()
+    if not root then return 0, nil, nil end
+
+    local charFolder = workspace:FindFirstChild("Characters")
+    if not charFolder then return 0, nil, nil end
+
+    local myXZ = Vector3.new(root.Position.X, 0, root.Position.Z)
+
+    local infectedCount = 0
+    local totalInRange = 0
+
+    local lowestInfected = nil
+    local lowestInfectedHP = math.huge
+
+    local lowestUninfected = nil
+    local lowestUninfectedHP = math.huge
+
+    local lowestAnyInfiltrate = nil
+    local lowestAnyHP = math.huge
+
+    for _, ent in ipairs(charFolder:GetChildren()) do
+        if ent:IsA("Model") and ent ~= lp.Character and ent:GetAttribute("Zombie") == true then
+            local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent:FindFirstChild("Torso") or ent.PrimaryPart
+            local hum = ent:FindFirstChildOfClass("Humanoid")
+
+            if eRoot and hum and hum.Health > 0 then
+                local zXZ = Vector3.new(eRoot.Position.X, 0, eRoot.Position.Z)
+                local dist = (zXZ - myXZ).Magnitude
+
+                if dist <= Config.ScanRadius then
+                    totalInRange = totalInRange + 1
+                    local isInfected = hasHackerVirus(ent)
+
+                    if dist <= Config.InfiltrateRange and hum.Health < lowestAnyHP then
+                        lowestAnyHP = hum.Health
+                        lowestAnyInfiltrate = { Model = ent, Root = eRoot, Hum = hum, Dist = dist }
+                    end
+
+                    if isInfected then
+                        infectedCount = infectedCount + 1
+                        if dist <= Config.GunRange and hum.Health < lowestInfectedHP then
+                            lowestInfectedHP = hum.Health
+                            lowestInfected = { Model = ent, Root = eRoot, Hum = hum, Dist = dist }
+                        end
+                    else
+                        if dist <= Config.InfiltrateRange and hum.Health < lowestUninfectedHP then
+                            lowestUninfectedHP = hum.Health
+                            lowestUninfected = { Model = ent, Root = eRoot, Hum = hum, Dist = dist }
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    State.InfectedCount = infectedCount
+    State.TotalZombiesInRange = totalInRange
+
+    local bestInfiltrateTarget = lowestUninfected or lowestAnyInfiltrate
+    return infectedCount, lowestInfected, bestInfiltrateTarget
+end
+
+-- ==============================================================================
+-- 3. MOTOR DE DISPARO 360° (REMOTE + MICRO-FLICK INSTANTÁNEO)
+-- ==============================================================================
+
+local function fireWeaponAtTarget(gun, targetModel, targetRoot, targetHum)
+    local char, root, hum = getCharParts()
+    if not char or not root or not gun or not targetRoot then return end
+
+    local head = targetModel:FindFirstChild("Head") or targetRoot
+    local originPos = (root.CFrame * CFrame.new(0, 1.5, 0)).Position
+    local hitPos = head.Position
+    local dirVec = (hitPos - originPos).Unit
+    local rKey = gun:GetAttribute("RandomKey")
+
+    -- 1. Disparo por RemoteEvents directos (Con RandomKey para cuando estás de espaldas)
+    local shootRemote = gun:FindFirstChild("Shoot")
+    local hitRemote = gun:FindFirstChild("ProjectileHit")
+
+    if shootRemote and shootRemote:IsA("RemoteEvent") then
+        pcall(function() shootRemote:FireServer(originPos, dirVec, rKey) end)
+        pcall(function() shootRemote:FireServer(hitPos, rKey) end)
+        pcall(function() shootRemote:FireServer(rKey, originPos, dirVec) end)
+    end
+
+    if hitRemote and hitRemote:IsA("RemoteEvent") then
+        pcall(function() hitRemote:FireServer(head, hitPos, dirVec, rKey) end)
+        pcall(function() hitRemote:FireServer(targetModel, head, hitPos, rKey) end)
+        pcall(function() hitRemote:FireServer(rKey, head, hitPos) end)
+    end
+
+    -- 2. Micro-Flick de 1 fotograma + Input Virtual (Hace que el script local del arma dispare con su propia RandomKey sin girar tu pantalla visualmente)
+    local savedCamCF = cam.CFrame
+    local savedRootCF = root.CFrame
+
+    -- Orientar personaje y cámara hacia el objetivo durante 1 frame antes del disparo
+    cam.CFrame = CFrame.new(savedCamCF.Position, hitPos)
+    root.CFrame = CFrame.new(root.Position, Vector3.new(hitPos.X, root.Position.Y, hitPos.Z))
+
+    pcall(function() gun:Activate() end)
+    if mouse1click then
+        pcall(mouse1click)
+    else
         pcall(function()
-            if debug and debug.info then
-                local name = debug.info(v, "n")
-                local src = debug.info(v, "s")
-                local line = debug.info(v, "l")
-                infoStr = string.format("func '%s' (%s:%s)", tostring(name), tostring(src), tostring(line))
-            end
+            local vp = cam.ViewportSize
+            VirtualInputManager:SendMouseButtonEvent(vp.X * 0.5, vp.Y * 0.5, 0, true, game, 1)
+            task.wait(0.02)
+            VirtualInputManager:SendMouseButtonEvent(vp.X * 0.5, vp.Y * 0.5, 0, false, game, 1)
         end)
-        return infoStr
-    else
-        return tostring(v)
+    end
+
+    -- Si Silent360Mode está activo, restaurar tu cámara original al instante para que no sientas el giro
+    if Config.Silent360Mode then
+        RunService.RenderStepped:Wait()
+        cam.CFrame = savedCamCF
+    end
+end
+
+local function useHackerAbility(tool, targetRoot)
+    local char, root, hum = getCharParts()
+    if not char or not root or not hum or not tool then return end
+
+    if tool.Parent ~= char then
+        hum:EquipTool(tool)
+        task.wait(0.06)
+    end
+
+    local savedCamCF = cam.CFrame
+    if targetRoot then
+        cam.CFrame = CFrame.new(savedCamCF.Position, targetRoot.Position)
+        root.CFrame = CFrame.new(root.Position, Vector3.new(targetRoot.Position.X, root.Position.Y, targetRoot.Position.Z))
+    end
+
+    pcall(function() tool:Activate() end)
+    local useRem = tool:FindFirstChild("Use")
+    if useRem and useRem:IsA("RemoteEvent") then
+        if targetRoot then
+            pcall(function() useRem:FireServer(targetRoot.Parent) end)
+            pcall(function() useRem:FireServer(targetRoot.Position) end)
+        else
+            pcall(function() useRem:FireServer() end)
+        end
+    end
+
+    if mouse1click then pcall(mouse1click) end
+
+    if targetRoot and Config.Silent360Mode then
+        RunService.RenderStepped:Wait()
+        cam.CFrame = savedCamCF
     end
 end
 
 -- ==============================================================================
--- 1. DETECTAR QUÉ FUNCIONES SOPORTA TU EJECUTOR
+-- 4. BUCLE PRINCIPAL DE PRIORIDADES (OVERRIDE > INFILTRATE > SLOTS 5/6)
 -- ==============================================================================
-local function checkCapabilities()
-    local caps = {
-        ["getgc"] = (getgc ~= nil),
-        ["getsenv"] = (getsenv ~= nil),
-        ["decompile"] = (decompile ~= nil),
-        ["debug.getconstants"] = (debug and debug.getconstants ~= nil) or (getconstants ~= nil),
-        ["debug.getupvalues"] = (debug and debug.getupvalues ~= nil) or (getupvalues ~= nil),
-        ["debug.getprotos"] = (debug and debug.getprotos ~= nil) or (getprotos ~= nil),
-        ["fireproximityprompt"] = (fireproximityprompt ~= nil),
-        ["mouse1click"] = (mouse1click ~= nil)
-    }
-    local list = {}
-    for k, v in pairs(caps) do
-        table.insert(list, string.format("%s: %s", k, tostring(v)))
-    end
-    ReportData.ExecutorCapabilities = list
-end
 
--- ==============================================================================
--- 2. INSPECCIONAR TODOS LOS OBJETOS Y SCRIPTS DENTRO DE TUS ARMAS Y PODERES
--- ==============================================================================
-local function scanToolsDeep()
-    local list = {}
-    local getConsts = (debug and debug.getconstants) or getconstants
-    local getUpvals = (debug and debug.getupvalues) or getupvalues
+task.spawn(function()
+    while true do
+        task.wait(0.12)
+        if not Config.Enabled then
+            State.CurrentAction = "Apagado"
+            updateTargetHighlight(nil)
+        else
+            local char, root, hum = getCharParts()
+            if char and root and hum and hum.Health > 0 then
+                local infectedCount, lowestInfected, bestInfiltrateTarget = scanZombiesIn100Studs()
 
-    for _, cont in ipairs({lp.Character, lp:FindFirstChild("Backpack")}) do
-        if cont then
-            for _, tool in ipairs(cont:GetChildren()) do
-                if tool:IsA("Tool") then
-                    table.insert(list, string.format("🔧 TOOL: '%s' (en %s)", tool.Name, cont.Name))
-                    for k, v in pairs(tool:GetAttributes()) do
-                        table.insert(list, string.format("   [Attr] %s = %s", k, tostring(v)))
+                -- =============================================================
+                -- 1. ANULACIÓN DEL SISTEMA: SOLO SI HAY MÁS DE 7 INFECTADOS
+                -- =============================================================
+                local didOverride = false
+                if Config.AutoSystemOverride and infectedCount > Config.MinInfectedForOverride then
+                    local sysTool = findToolByName("System Override")
+                    if sysTool and isAbilityReady(sysTool) then
+                        State.CurrentAction = string.format("💥 System Override (%d infectados)", infectedCount)
+                        useHackerAbility(sysTool, nil)
+                        didOverride = true
+                        task.wait(0.25)
                     end
+                end
 
-                    for _, desc in ipairs(tool:GetDescendants()) do
-                        table.insert(list, string.format("   • %s (%s)", desc.Name, desc.ClassName))
+                -- =============================================================
+                -- 2. INFILTRARSE: SIEMPRE AL ZOMBIE CON MENOS VIDA
+                -- =============================================================
+                local didInfiltrate = false
+                if not didOverride and Config.AutoInfiltrate and bestInfiltrateTarget then
+                    local infTool = findToolByName("Infiltrate")
+                    if infTool and isAbilityReady(infTool) then
+                        State.CurrentAction = string.format("🦠 Infiltrate -> %s (%.0f HP)", bestInfiltrateTarget.Model.Name, bestInfiltrateTarget.Hum.Health)
+                        updateTargetHighlight(bestInfiltrateTarget.Model)
+                        useHackerAbility(infTool, bestInfiltrateTarget.Root)
+                        didInfiltrate = true
+                        task.wait(0.22)
+                    end
+                end
 
-                        -- Si es un LocalScript o ModuleScript, intentar extraer su código o constantes
-                        if desc:IsA("LocalScript") or desc:IsA("ModuleScript") then
-                            if decompile then
-                                pcall(function()
-                                    local src = decompile(desc)
-                                    if src and #src > 5 then
-                                        table.insert(ReportData.ScriptConstants, string.format("=== DECOMPILE: %s ===\n%s", desc:GetFullName(), src:sub(1, 1500)))
-                                    end
-                                end)
-                            end
-
-                            if getsenv and desc:IsA("LocalScript") then
-                                pcall(function()
-                                    local env = getsenv(desc)
-                                    for k, v in pairs(env) do
-                                        if k ~= "_G" and k ~= "shared" then
-                                            table.insert(ReportData.ScriptConstants, string.format("SENV [%s] %s = %s", desc.Name, tostring(k), serializeVal(v)))
-                                            if type(v) == "function" and getConsts then
-                                                pcall(function()
-                                                    local cList = {}
-                                                    for _, c in pairs(getConsts(v)) do
-                                                        if type(c) == "string" or type(c) == "number" then
-                                                            table.insert(cList, tostring(c))
-                                                        end
-                                                    end
-                                                    if #cList > 0 then
-                                                        table.insert(ReportData.ScriptConstants, "   Consts: " .. table.concat(cList, ", "))
-                                                    end
-                                                end)
-                                            end
-                                        end
-                                    end
-                                end)
-                            end
+                -- =============================================================
+                -- 3. ARMAS EN SLOTS 5 Y 6: DISPARAR AL INFECTADO CON MENOS VIDA
+                -- =============================================================
+                if not didOverride and not didInfiltrate and Config.AutoGunVirus then
+                    if State.WaitingAfterKill then
+                        local rem = State.WaitUntilTick - tick()
+                        if rem <= 0 then
+                            State.WaitingAfterKill = false
+                        else
+                            State.CurrentAction = string.format("⏳ Pausa post-kill (%.1fs)", rem)
                         end
+                    elseif lowestInfected and lowestInfected.Hum and lowestInfected.Hum.Health > 0 then
+                        local gun = getBestSlotWeapon()
+                        if gun then
+                            local ammo = gun:GetAttribute("Ammo")
+                            if type(ammo) == "number" and ammo <= 0 then
+                                State.CurrentAction = "🔄 Recargando " .. gun.Name .. "..."
+                                local reloadFunc = gun:FindFirstChild("Reload")
+                                if reloadFunc and reloadFunc:IsA("RemoteFunction") then
+                                    task.spawn(function() pcall(function() reloadFunc:InvokeServer() end) end)
+                                    task.wait(1.2)
+                                end
+                            else
+                                if gun.Parent ~= char then
+                                    hum:EquipTool(gun)
+                                    task.wait(0.08)
+                                end
+
+                                local tModel = lowestInfected.Model
+                                local tRoot = lowestInfected.Root
+                                local tHum = lowestInfected.Hum
+                                updateTargetHighlight(tModel)
+
+                                local shotsFired = 0
+                                while shotsFired < Config.MaxShotsPerTarget and tHum and tHum.Parent and tHum.Health > 0 and Config.Enabled do
+                                    shotsFired = shotsFired + 1
+                                    State.CurrentAction = string.format("🔫 [%s] -> Infectado (%.0f HP)", gun.Name, tHum.Health)
+
+                                    fireWeaponAtTarget(gun, tModel, tRoot, tHum)
+                                    task.wait(Config.ShotInterval)
+
+                                    -- Si el zombie infectado murió, esperar 2 segundos antes de atacar al siguiente
+                                    if tHum.Health <= 0 then
+                                        State.WaitingAfterKill = true
+                                        State.WaitUntilTick = tick() + Config.WaitAfterKill
+                                        State.CurrentAction = string.format("💥 Muerto. Esperando %.1fs...", Config.WaitAfterKill)
+                                        break
+                                    end
+                                end
+                            end
+                        else
+                            State.CurrentAction = "⚠️ Sin armas en Slot 5 o 6"
+                        end
+                    else
+                        State.CurrentAction = "Escaneando infectados (100 studs)..."
+                        updateTargetHighlight(nil)
                     end
                 end
             end
         end
     end
-    ReportData.ToolHierarchy = list
-end
+end)
 
 -- ==============================================================================
--- 3. INSPECCIONAR Y INTERCEPTAR MÓDULOS DE COMBATE EN REPLICATEDSTORAGE
+-- 5. INTERFAZ FLUENT (CONFIGURACIÓN DE RANGOS, SLOTS Y TIEMPOS)
 -- ==============================================================================
-local hookedModules = {}
 
-local function scanAndHookCombatModules()
-    local list = {}
-    local getConsts = (debug and debug.getconstants) or getconstants
+local Window = Fluent:CreateWindow({
+    Title = "HACKER COMBAT | SLOTS 5 & 6",
+    SubTitle = "Disparo 360° + Virus + Pausa Configurable",
+    TabWidth = 155,
+    Size = UDim2.fromOffset(560, 480),
+    Acrylic = false,
+    Theme = "Darker",
+    MinimizeKey = Enum.KeyCode.RightControl
+})
 
-    local modulesFolder = ReplicatedStorage:FindFirstChild("Modules") or ReplicatedStorage
-    for _, desc in ipairs(modulesFolder:GetDescendants()) do
-        if desc:IsA("ModuleScript") then
-            local n = desc.Name:lower()
-            if n:find("proj") or n:find("gun") or n:find("combat") or n:find("weapon") or n:find("quicknet") or n:find("ability") or n:find("hit") then
-                table.insert(list, string.format("📦 MODULE: %s (%s)", desc.Name, desc:GetFullName()))
+local Tabs = {
+    Combat = Window:AddTab({ Title = "Poderes & Slots", Icon = "zap" }),
+    Settings = Window:AddTab({ Title = "Rangos & Tiempos", Icon = "sliders" })
+}
 
-                pcall(function()
-                    local req = require(desc)
-                    if type(req) == "table" then
-                        for k, v in pairs(req) do
-                            table.insert(list, string.format("   • [%s] = %s", tostring(k), serializeVal(v)))
+local StatusParagraph = Tabs.Combat:AddParagraph({
+    Title = "Monitor Hacker (Tierra)",
+    Content = "Esperando activación..."
+})
 
-                            -- Extraer constantes de cada función del módulo
-                            if type(v) == "function" and getConsts then
-                                pcall(function()
-                                    local cList = {}
-                                    for _, c in pairs(getConsts(v)) do
-                                        if type(c) == "string" or type(c) == "number" then
-                                            table.insert(cList, tostring(c))
-                                        end
-                                    end
-                                    if #cList > 0 then
-                                        table.insert(list, "      Consts: " .. table.concat(cList, ", "))
-                                    end
-                                end)
-                            end
-
-                            -- Interceptar llamadas a la función del módulo en vivo (Sin usar hookmetamethod)
-                            local hookKey = desc:GetFullName() .. "." .. tostring(k)
-                            if type(v) == "function" and not hookedModules[hookKey] then
-                                hookedModules[hookKey] = true
-                                local origFunc = v
-                                req[k] = function(...)
-                                    local args = {...}
-                                    local aStr = {}
-                                    for i, a in ipairs(args) do
-                                        table.insert(aStr, string.format("Arg[%d]=%s", i, serializeVal(a)))
-                                    end
-                                    local msg = string.format("⚡ [MODULE CALL] %s.%s(%s)", desc.Name, tostring(k), table.concat(aStr, ", "))
-                                    table.insert(ReportData.LiveEvents, 1, msg)
-                                    return origFunc(...)
-                                end
-                            end
-                        end
-                    end
-                end)
-            end
-        end
+MainToggleInstance = Tabs.Combat:AddToggle("MainEnableToggle", {
+    Title = "⚡ Activar Asistente Hacker Terrestre",
+    Default = false,
+    Callback = function(v)
+        Config.Enabled = v
+        if not v then updateTargetHighlight(nil) end
     end
-    ReportData.ModuleAnalysis = list
-end
+})
 
--- ==============================================================================
--- 4. ESCUCHAR BINDABLE EVENTS NATIVOS DEL ARMA (SHOTFIRED / SHOTHIT)
--- ==============================================================================
-local connectedBindables = {}
+Tabs.Combat:AddToggle("Slot5Toggle", {
+    Title = "🔫 Usar Arma del Slot 5 (Prioridad 1)",
+    Default = true,
+    Callback = function(v) Config.UseSlot5 = v end
+})
 
-local function connectWeaponBindables()
-    for _, cont in ipairs({lp.Character, lp:FindFirstChild("Backpack")}) do
-        if cont then
-            for _, tool in ipairs(cont:GetChildren()) do
-                if tool:IsA("Tool") then
-                    for _, desc in ipairs(tool:GetDescendants()) do
-                        if desc:IsA("BindableEvent") and not connectedBindables[desc] then
-                            connectedBindables[desc] = true
-                            desc.Event:Connect(function(...)
-                                local args = {...}
-                                local aStr = {}
-                                for i, a in ipairs(args) do
-                                    table.insert(aStr, string.format("Arg[%d]=%s", i, serializeVal(a)))
-                                end
-                                local msg = string.format("🎯 [BINDABLE] %s.%s -> %s", tool.Name, desc.Name, table.concat(aStr, " | "))
-                                table.insert(ReportData.LiveEvents, 1, msg)
-                            end)
-                        end
-                    end
-                end
-            end
-        end
+Tabs.Combat:AddToggle("Slot6Toggle", {
+    Title = "🔫 Usar Arma del Slot 6 (Respaldo / Secundaria)",
+    Default = true,
+    Callback = function(v) Config.UseSlot6 = v end
+})
+
+Tabs.Combat:AddToggle("Silent360Toggle", {
+    Title = "🔄 Disparo 360° Sin Girar Tu Cámara (Silent Flick)",
+    Description = "Dispara aunque estés de espaldas manteniendo tu vista fija",
+    Default = true,
+    Callback = function(v) Config.Silent360Mode = v end
+})
+
+Tabs.Combat:AddToggle("InfiltrateToggle", {
+    Title = "🦠 Auto-Infiltrarse (Al zombie con menos vida)",
+    Default = true,
+    Callback = function(v) Config.AutoInfiltrate = v end
+})
+
+Tabs.Combat:AddToggle("OverrideToggle", {
+    Title = "💥 Auto-Anulación del Sistema (> 7 infectados)",
+    Default = true,
+    Callback = function(v) Config.AutoSystemOverride = v end
+})
+
+-- PESTAÑA DE RANGOS Y TIEMPOS
+Tabs.Settings:AddSection("Tiempos de Disparo y Expansión")
+
+Tabs.Settings:AddSlider("WaitKillSlider", {
+    Title = "Espera Tras Matar a un Infectado (Segundos)",
+    Description = "Pausa antes de disparar al siguiente infectado (Por defecto 2s)",
+    Default = 2.0,
+    Min = 0.5,
+    Max = 6.0,
+    Rounding = 1,
+    Callback = function(v) Config.WaitAfterKill = v end
+})
+
+Tabs.Settings:AddSlider("ShotIntervalSlider", {
+    Title = "Tiempo Entre Cada Bala (Segundos)",
+    Default = 0.22,
+    Min = 0.08,
+    Max = 0.80,
+    Rounding = 2,
+    Callback = function(v) Config.ShotInterval = v end
+})
+
+Tabs.Settings:AddSection("Rangos y Condiciones")
+
+Tabs.Settings:AddSlider("ScanRadiusSlider", {
+    Title = "Rango de Análisis y Disparo (Studs)",
+    Default = 100,
+    Min = 40,
+    Max = 200,
+    Rounding = 0,
+    Callback = function(v)
+        Config.ScanRadius = v
+        Config.GunRange = v
     end
-end
+})
 
-connectWeaponBindables()
-scanAndHookCombatModules()
+Tabs.Settings:AddSlider("InfiltrateRangeSlider", {
+    Title = "Rango de Infiltrarse (Studs)",
+    Default = 50,
+    Min = 20,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(v) Config.InfiltrateRange = v end
+})
+
+Tabs.Settings:AddSlider("MinInfectedSlider", {
+    Title = "Mínimo de Infectados para Anulación (> X)",
+    Default = 7,
+    Min = 1,
+    Max = 20,
+    Rounding = 0,
+    Callback = function(v) Config.MinInfectedForOverride = v end
+})
 
 -- ==============================================================================
--- 5. VENTANA VISUAL CON BOTÓN DE COPIA AL PORTAPAPELES
+-- 6. LOS 2 BOTONES FLOTANTES (1: MENÚ DE CONFIGURACIÓN | 2: ON / OFF)
 -- ==============================================================================
-local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
+
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "NoHookWeaponScannerGui"
+ScreenGui.Name = "HackerGroundV2Gui"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = GuiParent
+if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 540, 0, 440)
-MainFrame.Position = UDim2.new(0.5, -270, 0.5, -220)
-MainFrame.BackgroundColor3 = Color3.fromRGB(16, 18, 24)
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
+-- BOTÓN 1: ABRIR / CERRAR MENÚ
+local MenuBtn = Instance.new("TextButton")
+MenuBtn.Size = UDim2.new(0, 50, 0, 50)
+MenuBtn.Position = UDim2.new(0.04, 0, 0.55, 0)
+MenuBtn.BackgroundColor3 = Color3.fromRGB(30, 40, 55)
+MenuBtn.Text = "⚙️\nMENÚ"
+MenuBtn.TextColor3 = Color3.fromRGB(0, 255, 190)
+MenuBtn.TextSize = 11
+MenuBtn.Font = Enum.Font.GothamBold
+MenuBtn.Active = true
+MenuBtn.Draggable = true
+MenuBtn.Parent = ScreenGui
 
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(0, 10)
-Corner.Parent = MainFrame
+local MenuCorner = Instance.new("UICorner")
+MenuCorner.CornerRadius = UDim.new(1, 0)
+MenuCorner.Parent = MenuBtn
 
-local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, 0, 0, 36)
-Title.BackgroundColor3 = Color3.fromRGB(28, 34, 46)
-Title.Text = "  🔬 ESCÁNER SIN-HOOK: MÓDULOS DE DISPARO Y PODERES"
-Title.TextColor3 = Color3.fromRGB(0, 255, 190)
-Title.TextSize = 12
-Title.Font = Enum.Font.GothamBold
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = MainFrame
+local isMenuOpen = true
+MenuBtn.MouseButton1Click:Connect(function()
+    isMenuOpen = not isMenuOpen
+    Window.Root.Visible = isMenuOpen
+end)
 
-local OutputBox = Instance.new("TextBox")
-OutputBox.Size = UDim2.new(1, -20, 0, 325)
-OutputBox.Position = UDim2.new(0, 10, 0, 44)
-OutputBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-OutputBox.TextColor3 = Color3.fromRGB(220, 220, 220)
-OutputBox.TextSize = 10
-OutputBox.Font = Enum.Font.Code
-OutputBox.TextXAlignment = Enum.TextXAlignment.Left
-OutputBox.TextYAlignment = Enum.TextYAlignment.Top
-OutputBox.ClearTextOnFocus = false
-OutputBox.MultiLine = true
-OutputBox.TextEditable = false
-OutputBox.Text = "1. Equipa tu Uzi o Pistol en la mano y dispara 1 o 2 balas a un zombie.\n2. Presiona el botón verde '1. EXTRAER DATOS DE DISPARO'.\n3. Presiona el botón azul '2. COPIAR REPORTE' y pégalo en el chat."
-OutputBox.Parent = MainFrame
+-- BOTÓN 2: ON / OFF RÁPIDO
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Size = UDim2.new(0, 50, 0, 50)
+ToggleBtn.Position = UDim2.new(0.04, 0, 0.46, 0)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(160, 30, 40)
+ToggleBtn.Text = "💻\nOFF"
+ToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToggleBtn.TextSize = 11
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.Active = true
+ToggleBtn.Draggable = true
+ToggleBtn.Parent = ScreenGui
 
-local function generateFullText()
-    checkCapabilities()
-    scanToolsDeep()
-    scanAndHookCombatModules()
-    connectWeaponBindables()
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(1, 0)
+ToggleCorner.Parent = ToggleBtn
 
-    local out = {
-        "==================================================================",
-        "       REPORTE PROFUNDO SIN-HOOK: ARMAS, MÓDULOS Y EVENTOS        ",
-        "==================================================================",
-        "\n[1. CAPACIDADES DEL EJECUTOR]:"
-    }
-    for _, v in ipairs(ReportData.ExecutorCapabilities) do table.insert(out, " " .. v) end
-
-    table.insert(out, "\n[2. EVENTOS EN VIVO CAPTURADOS AL DISPARAR]:")
-    if #ReportData.LiveEvents == 0 then
-        table.insert(out, " (Ningún evento en vivo aún. Equipa el arma y dispara 1 bala).")
+local function refreshButtonVisual()
+    if Config.Enabled then
+        ToggleBtn.BackgroundColor3 = Color3.fromRGB(25, 160, 75)
+        ToggleBtn.Text = "💻\nON"
     else
-        for _, v in ipairs(ReportData.LiveEvents) do table.insert(out, " " .. v) end
+        ToggleBtn.BackgroundColor3 = Color3.fromRGB(160, 30, 40)
+        ToggleBtn.Text = "💻\nOFF"
     end
-
-    table.insert(out, "\n[3. MÓDULOS DE COMBATE Y PROYECTILES]:")
-    for _, v in ipairs(ReportData.ModuleAnalysis) do table.insert(out, " " .. v) end
-
-    table.insert(out, "\n[4. ESTRUCTURA DE ARMAS Y PODERES]:")
-    for _, v in ipairs(ReportData.ToolHierarchy) do table.insert(out, " " .. v) end
-
-    table.insert(out, "\n[5. CONSTANTES Y CÓDIGO INTERNO DE SCRIPTS]:")
-    for _, v in ipairs(ReportData.ScriptConstants) do table.insert(out, " " .. v) end
-
-    return table.concat(out, "\n")
 end
 
-local ScanBtn = Instance.new("TextButton")
-ScanBtn.Size = UDim2.new(0.48, -10, 0, 38)
-ScanBtn.Position = UDim2.new(0, 10, 0, 380)
-ScanBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 80)
-ScanBtn.Text = "🔍 1. EXTRAER DATOS DE DISPARO"
-ScanBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ScanBtn.TextSize = 11
-ScanBtn.Font = Enum.Font.GothamBold
-ScanBtn.Parent = MainFrame
-
-ScanBtn.MouseButton1Click:Connect(function()
-    ScanBtn.Text = "⏳ EXTRAYENDO..."
-    OutputBox.Text = generateFullText()
-    ScanBtn.Text = "✅ ¡DATOS EXTRAÍDOS!"
-    task.wait(1)
-    ScanBtn.Text = "🔍 1. EXTRAER DATOS DE DISPARO"
+ToggleBtn.MouseButton1Click:Connect(function()
+    Config.Enabled = not Config.Enabled
+    pcall(function() MainToggleInstance:SetValue(Config.Enabled) end)
+    refreshButtonVisual()
 end)
 
-local CopyBtn = Instance.new("TextButton")
-CopyBtn.Size = UDim2.new(0.48, -10, 0, 38)
-CopyBtn.Position = UDim2.new(0.52, 0, 0, 380)
-CopyBtn.BackgroundColor3 = Color3.fromRGB(45, 105, 180)
-CopyBtn.Text = "📋 2. COPIAR REPORTE"
-CopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-CopyBtn.TextSize = 11
-CopyBtn.Font = Enum.Font.GothamBold
-CopyBtn.Parent = MainFrame
-
-CopyBtn.MouseButton1Click:Connect(function()
-    local txt = OutputBox.Text
-    if txt == "" or txt:find("^1%. Equipa") then
-        txt = generateFullText()
-        OutputBox.Text = txt
+task.spawn(function()
+    while true do
+        task.wait(0.35)
+        getBestSlotWeapon()
+        refreshButtonVisual()
+        StatusParagraph:SetDesc(string.format(
+            "Estado: %s | Slot 5: [%s] | Slot 6: [%s]\nZombies (100m): %d | Infectados: %d (Override > %d)\nAcción: %s",
+            Config.Enabled and "🟢 ACTIVO" or "🔴 OFF",
+            State.Slot5WeaponName, State.Slot6WeaponName,
+            State.TotalZombiesInRange, State.InfectedCount, Config.MinInfectedForOverride,
+            State.CurrentAction
+        ))
     end
-    if setclipboard then setclipboard(txt) elseif toclipboard then toclipboard(txt) end
-    CopyBtn.Text = "✅ ¡COPIADO AL PORTAPAPELES!"
-    task.wait(1.5)
-    CopyBtn.Text = "📋 2. COPIAR REPORTE"
 end)
+
+Window:SelectTab(1)
