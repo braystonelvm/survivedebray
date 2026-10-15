@@ -1,16 +1,22 @@
 -- ==============================================================================
--- ESCÁNER UNIVERSAL DE TERRENO Y ROCAS PROFUNDAS (BRILLO NEÓN + TELEPORT)
+-- ESCÁNER DE ROCAS CON HIGHLIGHT (SIN CIEGOS, 100% VISIBLE)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
 local lp = Players.LocalPlayer
 
-local AllElements = {}
+local FoundRocks = {}
 
--- 1. Escaneo masivo sin importar el nombre (detecta cualquier roca o elemento grande)
-local function scanAllTerrainObjects()
-    AllElements = {}
+local function scanRealRocks()
+    -- Limpiar highlights anteriores si ya se habían creado
+    for _, obj in ipairs(FoundRocks) do
+        if obj.Highlight and obj.Highlight.Parent then
+            obj.Highlight:Destroy()
+        end
+    end
+    FoundRocks = {}
+
     local baseCenter = Vector3.new(0, 0, 0)
 
     for _, desc in ipairs(workspace:GetDescendants()) do
@@ -19,49 +25,47 @@ local function scanAllTerrainObjects()
             local dist = (pos - baseCenter).Magnitude
 
             if dist <= 300 then
-                -- Seleccionamos elementos grandes o pesados que forman parte del mapa/rocas
-                if desc.Size.X >= 4 or desc.Size.Y >= 4 or desc.Size.Z >= 4 then
-                    local nameLower = desc.Name:lower()
-                    -- Excluir partes del jugador o de la interfaz
-                    if not nameLower:find("humanoid") and not nameLower:find("torso") and not nameLower:find("head") then
-                        table.insert(AllElements, {
-                            Part = desc,
-                            Name = desc.Name,
-                            Pos = pos,
-                            Size = desc.Size,
-                            Depth = pos.Y
-                        })
+                local nameLower = desc.Name:lower()
+                -- Detectar rocas reales por nombre o tamaño específico de piedra
+                if nameLower:find("rock") or nameLower:find("stone") or nameLower:find("boulder") or nameLower:find("piedra") or nameLower:find("roca") then
+                    
+                    -- Crear el Highlight limpio (efecto tipo Roblox studio / ESP)
+                    local hl = Instance.new("Highlight")
+                    hl.Name = "RockHighlight"
+                    hl.Adornee = desc
+                    hl.FillColor = Color3.fromRGB(0, 255, 180)
+                    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                    hl.FillTransparency = 0.5
+                    hl.OutlineTransparency = 0
+                    hl.Parent = CoreGui
 
-                        -- Iluminar automáticamente de color neón brillante para verlos desde lejos
-                        pcall(function()
-                            desc.Material = Enum.Material.Neon
-                            desc.Color = Color3.fromRGB(0, 255, 200)
-                            desc.Transparency = 0.3 -- Semitranslúcido para ver a través
-                        end)
-                    end
+                    table.insert(FoundRocks, {
+                        Part = desc,
+                        Name = desc.Name,
+                        Pos = pos,
+                        Highlight = hl
+                    })
                 end
             end
         end
     end
-    print(string.format("🗺️ [MAPPER UNIVERSAL]: %d elementos detectados e iluminados.", #AllElements))
+    print(string.format("🪨 [ROCAS]: Se detectaron y marcaron %d rocas.", #FoundRocks))
 end
 
--- ==============================================================================
--- 2. INTERFAZ FLOTANTE CON LISTA Y TELETRANSPORTE
--- ==============================================================================
+-- Interfaz flotante de control
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "UniversalMapMenuGui"
+ScreenGui.Name = "RockScannerMenuGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
 local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 52, 0, 52)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(30, 150, 120)
-FloatBtn.Text = "🌐\nMAPA"
+FloatBtn.BackgroundColor3 = Color3.fromRGB(30, 130, 100)
+FloatBtn.Text = "🪨\nROCKS"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-FloatBtn.TextSize = 11
+FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
 FloatBtn.Active = true
 FloatBtn.Draggable = true
@@ -72,8 +76,8 @@ FloatCorner.CornerRadius = UDim.new(1, 0)
 FloatCorner.Parent = FloatBtn
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 480, 0, 400)
-MainFrame.Position = UDim2.new(0.5, -240, 0.5, -200)
+MainFrame.Size = UDim2.new(0, 460, 0, 380)
+MainFrame.Position = UDim2.new(0.5, -230, 0.5, -190)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -87,7 +91,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-TitleBar.Text = "  🌐 MAPEO TOTAL: ELEMENTOS Y ROCAS ILUMINADAS"
+TitleBar.Text = "  🪨 MAPEO DE ROCAS CON HIGHLIGHT"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 180)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -101,8 +105,8 @@ TitleCorner.Parent = TitleBar
 local ScanBtn = Instance.new("TextButton")
 ScanBtn.Size = UDim2.new(1, -20, 0, 34)
 ScanBtn.Position = UDim2.new(0, 10, 0, 46)
-ScanBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 90)
-ScanBtn.Text = "🔍 ESCANEAR E ILUMINAR TODO EL MAPA"
+ScanBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 80)
+ScanBtn.Text = "🔍 ESCANEAR Y MARCAR ROCAS"
 ScanBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 ScanBtn.TextSize = 10
 ScanBtn.Font = Enum.Font.GothamBold
@@ -113,7 +117,7 @@ ScanCorner.CornerRadius = UDim.new(0, 6)
 ScanCorner.Parent = ScanBtn
 
 local ScrollFrame = Instance.new("ScrollingFrame")
-ScrollFrame.Size = UDim2.new(1, -20, 0, 290)
+ScrollFrame.Size = UDim2.new(1, -20, 0, 270)
 ScrollFrame.Position = UDim2.new(0, 10, 0, 92)
 ScrollFrame.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
 ScrollFrame.BorderSizePixel = 0
@@ -134,13 +138,13 @@ local function populateList()
         if child:IsA("TextButton") then child:Destroy() end
     end
 
-    for _, obj in ipairs(AllElements) do
+    for _, obj in ipairs(FoundRocks) do
         local tpBtn = Instance.new("TextButton")
-        tpBtn.Size = UDim2.new(1, -4, 0, 32)
+        tpBtn.Size = UDim2.new(1, -4, 0, 30)
         tpBtn.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
-        tpBtn.Text = string.format("🪨 %s | Pos: (%.0f, %.0f, %.0f) | Y: %.1f", obj.Name, obj.Pos.X, obj.Pos.Y, obj.Pos.Z, obj.Depth)
+        tpBtn.Text = string.format("🪨 %s | Pos: (%.0f, %.0f, %.0f)", obj.Name, obj.Pos.X, obj.Pos.Y, obj.Pos.Z)
         tpBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
-        tpBtn.TextSize = 10
+        tpBtn.TextSize = 9
         tpBtn.Font = Enum.Font.Code
         tpBtn.TextXAlignment = Enum.TextXAlignment.Left
         tpBtn.Parent = ScrollFrame
@@ -158,22 +162,22 @@ local function populateList()
         end)
     end
 
-    ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, #AllElements * 36)
+    ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, #FoundRocks * 34)
 end
 
 ScanBtn.MouseButton1Click:Connect(function()
-    ScanBtn.Text = "⏳ ESCANEANDO TODO..."
-    scanAllTerrainObjects()
+    ScanBtn.Text = "⏳ ESCANEANDO..."
+    scanRealRocks()
     populateList()
-    ScanBtn.Text = string.format("✅ %d ELEMENTOS ILUMINADOS", #AllElements)
+    ScanBtn.Text = string.format("✅ %d ROCAS MARCADAS", #FoundRocks)
     task.wait(1.5)
-    ScanBtn.Text = "🔍 ESCANEAR E ILUMINAR TODO EL MAPA"
+    ScanBtn.Text = "🔍 ESCANEAR Y MARCAR ROCAS"
 end)
 
 FloatBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
 
--- Ejecutar escaneo inicial al arrancar
-scanAllTerrainObjects()
+-- Escaneo inicial
+scanRealRocks()
 populateList()
