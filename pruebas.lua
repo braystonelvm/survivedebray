@@ -1,47 +1,51 @@
 -- ==============================================================================
--- ESCÁNER DE ROCAS CON HIGHLIGHT (SIN CIEGOS, 100% VISIBLE)
+-- MENÚ COMPLETO DE MAPEO Y HIGHLIGHT PRO (NOMBRES, FILTROS Y TELEPORT)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
 local lp = Players.LocalPlayer
 
-local FoundRocks = {}
+local MarkedObjects = {}
 
-local function scanRealRocks()
-    -- Limpiar highlights anteriores si ya se habían creado
-    for _, obj in ipairs(FoundRocks) do
+-- Función para limpiar todos los highlights actuales
+local function clearAllHighlights()
+    for _, obj in ipairs(MarkedObjects) do
         if obj.Highlight and obj.Highlight.Parent then
             obj.Highlight:Destroy()
         end
     end
-    FoundRocks = {}
+    MarkedObjects = {}
+end
 
+-- Función de búsqueda por nombre o filtro parcial
+local function scanElementsByName(keyword)
+    clearAllHighlights()
     local baseCenter = Vector3.new(0, 0, 0)
+    keyword = keyword:lower()
 
     for _, desc in ipairs(workspace:GetDescendants()) do
         if desc:IsA("BasePart") then
             local pos = desc.Position
             local dist = (pos - baseCenter).Magnitude
 
-            if dist <= 300 then
+            if dist <= 350 then
                 local nameLower = desc.Name:lower()
-                -- Detectar rocas reales por nombre o tamaño específico de piedra
-                if nameLower:find("rock") or nameLower:find("stone") or nameLower:find("boulder") or nameLower:find("piedra") or nameLower:find("roca") then
-                    
-                    -- Crear el Highlight limpio (efecto tipo Roblox studio / ESP)
+                -- Si coincide con el filtro o si el filtro está vacío (busca grandes por defecto)
+                if keyword == "" or nameLower:find(keyword) then
                     local hl = Instance.new("Highlight")
-                    hl.Name = "RockHighlight"
+                    hl.Name = "CustomHighlight"
                     hl.Adornee = desc
-                    hl.FillColor = Color3.fromRGB(0, 255, 180)
+                    hl.FillColor = Color3.fromRGB(0, 220, 255)
                     hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-                    hl.FillTransparency = 0.5
+                    hl.FillTransparency = 0.4
                     hl.OutlineTransparency = 0
                     hl.Parent = CoreGui
 
-                    table.insert(FoundRocks, {
+                    table.insert(MarkedObjects, {
                         Part = desc,
                         Name = desc.Name,
+                        Class = desc.ClassName,
                         Pos = pos,
                         Highlight = hl
                     })
@@ -49,21 +53,23 @@ local function scanRealRocks()
             end
         end
     end
-    print(string.format("🪨 [ROCAS]: Se detectaron y marcaron %d rocas.", #FoundRocks))
+    print(string.format("🌐 [MAPPER PRO]: Se marcaron %d elementos con el filtro '%s'.", #MarkedObjects, keyword))
 end
 
--- Interfaz flotante de control
+-- ==============================================================================
+-- INTERFAZ FLOTANTE Y MENÚ TÁCTIL COMPLETO
+-- ==============================================================================
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RockScannerMenuGui"
+ScreenGui.Name = "AdvancedMapperMenuGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
 local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 52, 0, 52)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(30, 130, 100)
-FloatBtn.Text = "🪨\nROCKS"
+FloatBtn.BackgroundColor3 = Color3.fromRGB(25, 120, 110)
+FloatBtn.Text = "🛠️\nMAP"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -76,8 +82,8 @@ FloatCorner.CornerRadius = UDim.new(1, 0)
 FloatCorner.Parent = FloatBtn
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 460, 0, 380)
-MainFrame.Position = UDim2.new(0.5, -230, 0.5, -190)
+MainFrame.Size = UDim2.new(0, 500, 0, 440)
+MainFrame.Position = UDim2.new(0.5, -250, 0.5, -220)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -91,7 +97,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-TitleBar.Text = "  🪨 MAPEO DE ROCAS CON HIGHLIGHT"
+TitleBar.Text = "  🛠️ MENÚ PRO: MAPEO Y FILTRO DE NOMBRES"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 180)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -102,22 +108,41 @@ local TitleCorner = Instance.new("UICorner")
 TitleCorner.CornerRadius = UDim.new(0, 10)
 TitleCorner.Parent = TitleBar
 
-local ScanBtn = Instance.new("TextButton")
-ScanBtn.Size = UDim2.new(1, -20, 0, 34)
-ScanBtn.Position = UDim2.new(0, 10, 0, 46)
-ScanBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 80)
-ScanBtn.Text = "🔍 ESCANEAR Y MARCAR ROCAS"
-ScanBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ScanBtn.TextSize = 10
-ScanBtn.Font = Enum.Font.GothamBold
-ScanBtn.Parent = MainFrame
+-- Caja de Texto para escribir el nombre o palabra clave a buscar
+local SearchBox = Instance.new("TextBox")
+SearchBox.Size = UDim2.new(0.65, -10, 0, 34)
+SearchBox.Position = UDim2.new(0, 10, 0, 46)
+SearchBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+SearchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+SearchBox.PlaceholderText = "Escribe nombre (ej. rock, tree)..."
+SearchBox.Text = "rock"
+SearchBox.TextSize = 10
+SearchBox.Font = Enum.Font.Code
+SearchBox.ClearTextOnFocus = false
+SearchBox.Parent = MainFrame
 
-local ScanCorner = Instance.new("UICorner")
-ScanCorner.CornerRadius = UDim.new(0, 6)
-ScanCorner.Parent = ScanBtn
+local SearchCorner = Instance.new("UICorner")
+SearchCorner.CornerRadius = UDim.new(0, 6)
+SearchCorner.Parent = SearchBox
 
+-- Botón de Buscar / Iluminar
+local SearchBtn = Instance.new("TextButton")
+SearchBtn.Size = UDim2.new(0.35, -15, 0, 34)
+SearchBtn.Position = UDim2.new(0.65, 5, 0, 46)
+SearchBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 90)
+SearchBtn.Text = "🔍 FILTRAR"
+SearchBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+SearchBtn.TextSize = 10
+SearchBtn.Font = Enum.Font.GothamBold
+SearchBtn.Parent = MainFrame
+
+local SearchCornerBtn = Instance.new("UICorner")
+SearchCornerBtn.CornerRadius = UDim.new(0, 6)
+SearchCornerBtn.Parent = SearchBtn
+
+-- Contenedor de la Lista
 local ScrollFrame = Instance.new("ScrollingFrame")
-ScrollFrame.Size = UDim2.new(1, -20, 0, 270)
+ScrollFrame.Size = UDim2.new(1, -20, 0, 310)
 ScrollFrame.Position = UDim2.new(0, 10, 0, 92)
 ScrollFrame.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
 ScrollFrame.BorderSizePixel = 0
@@ -138,11 +163,11 @@ local function populateList()
         if child:IsA("TextButton") then child:Destroy() end
     end
 
-    for _, obj in ipairs(FoundRocks) do
+    for _, obj in ipairs(MarkedObjects) do
         local tpBtn = Instance.new("TextButton")
-        tpBtn.Size = UDim2.new(1, -4, 0, 30)
+        tpBtn.Size = UDim2.new(1, -4, 0, 32)
         tpBtn.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
-        tpBtn.Text = string.format("🪨 %s | Pos: (%.0f, %.0f, %.0f)", obj.Name, obj.Pos.X, obj.Pos.Y, obj.Pos.Z)
+        tpBtn.Text = string.format("[%s] %s | Pos: (%.0f, %.0f, %.0f)", obj.Class, obj.Name, obj.Pos.X, obj.Pos.Y, obj.Pos.Z)
         tpBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
         tpBtn.TextSize = 9
         tpBtn.Font = Enum.Font.Code
@@ -162,22 +187,22 @@ local function populateList()
         end)
     end
 
-    ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, #FoundRocks * 34)
+    ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, #MarkedObjects * 36)
 end
 
-ScanBtn.MouseButton1Click:Connect(function()
-    ScanBtn.Text = "⏳ ESCANEANDO..."
-    scanRealRocks()
+SearchBtn.MouseButton1Click:Connect(function()
+    SearchBtn.Text = "⏳ BUSCANDO..."
+    scanElementsByName(SearchBox.Text)
     populateList()
-    ScanBtn.Text = string.format("✅ %d ROCAS MARCADAS", #FoundRocks)
+    SearchBtn.Text = string.format("✅ (%d) ENCONTRADOS", #MarkedObjects)
     task.wait(1.5)
-    ScanBtn.Text = "🔍 ESCANEAR Y MARCAR ROCAS"
+    SearchBtn.Text = "🔍 FILTRAR"
 end)
 
 FloatBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
 
--- Escaneo inicial
-scanRealRocks()
+-- Búsqueda inicial por defecto con la palabra "rock"
+scanElementsByName("rock")
 populateList()
