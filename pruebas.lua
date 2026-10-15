@@ -1,5 +1,5 @@
 -- ==============================================================================
--- HACKER GROUND COMBAT V3: SLOTS 5 & 6 + DISPARO NATIVO 360° + PAUSA 2s
+-- HACKER GROUND COMBAT V4: SLOTS 5 & 6 + DISPARO NATIVO ESTABLE + PAUSA 2s
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -12,23 +12,20 @@ local lp = Players.LocalPlayer
 
 local Config = {
     Enabled = false,
-    ScanRadius = 100,             -- Rango de análisis lateral (100 studs)
+    ScanRadius = 100,
 
-    -- SLOTS DE ARMAS A UTILIZAR
-    UseSlot5 = true,              -- Slot 5 (ej. Infiltrator Uzi)
-    UseSlot6 = true,              -- Slot 6 (ej. Pistol / Revolver)
+    UseSlot5 = true,
+    UseSlot6 = true,
 
-    -- 1. HABILIDADES DE HACKER
-    AutoInfiltrate = true,        -- Cada 15s al zombie con menos vida
+    AutoInfiltrate = true,
     InfiltrateRange = 50,
-    AutoSystemOverride = true,    -- Cada 120s solo si hay > 7 infectados
+    AutoSystemOverride = true,
     MinInfectedForOverride = 7,
 
-    -- 2. DISPARO NATIVO AL INFECTADO CON MENOS VIDA
     AutoGunVirus = true,
     GunRange = 100,
-    ShotInterval = 0.22,          -- Pausa entre balas
-    WaitAfterKill = 2.0,          -- Pausa de 2s tras matar para que el virus expanda
+    ShotInterval = 0.25,
+    WaitAfterKill = 2.0,
     MaxShotsPerTarget = 4
 }
 
@@ -45,14 +42,9 @@ local State = {
 local TargetHighlight = nil
 local MainToggleInstance = nil
 
--- Cursor siempre visible
 RunService.RenderStepped:Connect(function()
     UserInputService.MouseIconEnabled = true
 end)
-
--- ==============================================================================
--- 1. GESTIÓN DE SLOTS 5 Y 6 DESDE EL HOTBAR
--- ==============================================================================
 
 local function getCharParts()
     local char = lp.Character
@@ -148,10 +140,6 @@ local function updateTargetHighlight(zombieModel)
     end
 end
 
--- ==============================================================================
--- 2. ESCÁNER DE ZOMBIES EN 100 STUDS
--- ==============================================================================
-
 local function scanZombiesIn100Studs()
     local _, root = getCharParts()
     if not root then return 0, nil, nil end
@@ -209,43 +197,17 @@ local function scanZombiesIn100Studs()
     return infectedCount, lowestInfected, (lowestUninfected or lowestAnyInfiltrate)
 end
 
--- ==============================================================================
--- 3. DISPARO NATIVO SEGURO (USA EL SCRIPT DEL ARMA SIN MODIFICAR CÁMARA)
--- ==============================================================================
-
-local function executeNativeAction(tool)
+local function executeAction(tool)
     local char, _, hum = getCharParts()
     if not char or not hum or not tool then return end
 
     if tool.Parent ~= char then
         hum:EquipTool(tool)
-        task.wait(0.06)
+        task.wait(0.05)
     end
 
-    -- Activa la herramienta nativamente respetando su QuickNet y RandomKey
     pcall(function() tool:Activate() end)
-
-    -- Si el ejecutor soporta getsenv, buscar y disparar la función de gatillo interna del arma
-    if getsenv then
-        pcall(function()
-            local scriptClient = tool:FindFirstChild("GunClient") or tool:FindFirstChild("MeleeClient") or tool:FindFirstChild("ThrowableClient")
-            if scriptClient then
-                local env = getsenv(scriptClient)
-                if env then
-                    for _, fn in pairs(env) do
-                        if type(fn) == "function" then
-                            pcall(fn)
-                        end
-                    end
-                end
-            end
-        end)
-    end
 end
-
--- ==============================================================================
--- 4. BUCLE DE COMBATE
--- ==============================================================================
 
 task.spawn(function()
     while true do
@@ -258,32 +220,29 @@ task.spawn(function()
             if char and root and hum and hum.Health > 0 then
                 local infectedCount, lowestInfected, bestInfiltrateTarget = scanZombiesIn100Studs()
 
-                -- 1. System Override (> 7 infectados)
                 local didOverride = false
                 if Config.AutoSystemOverride and infectedCount > Config.MinInfectedForOverride then
                     local sysTool = findToolByName("System Override")
                     if sysTool and isAbilityReady(sysTool) then
                         State.CurrentAction = string.format("💥 System Override (%d infectados)", infectedCount)
-                        executeNativeAction(sysTool)
+                        executeAction(sysTool)
                         didOverride = true
                         task.wait(0.25)
                     end
                 end
 
-                -- 2. Infiltrate al de menor vida
                 local didInfiltrate = false
                 if not didOverride and Config.AutoInfiltrate and bestInfiltrateTarget then
                     local infTool = findToolByName("Infiltrate")
                     if infTool and isAbilityReady(infTool) then
                         State.CurrentAction = string.format("🦠 Infiltrate -> %s (%.0f HP)", bestInfiltrateTarget.Model.Name, bestInfiltrateTarget.Hum.Health)
                         updateTargetHighlight(bestInfiltrateTarget.Model)
-                        executeNativeAction(infTool)
+                        executeAction(infTool)
                         didInfiltrate = true
                         task.wait(0.2)
                     end
                 end
 
-                -- 3. Disparo a infectados con Slot 5 o 6 (Pausa configurable)
                 if not didOverride and not didInfiltrate and Config.AutoGunVirus then
                     if State.WaitingAfterKill then
                         local rem = State.WaitUntilTick - tick()
@@ -311,9 +270,9 @@ task.spawn(function()
                                 local shots = 0
                                 while shots < Config.MaxShotsPerTarget and tHum and tHum.Parent and tHum.Health > 0 and Config.Enabled do
                                     shots = shots + 1
-                                    State.CurrentAction = string.format("🔫 [%s] Disparando a infectado (%.0f HP)", gun.Name, tHum.Health)
+                                    State.CurrentAction = string.format("🔫 [%s] Disparando (%.0f HP)", gun.Name, tHum.Health)
 
-                                    executeNativeAction(gun)
+                                    executeAction(gun)
                                     task.wait(Config.ShotInterval)
 
                                     if tHum.Health <= 0 then
@@ -337,13 +296,9 @@ task.spawn(function()
     end
 end)
 
--- ==============================================================================
--- 5. INTERFAZ FLUENT Y BOTONES FLOTANTES
--- ==============================================================================
-
 local Window = Fluent:CreateWindow({
-    Title = "HACKER COMBAT | TIERRA V3",
-    SubTitle = "Slots 5 & 6 + Disparo Nativo + Pausa de 2s",
+    Title = "HACKER COMBAT | TIERRA V4",
+    SubTitle = "Slots 5 & 6 + Disparo Estable + Pausa 2s",
     TabWidth = 155,
     Size = UDim2.fromOffset(560, 480),
     Acrylic = false,
@@ -396,7 +351,6 @@ Tabs.Combat:AddToggle("OverrideToggle", {
 
 Tabs.Settings:AddSlider("WaitKillSlider", {
     Title = "Espera Tras Matar a un Infectado (Segundos)",
-    Description = "Pausa antes de disparar al siguiente (Por defecto 2s)",
     Default = 2.0,
     Min = 0.5,
     Max = 6.0,
@@ -406,7 +360,7 @@ Tabs.Settings:AddSlider("WaitKillSlider", {
 
 Tabs.Settings:AddSlider("ShotIntervalSlider", {
     Title = "Tiempo Entre Cada Bala (Segundos)",
-    Default = 0.22,
+    Default = 0.25,
     Min = 0.08,
     Max = 0.80,
     Rounding = 2,
@@ -425,9 +379,8 @@ Tabs.Settings:AddSlider("ScanRadiusSlider", {
     end
 })
 
--- Dos Botones Flotantes (Menú y On/Off)
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "HackerGroundV3Gui"
+ScreenGui.Name = "HackerGroundV4Gui"
 ScreenGui.ResetOnSpawn = false
 if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
