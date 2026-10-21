@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ZOMBIE HUB MASTER V15.2: RADAR HÍBRIDO + SALUD RESTAURADA + RUTEO PERIMETRAL
+-- ZOMBIE HUB MASTER V16.0: AUTO-EAT TURBO INTEGRADO + RADAR + RUTEO PERIMETRAL
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -8,13 +8,13 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
 local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
 local BaseCenter = Vector3.new(0, 0, 0)
-local BASE_FORBIDDEN_RADIUS = 105 -- Prohibido cruzar la base central
+local BASE_FORBIDDEN_RADIUS = 105
 
--- COORDENADAS ORIGINALES (+Z = SUR, -Z = NORTE)
 local SECTOR_ROUTES = {
     SUR   = { Gate = Vector3.new(0, -1.9, 120.0),   Combat = Vector3.new(0, 14.5, 180.0) },
     NORTE = { Gate = Vector3.new(0, -1.7, -120.0),  Combat = Vector3.new(0, 14.5, -180.0) },
@@ -22,7 +22,6 @@ local SECTOR_ROUTES = {
     OESTE = { Gate = Vector3.new(-120.0, -1.9, 0.0), Combat = Vector3.new(-180.0, 14.5, 0.0) }
 }
 
--- ANILLO PERIMETRAL DE PISTAS (ENLACE EXTERIOR)
 local PERIMETER_NODES = {
     { Name = "T_SUR",   Pos = Vector3.new(0, -1.9, 120.0),    Sector = "SUR" },
     { Name = "C_SE",    Pos = Vector3.new(115.0, -1.9, 115.0), Sector = nil },
@@ -36,32 +35,36 @@ local PERIMETER_NODES = {
 
 local Config = {
     ZigZagEnabled = false,
-    AttackMode = "Depredador",     -- "Depredador", "Torbellino", "Zigzag Clásico", etc.
+    AttackMode = "Depredador",
     SwitchInterval = 0.5,
     LateralDist = 25,
-    MoveSpeed = 150,              -- 150 studs/s por defecto
+    MoveSpeed = 150,
     EvadeBloaters = true,
     BloaterDangerDist = 30,
     AutoRouteToWave = true,
 
-    -- VALORES DE EMBESTIDA DEPREDADOR
-    DepredadorBaseOvershoot = 5.0,    -- 5 studs hacia la base
-    DepredadorFarOvershoot = 25.0,    -- 25 studs hacia la horda
+    DepredadorBaseOvershoot = 5.0,
+    DepredadorFarOvershoot = 25.0,
 
-    -- RETIRADA TÁCTICA: MÍNIMO 30% Y MÁXIMO 95%
     RetreatEnabled = true,
-    LowHealthThreshold = 0.30,     -- 30% activa retirada
-    FullHealthThreshold = 0.95,    -- 95% reanuda ataque
-    RetreatDistance = 30.0,        -- Retrocede 30 studs hacia base
+    LowHealthThreshold = 0.30,
+    FullHealthThreshold = 0.95,
+    RetreatDistance = 30.0,
     RetreatSpeed = 110,
 
-    -- RESCATES PEATONALES
-    CombatAutoRescue = true,       -- Rescate en combate automático (ON)
-    ManualDriveAutoRescue = false, -- Conducción manual (OFF por defecto, lo activas tú)
+    CombatAutoRescue = true,
+    ManualDriveAutoRescue = false,
     SprintSpeed = 34,
     BunnyHop = true,
-    RescueZombieScanDist = 100,    -- Filtro de 100 studs (Cero Lag)
-    MaxCarSearchDist = 350
+    RescueZombieScanDist = 100,
+    MaxCarSearchDist = 350,
+
+    -- CONFIGURACIÓN AUTO-EAT (POR DEFECTO: ON)
+    AutoEatEnabled = true,
+    EatHealthThreshold = 60,
+    EatHungerThreshold = 50,
+    EatScanRadius = 24,
+    EatCooldown = 0.9
 }
 
 local CurrentTarget = nil
@@ -90,15 +93,20 @@ local TransitState = {
     TargetSector = "SUR"
 }
 
--- ==============================================================================
--- CURSOR DEL MOUSE SIEMPRE VISIBLE (NUNCA SE OCULTA AL CONDUCIR)
--- ==============================================================================
+local AutoEatState = {
+    IsEating = false,
+    LastEatTick = 0,
+    Status = "Monitoreando..."
+}
+
+local PickUpRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Interaction"):WaitForChild("PickUpItem")
+
 RunService.RenderStepped:Connect(function()
     UserInputService.MouseIconEnabled = true
 end)
 
 -- ==============================================================================
--- 1. DETECCIÓN ROBUSTA DE SALUD (ORIGINAL RESTAURADA)
+-- 1. DETECCIÓN DE STATS & SALUD
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -106,6 +114,28 @@ local function getCharacterParts()
     local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     return char, root, hum
+end
+
+local function getPlayerStats()
+    local char, _, hum = getCharacterParts()
+    if not hum then return 100, 100 end
+
+    local hpPct = math.floor((hum.Health / math.max(hum.MaxHealth, 1)) * 100)
+
+    local hunger = char:GetAttribute("Hunger") or lp:GetAttribute("Hunger")
+    local maxHunger = char:GetAttribute("MaxHunger") or lp:GetAttribute("MaxHunger") or 100
+
+    local hungerPct = 100
+    if type(hunger) == "number" then
+        hungerPct = math.floor((hunger / maxHunger) * 100)
+    else
+        local hVal = char:FindFirstChild("Hunger") or lp:FindFirstChild("Hunger")
+        if hVal and (hVal:IsA("NumberValue") or hVal:IsA("IntValue")) then
+            hungerPct = math.floor((hVal.Value / 100) * 100)
+        end
+    end
+
+    return hpPct, hungerPct
 end
 
 local function getVehicleRootModel(seat)
@@ -202,7 +232,162 @@ local function getTruckHealth(truck)
 end
 
 -- ==============================================================================
--- 2. RUTEO PERIMETRAL DINÁMICO (BORDEANDO LA BASE SIN CORTAR EL CENTRO)
+-- 2. DISCRIMINADOR Y CONSUMO DE ZANAHORIAS EN SUELO (TURBO 0% LAG)
+-- ==============================================================================
+
+local function isGoldenCarrot(item)
+    if item:GetAttribute("Golden") == true or item:GetAttribute("Rarity") == "Golden" then
+        return true
+    end
+
+    local mainPart = item:FindFirstChild("MainPart") or item:FindFirstChildWhichIsA("BasePart")
+    if mainPart then
+        if mainPart.Material == Enum.Material.Metal then
+            return true
+        end
+        if mainPart.Color.R > 0.9 then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function findBestGroundFood(onlyGolden)
+    local _, root = getCharacterParts()
+    if not root then return nil end
+
+    local dropped = workspace:FindFirstChild("DroppedItems")
+    if not dropped then return nil end
+
+    local myPos = root.Position
+    local bestItem = nil
+    
+    local maxRadius = Config.EatScanRadius
+    local shortestDistSq = maxRadius * maxRadius
+
+    for _, item in ipairs(dropped:GetChildren()) do
+        local isFood = (item:GetAttribute("ItemType") == "Food") 
+            or item.Name:lower():find("carrot")
+
+        if isFood and item:GetAttribute("CanPickUp") ~= false then
+            local isGold = isGoldenCarrot(item)
+            if not onlyGolden or isGold then
+                local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
+                if part then
+                    local pPos = part.Position
+                    local dx = pPos.X - myPos.X
+                    local dz = pPos.Z - myPos.Z
+
+                    if math.abs(dx) <= maxRadius and math.abs(dz) <= maxRadius then
+                        local dy = pPos.Y - myPos.Y
+                        local distSq = (dx * dx) + (dy * dy) + (dz * dz)
+
+                        if distSq <= shortestDistSq then
+                            shortestDistSq = distSq
+                            bestItem = item
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestItem
+end
+
+local function eatGroundFood(onlyGolden)
+    if AutoEatState.IsEating then return end
+    if (tick() - AutoEatState.LastEatTick) < Config.EatCooldown then return end
+
+    local char, _, hum = getCharacterParts()
+    if not hum or hum.Health <= 0 then return end
+
+    local targetFood = findBestGroundFood(onlyGolden)
+    if not targetFood then
+        AutoEatState.Status = onlyGolden and "⚠️ Buscando Zanahoria Dorada..." or "⚠️ Sin comida en el suelo"
+        return
+    end
+
+    AutoEatState.IsEating = true
+    local isGold = isGoldenCarrot(targetFood)
+    AutoEatState.Status = isGold and "✨ Comiendo DORADA..." or "🥕 Comiendo Normal..."
+
+    local previousTool = nil
+    for _, item in ipairs(char:GetChildren()) do
+        if item:IsA("Tool") then
+            previousTool = item
+            break
+        end
+    end
+
+    pcall(function()
+        PickUpRemote:FireServer(targetFood)
+    end)
+
+    local foodTool = nil
+    local startWait = tick()
+
+    while (tick() - startWait) < 0.6 do
+        for _, cont in ipairs({char, lp:FindFirstChild("Backpack")}) do
+            if cont then
+                for _, item in ipairs(cont:GetChildren()) do
+                    if item:IsA("Tool") and (item:GetAttribute("ItemType") == "Food" or item.Name:lower():find("carrot")) then
+                        foodTool = item
+                        break
+                    end
+                end
+            end
+        end
+        if foodTool then break end
+        task.wait(0.04)
+    end
+
+    if foodTool then
+        if foodTool.Parent ~= char then
+            hum:EquipTool(foodTool)
+            task.wait(0.05)
+        end
+
+        pcall(function() foodTool:Activate() end)
+
+        local useRemote = foodTool:FindFirstChild("Use") or foodTool:FindFirstChild("Consume")
+        if useRemote and useRemote:IsA("RemoteEvent") then
+            pcall(function() useRemote:FireServer() end)
+        end
+
+        task.wait(0.20)
+    end
+
+    if previousTool and previousTool.Parent then
+        hum:EquipTool(previousTool)
+    end
+
+    AutoEatState.LastEatTick = tick()
+    AutoEatState.IsEating = false
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.35)
+        if Config.AutoEatEnabled then
+            local hpPct, hungerPct = getPlayerStats()
+
+            if hpPct <= Config.EatHealthThreshold then
+                eatGroundFood(true)
+            elseif hungerPct <= Config.EatHungerThreshold then
+                eatGroundFood(false)
+            else
+                AutoEatState.Status = string.format("🟢 OK (Vida: %d%% | Comida: %d%%)", hpPct, hungerPct)
+            end
+        else
+            AutoEatState.Status = "🔴 OFF"
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 3. RUTEO PERIMETRAL DINÁMICO
 -- ==============================================================================
 
 local function clearHighlight()
@@ -222,7 +407,6 @@ local function applyHighlight(obj)
     end
 end
 
--- Mapeo único de StraightRoads frontales
 task.spawn(function()
     task.wait(1.0)
     local mapFolder = workspace:FindFirstChild("Map") or workspace:FindFirstChild("Tiles") or workspace
@@ -331,7 +515,7 @@ local function startDynamicSectorTransition(newSector)
 end
 
 -- ==============================================================================
--- 3. RADAR HÍBRIDO DEFINITIVO (INCOMINGPOSITION + RADAR DE ZOMBIES VIVOS)
+-- 4. RADAR HÍBRIDO (INCOMINGPOSITION + ZOMBIES VIVOS)
 -- ==============================================================================
 
 local function parseSectorFromAttribute(val)
@@ -346,7 +530,6 @@ local function parseSectorFromAttribute(val)
     end
 
     if not vec then return "DESCONOCIDO" end
-    -- UNIFICADO: +Z = SUR (+180), -Z = NORTE (-180)
     if math.abs(vec.Z) > math.abs(vec.X) then
         return (vec.Z > 0) and "SUR" or "NORTE"
     else
@@ -354,7 +537,6 @@ local function parseSectorFromAttribute(val)
     end
 end
 
--- 1. Disparo inmediato por evento de servidor (0ms Lag)
 workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(function()
     local rawVal = workspace:GetAttribute("IncomingPosition")
     if rawVal then
@@ -369,7 +551,6 @@ workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(function()
     end
 end)
 
--- 2. Respaldo por densidad de zombies vivos (Resuelve cambios mid-wave o hordas dobles)
 local function isValidZombie(entity)
     if not entity or not entity:IsA("Model") or entity == lp.Character or Players:GetPlayerFromCharacter(entity) then
         return false
@@ -399,7 +580,6 @@ task.spawn(function()
                 local p = eRoot.Position - BaseCenter
                 if p.Magnitude <= 900 then
                     totalZombies = totalZombies + 1
-                    -- UNIFICADO: +Z = SUR, -Z = NORTE
                     if math.abs(p.Z) > math.abs(p.X) then
                         if p.Z > 0 then counts.SUR = counts.SUR + 1 else counts.NORTE = counts.NORTE + 1 end
                     else
@@ -418,7 +598,6 @@ task.spawn(function()
             end
         end
 
-        -- Si hay más de 12 zombies concentrados en otra puerta, reorienta el auto automáticamente
         if maxCount >= 12 and topSector ~= CurrentActiveSector then
             if Config.AutoRouteToWave and Config.ZigZagEnabled then
                 startDynamicSectorTransition(topSector)
@@ -430,7 +609,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 4. BUCLE ORIGINAL DE DENSIDAD LATERAL DE HORDA (DEPREDADOR CLUSTER)
+-- 5. DENSIDAD LATERAL DEPREDADOR
 -- ==============================================================================
 
 task.spawn(function()
@@ -468,7 +647,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 5. RESCATES PEATONALES Y FRENADO
+-- 6. RESCATES PEATONALES Y FRENADO
 -- ==============================================================================
 
 local function applyBrake(duration)
@@ -598,7 +777,7 @@ local function executeGroundRescue(onBoardCallback)
 end
 
 -- ==============================================================================
--- 6. GUARDIÁN DE SALUD (RETIRADA AL 30%, REANUDACIÓN AL 95%)
+-- 7. GUARDIÁN DE SALUD DEL VEHÍCULO
 -- ==============================================================================
 
 task.spawn(function()
@@ -663,7 +842,6 @@ task.spawn(function()
     end
 end)
 
--- BUCLE DE BLOATERS
 task.spawn(function()
     while true do
         task.wait(0.4)
@@ -697,11 +875,11 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 7. INTERFAZ FLUENT
+-- 8. INTERFAZ FLUENT (PESTAÑAS COMBATE, DEFENSA, RESCATE, RADAR Y AUTO-EAT)
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | MASTER V15.2",
+    Title = "ZOMBIE HUB | MASTER V16.0",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(600, 520),
@@ -711,12 +889,14 @@ local Window = Fluent:CreateWindow({
 })
 
 local Tabs = {
-    Combat = Window:AddTab({ Title = "Combate", Icon = "crosshair" }),
+    Combat  = Window:AddTab({ Title = "Combate", Icon = "crosshair" }),
     Defense = Window:AddTab({ Title = "Defensa & Esquive", Icon = "shield" }),
-    Rescue = Window:AddTab({ Title = "Auto-Rescate", Icon = "user-check" }),
-    Horde = Window:AddTab({ Title = "Radar", Icon = "radar" })
+    AutoEat = Window:AddTab({ Title = "Auto-Comer", Icon = "utensils" }),
+    Rescue  = Window:AddTab({ Title = "Auto-Rescate", Icon = "user-check" }),
+    Horde   = Window:AddTab({ Title = "Radar", Icon = "radar" })
 }
 
+-- PESTAÑA COMBATE
 Tabs.Combat:AddSection("Controles de Embestida")
 
 ZigZagToggleInstance = Tabs.Combat:AddToggle("ZigZagToggle", {
@@ -774,7 +954,7 @@ Tabs.Combat:AddToggle("AutoRouteToggle", {
     Callback = function(v) Config.AutoRouteToWave = v end
 })
 
--- PESTAÑA DEFENSA & RETIRADA
+-- PESTAÑA DEFENSA
 Tabs.Defense:AddSection("Retirada Táctica por Daño (100% Terrestre)")
 
 Tabs.Defense:AddToggle("RetreatToggle", {
@@ -790,7 +970,7 @@ local DefenseStatusParagraph = Tabs.Defense:AddParagraph({
 
 Tabs.Defense:AddSlider("LowHPSlider", {
     Title = "Umbral de Retirada (% Vida)",
-    Default = 30, -- 30% por defecto
+    Default = 30,
     Min = 10,
     Max = 50,
     Rounding = 0,
@@ -799,7 +979,7 @@ Tabs.Defense:AddSlider("LowHPSlider", {
 
 Tabs.Defense:AddSlider("FullHPSlider", {
     Title = "Umbral de Reanudación (% Vida)",
-    Default = 95, -- 95% por defecto
+    Default = 95,
     Min = 50,
     Max = 100,
     Rounding = 0,
@@ -815,13 +995,64 @@ Tabs.Defense:AddSlider("RetreatDistSlider", {
     Callback = function(v) Config.RetreatDistance = v end
 })
 
+-- PESTAÑA AUTO-EAT (POR DEFECTO: ON)
+Tabs.AutoEat:AddSection("Consumo Inteligente de Zanahorias (0% Lag)")
+
+Tabs.AutoEat:AddToggle("AutoEatToggle", {
+    Title = "🥕 Activar Auto-Comer en Suelo",
+    Default = true,
+    Callback = function(v) Config.AutoEatEnabled = v end
+})
+
+local EatStatusParagraph = Tabs.AutoEat:AddParagraph({
+    Title = "Estado del Auto-Eat",
+    Content = "Monitoreando comida y salud..."
+})
+
+Tabs.AutoEat:AddSlider("EatHpSlider", {
+    Title = "Vida Baja (%): Comer SOLO DORADAS ✨",
+    Default = 60,
+    Min = 10,
+    Max = 95,
+    Rounding = 0,
+    Callback = function(v) Config.EatHealthThreshold = v end
+})
+
+Tabs.AutoEat:AddSlider("EatHungerSlider", {
+    Title = "Hambre Baja (%): Comer CUALQUIERA 🥕",
+    Default = 50,
+    Min = 10,
+    Max = 90,
+    Rounding = 0,
+    Callback = function(v) Config.EatHungerThreshold = v end
+})
+
+Tabs.AutoEat:AddSlider("EatRadiusSlider", {
+    Title = "Radio de Absorción al Conducir (Studs)",
+    Default = 24,
+    Min = 10,
+    Max = 45,
+    Rounding = 0,
+    Callback = function(v) Config.EatScanRadius = v end
+})
+
+Tabs.AutoEat:AddButton({
+    Title = "✨ Forzar Comer Zanahoria Dorada",
+    Callback = function() eatGroundFood(true) end
+})
+
+Tabs.AutoEat:AddButton({
+    Title = "🥕 Forzar Comer Cualquier Zanahoria",
+    Callback = function() eatGroundFood(false) end
+})
+
 -- PESTAÑA RESCATES
 Tabs.Rescue:AddSection("Sistemas de Auto-Rescate Terrestre")
 
 Tabs.Rescue:AddToggle("ManualRescueToggle", {
     Title = "🚗 Auto-Rescate en Conducción MANUAL",
     Description = "Te rescata si manejas tú mismo y te expulsan",
-    Default = false, -- Desactivado por defecto hasta que lo enciendas
+    Default = false,
     Callback = function(v) Config.ManualDriveAutoRescue = v end
 })
 
@@ -845,13 +1076,14 @@ Tabs.Rescue:AddButton({
     Callback = function() executeGroundRescue() end
 })
 
+-- PESTAÑA RADAR
 local HordeStatusParagraph = Tabs.Horde:AddParagraph({
     Title = "Frente Dominante",
     Content = "Escaneando..."
 })
 
 -- ==============================================================================
--- 8. WIDGETS FLOTANTES: MENU HUB + AUTO-PILOTO (ON / OFF SIN BOTAR DEL AUTO)
+-- 9. WIDGETS FLOTANTES
 -- ==============================================================================
 
 local ScreenGui = Instance.new("ScreenGui")
@@ -859,7 +1091,7 @@ ScreenGui.Name = "ZombieHubMasterFloat"
 ScreenGui.ResetOnSpawn = false
 if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
--- BOTÓN MENÚ
+-- Botón Menú Fluent
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0)
@@ -879,7 +1111,7 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
--- WIDGET AUTO-PILOTO
+-- Widget Auto-Piloto
 local AutoPilotBtn = Instance.new("TextButton")
 AutoPilotBtn.Size = UDim2.new(0, 48, 0, 48)
 AutoPilotBtn.Position = UDim2.new(0.04, 0, 0.64, 0)
@@ -898,7 +1130,6 @@ AutoPilotCorner.Parent = AutoPilotBtn
 
 local function toggleAutoPilot()
     if Config.ZigZagEnabled then
-        -- AL APAGAR: FRENA PERO NO EXPULSA AL PERSONAJE (TE QUEDAS SENTADO)
         Config.ZigZagEnabled = false
         pcall(function() ZigZagToggleInstance:SetValue(false) end)
         TransitState.Active = false
@@ -927,7 +1158,49 @@ end
 AutoPilotBtn.MouseButton1Click:Connect(toggleAutoPilot)
 Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (ON / OFF)", Callback = toggleAutoPilot })
 
--- CONTROLES DE TECLADO ('T', '9', '0', 'V')
+-- Widget Auto-Eat (Por defecto activo)
+local AutoEatWidgetBtn = Instance.new("TextButton")
+AutoEatWidgetBtn.Size = UDim2.new(0, 48, 0, 48)
+AutoEatWidgetBtn.Position = UDim2.new(0.04, 0, 0.56, 0)
+AutoEatWidgetBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 60)
+AutoEatWidgetBtn.Text = "🥕\nON"
+AutoEatWidgetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoEatWidgetBtn.TextSize = 11
+AutoEatWidgetBtn.Font = Enum.Font.GothamBold
+AutoEatWidgetBtn.Active = true
+AutoEatWidgetBtn.Draggable = true
+AutoEatWidgetBtn.Parent = ScreenGui
+
+local EatCorner = Instance.new("UICorner")
+EatCorner.CornerRadius = UDim.new(1, 0)
+EatCorner.Parent = AutoEatWidgetBtn
+
+AutoEatWidgetBtn.MouseButton1Click:Connect(function()
+    Config.AutoEatEnabled = not Config.AutoEatEnabled
+    if Config.AutoEatEnabled then
+        AutoEatWidgetBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 60)
+        AutoEatWidgetBtn.Text = "🥕\nON"
+        Fluent:Notify({ Title = "🥕 AUTO-EAT", Content = "Consumo automático activado.", Duration = 2 })
+    else
+        AutoEatWidgetBtn.BackgroundColor3 = Color3.fromRGB(160, 35, 40)
+        AutoEatWidgetBtn.Text = "🥕\nOFF"
+        Fluent:Notify({ Title = "🥕 AUTO-EAT", Content = "Consumo automático pausado.", Duration = 2 })
+    end
+end)
+
+-- Teclado
+local function getCompleteObject(target)
+    if not target then return nil end
+    local current = target
+    while current and current.Parent and current.Parent ~= workspace do
+        if current:IsA("Model") and not current:FindFirstChildOfClass("Humanoid") then
+            return current
+        end
+        current = current.Parent
+    end
+    return target
+end
+
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
 
@@ -969,7 +1242,7 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     end
 end)
 
--- ACTUALIZACIÓN DE TEXTOS EN INTERFAZ
+-- Monitor de Textos en Tiempo Real
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -986,15 +1259,21 @@ task.spawn(function()
             tostring(workspace:GetAttribute("IncomingPosition") or "N/A"),
             workspace:GetAttribute("RemainingMobs") or 0
         ))
+
+        local pHP, pHunger = getPlayerStats()
+        EatStatusParagraph:SetDesc(string.format(
+            "Tu Vida: %d%% | Hambre: %d%%\nEstado Auto-Eat: %s\nModo Activo: %s",
+            pHP, pHunger,
+            Config.AutoEatEnabled and "🟢 ON" or "🔴 OFF",
+            AutoEatState.Status
+        ))
     end
 end)
 
 -- ==============================================================================
--- 9. MOTOR CINÉTICO ZERO-LAG
+-- 10. MOTOR CINÉTICO ZERO-LAG
 -- ==============================================================================
 
-local side = 1
-local lastSwitch = tick()
 local depredadorDir = 1
 local lastDepredadorSwitch = tick()
 
@@ -1005,7 +1284,6 @@ RunService.Heartbeat:Connect(function()
     if not root or not hum or hum.Health <= 0 then return end
     if not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat") then return end
 
-    -- FASE A: TRANSICIÓN DINÁMICA POR PISTAS
     if TransitState.Active then
         local wp = TransitState.Waypoints[TransitState.Index]
         if wp then
@@ -1034,7 +1312,6 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- FASE B: COMBATE / DEPREDADOR / TORBELLINO / RETIRADA
     local targetPos = nil
     local targetSize = Vector3.new(60, 10, 60)
 
@@ -1054,14 +1331,12 @@ RunService.Heartbeat:Connect(function()
         local roadLen = toRoad.Magnitude > 0 and toRoad.Unit or Vector3.new(0, 0, 1)
         local roadWid = Vector3.new(-roadLen.Z, 0, roadLen.X)
 
-        -- 1. RETIRADA TÁCTICA ACTIVA (VIDA <= 30%, HASTA 95%)
         if DefenseState.IsRetreating then
             speed = Config.RetreatSpeed
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
             local anchor = targetPos - (roadLen * (hLen + Config.RetreatDistance))
             destination = anchor + (roadWid * (math.sin(tick() * 4.0) * d))
 
-        -- 2. MODO DEPREDADOR (CON CLUSTER DE HORDAS RESTABLECIDO)
         elseif Config.AttackMode == "Depredador" then
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
             local reachAway = hLen + Config.DepredadorFarOvershoot
@@ -1088,7 +1363,6 @@ RunService.Heartbeat:Connect(function()
 
             destination = targetPos + (roadLen * tDist) + (roadWid * totalLateral)
 
-        -- 3. MODO TORBELLINO (SINUSOIDAL PURA)
         elseif Config.AttackMode == "Torbellino" then
             local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
             local reachAway = hLen + Config.DepredadorFarOvershoot
@@ -1105,7 +1379,6 @@ RunService.Heartbeat:Connect(function()
             destination = targetPos + (roadLen * tDist) + (roadWid * (math.sin(tick() * 7.5) * d))
         end
 
-        -- EVASIÓN DE BLOATERS
         if Config.EvadeBloaters and #CachedBloaterDangers > 0 then
             for _, bPos in ipairs(CachedBloaterDangers) do
                 if (root.Position - bPos).Magnitude <= Config.BloaterDangerDist then
@@ -1126,8 +1399,8 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB MASTER V15.2 LISTO",
-    Content = "Modo Depredador configurado. Cursor siempre visible y sin expulsión en OFF.",
+    Title = "ZOMBIE HUB MASTER V16.0",
+    Content = "Auto-Eat (Zanahorias Doradas) activo por defecto y vinculado al menú.",
     Duration = 4
 })
 
