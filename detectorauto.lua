@@ -1,38 +1,38 @@
 -- ==============================================================================
--- PANEL INTEGRADO: RADAR DE AUTOS (CON RASTREO Y GUÍA) + COFRES ROJOS
+-- PANEL INTEGRADO: RADAR DE AUTOS PERSISTENTE + COFRES ROJOS + FLECHA GUÍA
 -- ==============================================================================
 
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
-local cam = workspace.CurrentCamera
 
 local Config = {
     TruckESP = false,
     ChestESP = true
 }
 
-local RegisteredTrucks = {}
-local SelectedTruck = nil
+-- Registro con memoria permanente (no se borra si el auto se descarga por streaming)
+local PersistentTrucks = {}
+local SelectedTruckId = nil
 
 -- ==============================================================================
--- 1. FLECHA GUÍA 3D HACIA EL AUTO SELECCIONADO
+-- 1. FLECHA GUÍA 3D (HACIA MODELO O COORDENADA MEMORIZADA)
 -- ==============================================================================
 local GuideBeam = nil
 local GuideAttach0 = nil
 local GuideAttach1 = nil
+local StaticGuidePart = nil
 
 local function clearGuide()
     if GuideBeam then GuideBeam:Destroy(); GuideBeam = nil end
     if GuideAttach0 then GuideAttach0:Destroy(); GuideAttach0 = nil end
     if GuideAttach1 then GuideAttach1:Destroy(); GuideAttach1 = nil end
+    if StaticGuidePart then StaticGuidePart:Destroy(); StaticGuidePart = nil end
 end
 
-local function setGuideToTarget(targetPart)
+local function setGuideToTarget(targetPos, targetPart)
     clearGuide()
-    if not targetPart then return end
-
     local char = lp.Character
     local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
     if not root then return end
@@ -41,9 +41,25 @@ local function setGuideToTarget(targetPart)
     GuideAttach0.Name = "TruckGuide_Attach0"
     GuideAttach0.Parent = root
 
-    GuideAttach1 = Instance.new("Attachment")
-    GuideAttach1.Name = "TruckGuide_Attach1"
-    GuideAttach1.Parent = targetPart
+    if targetPart and targetPart.Parent then
+        GuideAttach1 = Instance.new("Attachment")
+        GuideAttach1.Name = "TruckGuide_Attach1"
+        GuideAttach1.Parent = targetPart
+    else
+        -- Si el modelo está lejos por streaming, anclar a una pieza invisible en la posición guardada
+        StaticGuidePart = Instance.new("Part")
+        StaticGuidePart.Name = "StaticTruckMarker"
+        StaticGuidePart.Size = Vector3.new(1, 1, 1)
+        StaticGuidePart.Position = targetPos
+        StaticGuidePart.Anchored = true
+        StaticGuidePart.CanCollide = false
+        StaticGuidePart.Transparency = 1
+        StaticGuidePart.Parent = workspace
+
+        GuideAttach1 = Instance.new("Attachment")
+        GuideAttach1.Name = "TruckGuide_Attach1"
+        GuideAttach1.Parent = StaticGuidePart
+    end
 
     GuideBeam = Instance.new("Beam")
     GuideBeam.Name = "TruckGuide_Beam"
@@ -62,7 +78,7 @@ local function setGuideToTarget(targetPart)
 end
 
 -- ==============================================================================
--- 2. LÓGICA DE COFRES (EXACTA, ROJO 360°, SE APAGA AL ABRIRSE)
+-- 2. LÓGICA DE COFRES (ROJO 360°, SE APAGA AL ABRIRSE)
 -- ==============================================================================
 local function getCratePrompt(model)
     return model:FindFirstChildWhichIsA("ProximityPrompt", true)
@@ -175,9 +191,10 @@ local function applyStrongRedESP(model)
 end
 
 -- ==============================================================================
--- 3. LÓGICA DE AUTOS (TRUCK EXACTO + REGISTRO PARA MENÚ)
+-- 3. LÓGICA DE AUTOS CON REGISTRO PERSISTENTE
 -- ==============================================================================
 local function clearTruckESP(model)
+    if not model then return end
     local hl = model:FindFirstChild("TruckESP_Highlight")
     if hl then hl:Destroy() end
 
@@ -188,30 +205,8 @@ local function clearTruckESP(model)
     end
 end
 
-local function tagTruck(model)
-    if not model:IsA("Model") then return end
-    if model.Name:lower() ~= "truck" then return end
-
-    local anchorPart = model:FindFirstChild("DriveSeat") or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
-    
-    -- Registrar en la tabla de autos si aún no está
-    local exists = false
-    for _, t in ipairs(RegisteredTrucks) do
-        if t.Model == model then exists = true; break end
-    end
-    if not exists and anchorPart then
-        table.insert(RegisteredTrucks, {
-            Model = model,
-            Anchor = anchorPart,
-            Name = model.Name
-        })
-    end
-
-    if not Config.TruckESP then
-        clearTruckESP(model)
-        return
-    end
-
+local function applyTruckESP(model, anchorPart)
+    if not Config.TruckESP then return end
     if model:FindFirstChild("TruckESP_Highlight") then return end
 
     local hl = Instance.new("Highlight")
@@ -246,8 +241,46 @@ local function tagTruck(model)
     end
 end
 
+local function processTruck(model)
+    if not model:IsA("Model") then return end
+    if model.Name:lower() ~= "truck" then return end
+
+    local anchorPart = model:FindFirstChild("DriveSeat") or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+    if not anchorPart then return end
+
+    -- Buscar si ya estaba registrado por posición cercana (evitar duplicados de streaming)
+    local found = nil
+    for _, t in ipairs(PersistentTrucks) do
+        if t.Model == model or (t.LastPos - anchorPart.Position).Magnitude < 10 then
+            found = t
+            break
+        end
+    end
+
+    if found then
+        found.Model = model
+        found.Anchor = anchorPart
+        found.LastPos = anchorPart.Position
+        found.IsInMemory = true
+    else
+        table.insert(PersistentTrucks, {
+            Id = #PersistentTrucks + 1,
+            Model = model,
+            Anchor = anchorPart,
+            LastPos = anchorPart.Position,
+            IsInMemory = true
+        })
+    end
+
+    if Config.TruckESP then
+        applyTruckESP(model, anchorPart)
+    else
+        clearTruckESP(model)
+    end
+end
+
 -- ==============================================================================
--- 4. INTERFAZ VISUAL (WIDGET FLOTANTE + MENÚ COMPLETO)
+-- 4. INTERFAZ VISUAL FLOTANTE
 -- ==============================================================================
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
@@ -255,7 +288,6 @@ ScreenGui.Name = "RadarTruckChestProGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
--- Botón Flotante / Widget
 local WidgetBtn = Instance.new("TextButton")
 WidgetBtn.Size = UDim2.new(0, 52, 0, 52)
 WidgetBtn.Position = UDim2.new(0.04, 0, 0.35, 0)
@@ -277,10 +309,9 @@ WidgetStroke.Color = Color3.fromRGB(0, 255, 190)
 WidgetStroke.Thickness = 1.5
 WidgetStroke.Parent = WidgetBtn
 
--- Ventana Principal
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 450, 0, 400)
-MainFrame.Position = UDim2.new(0.5, -225, 0.5, -200)
+MainFrame.Size = UDim2.new(0, 470, 0, 410)
+MainFrame.Position = UDim2.new(0.5, -235, 0.5, -205)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -294,7 +325,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
-TitleBar.Text = "  📡 RADAR | AUTOS (TRUCKS) & COFRES ROJOS"
+TitleBar.Text = "  📡 RADAR PERSISTENTE | TRUCKS & COFRES ROJOS"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 11
 TitleBar.Font = Enum.Font.GothamBold
@@ -305,7 +336,6 @@ local TitleCorner = Instance.new("UICorner")
 TitleCorner.CornerRadius = UDim.new(0, 10)
 TitleCorner.Parent = TitleBar
 
--- Interruptor de Autos
 local TruckToggle = Instance.new("TextButton")
 TruckToggle.Size = UDim2.new(0.48, -8, 0, 34)
 TruckToggle.Position = UDim2.new(0, 10, 0, 44)
@@ -320,7 +350,6 @@ local TruckToggleCorner = Instance.new("UICorner")
 TruckToggleCorner.CornerRadius = UDim.new(0, 6)
 TruckToggleCorner.Parent = TruckToggle
 
--- Interruptor de Cofres
 local ChestToggle = Instance.new("TextButton")
 ChestToggle.Size = UDim2.new(0.48, -8, 0, 34)
 ChestToggle.Position = UDim2.new(0.52, 0, 0, 44)
@@ -340,13 +369,17 @@ TruckToggle.MouseButton1Click:Connect(function()
     if Config.TruckESP then
         TruckToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
         TruckToggle.Text = "🚚 AUTOS (TRUCK): ON"
-        for _, t in ipairs(RegisteredTrucks) do tagTruck(t.Model) end
+        for _, t in ipairs(PersistentTrucks) do
+            if t.Model and t.Model.Parent then applyTruckESP(t.Model, t.Anchor) end
+        end
     else
         TruckToggle.BackgroundColor3 = Color3.fromRGB(150, 35, 40)
         TruckToggle.Text = "🚚 AUTOS (TRUCK): OFF"
-        for _, t in ipairs(RegisteredTrucks) do clearTruckESP(t.Model) end
+        for _, t in ipairs(PersistentTrucks) do
+            if t.Model and t.Model.Parent then clearTruckESP(t.Model) end
+        end
         clearGuide()
-        SelectedTruck = nil
+        SelectedTruckId = nil
     end
 end)
 
@@ -373,7 +406,7 @@ local ListHeader = Instance.new("TextLabel")
 ListHeader.Size = UDim2.new(1, -20, 0, 22)
 ListHeader.Position = UDim2.new(0, 10, 0, 84)
 ListHeader.BackgroundTransparency = 1
-ListHeader.Text = "REGISTRO DE AUTOS ENCONTRADOS (Toca uno para activar flecha guía):"
+ListHeader.Text = "REGISTRO PERSISTENTE (Click para Guía | [TP] para Teleport):"
 ListHeader.TextColor3 = Color3.fromRGB(200, 200, 200)
 ListHeader.TextSize = 9
 ListHeader.Font = Enum.Font.GothamBold
@@ -381,7 +414,7 @@ ListHeader.TextXAlignment = Enum.TextXAlignment.Left
 ListHeader.Parent = MainFrame
 
 local TruckScroll = Instance.new("ScrollingFrame")
-TruckScroll.Size = UDim2.new(1, -20, 0, 250)
+TruckScroll.Size = UDim2.new(1, -20, 0, 260)
 TruckScroll.Position = UDim2.new(0, 10, 0, 108)
 TruckScroll.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
 TruckScroll.BorderSizePixel = 0
@@ -399,7 +432,7 @@ UIList.Parent = TruckScroll
 
 local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -20, 0, 24)
-StatusLabel.Position = UDim2.new(0, 10, 0, 366)
+StatusLabel.Position = UDim2.new(0, 10, 0, 376)
 StatusLabel.BackgroundTransparency = 1
 StatusLabel.Text = "Guía activa: Ninguna"
 StatusLabel.TextColor3 = Color3.fromRGB(255, 180, 0)
@@ -410,49 +443,83 @@ StatusLabel.Parent = MainFrame
 
 local function updateTruckMenu()
     for _, child in ipairs(TruckScroll:GetChildren()) do
-        if child:IsA("TextButton") then child:Destroy() end
+        if child:IsA("Frame") then child:Destroy() end
     end
 
     local char = lp.Character
     local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
     local myPos = root and root.Position or Vector3.zero
 
-    for i, t in ipairs(RegisteredTrucks) do
-        if t.Model and t.Model.Parent and t.Anchor then
-            local pos = t.Anchor.Position
-            local dist = math.floor((pos - myPos).Magnitude)
-
-            local itemBtn = Instance.new("TextButton")
-            itemBtn.Size = UDim2.new(1, -6, 0, 34)
-            itemBtn.BackgroundColor3 = (SelectedTruck == t.Model) and Color3.fromRGB(50, 75, 110) or Color3.fromRGB(20, 24, 34)
-            itemBtn.Text = string.format(" 🚚 Auto #%d | Pos: (%.0f, %.0f, %.0f) | Distancia: %dm", i, pos.X, pos.Y, pos.Z, dist)
-            itemBtn.TextColor3 = Color3.fromRGB(255, 200, 80)
-            itemBtn.TextSize = 10
-            itemBtn.Font = Enum.Font.Code
-            itemBtn.TextXAlignment = Enum.TextXAlignment.Left
-            itemBtn.Parent = TruckScroll
-
-            local itemCorner = Instance.new("UICorner")
-            itemCorner.CornerRadius = UDim.new(0, 4)
-            itemCorner.Parent = itemBtn
-
-            itemBtn.MouseButton1Click:Connect(function()
-                if SelectedTruck == t.Model then
-                    -- Deseleccionar y apagar flecha
-                    SelectedTruck = nil
-                    clearGuide()
-                    StatusLabel.Text = "Guía activa: Ninguna"
-                else
-                    SelectedTruck = t.Model
-                    setGuideToTarget(t.Anchor)
-                    StatusLabel.Text = string.format("Guía activa: ➜ Auto #%d (%.0f, %.0f, %.0f)", i, pos.X, pos.Y, pos.Z)
-                end
-                updateTruckMenu()
-            end)
+    for _, t in ipairs(PersistentTrucks) do
+        -- Actualizar posición viva si el modelo está presente
+        if t.Anchor and t.Anchor.Parent then
+            t.LastPos = t.Anchor.Position
+            t.IsInMemory = true
+        else
+            t.IsInMemory = false
         end
+
+        local pos = t.LastPos
+        local dist = math.floor((pos - myPos).Magnitude)
+
+        local rowFrame = Instance.new("Frame")
+        rowFrame.Size = UDim2.new(1, -6, 0, 36)
+        rowFrame.BackgroundColor3 = (SelectedTruckId == t.Id) and Color3.fromRGB(45, 70, 105) or Color3.fromRGB(20, 24, 34)
+        rowFrame.Parent = TruckScroll
+
+        local rowCorner = Instance.new("UICorner")
+        rowCorner.CornerRadius = UDim.new(0, 4)
+        rowCorner.Parent = rowFrame
+
+        local selectBtn = Instance.new("TextButton")
+        selectBtn.Size = UDim2.new(0.82, 0, 1, 0)
+        selectBtn.BackgroundTransparency = 1
+        local stateIcon = t.IsInMemory and "🟢" or "💾"
+        selectBtn.Text = string.format(" %s Auto #%d | (%.0f, %.0f, %.0f) | %dm", stateIcon, t.Id, pos.X, pos.Y, pos.Z, dist)
+        selectBtn.TextColor3 = Color3.fromRGB(255, 205, 80)
+        selectBtn.TextSize = 10
+        selectBtn.Font = Enum.Font.Code
+        selectBtn.TextXAlignment = Enum.TextXAlignment.Left
+        selectBtn.Parent = rowFrame
+
+        selectBtn.MouseButton1Click:Connect(function()
+            if SelectedTruckId == t.Id then
+                SelectedTruckId = nil
+                clearGuide()
+                StatusLabel.Text = "Guía activa: Ninguna"
+            else
+                SelectedTruckId = t.Id
+                setGuideToTarget(t.LastPos, t.Anchor)
+                StatusLabel.Text = string.format("Guía activa: ➜ Auto #%d (Distancia: %dm)", t.Id, dist)
+            end
+            updateTruckMenu()
+        end)
+
+        local tpBtn = Instance.new("TextButton")
+        tpBtn.Size = UDim2.new(0.16, -4, 0, 26)
+        tpBtn.Position = UDim2.new(0.84, 0, 0.5, -13)
+        tpBtn.BackgroundColor3 = Color3.fromRGB(35, 120, 85)
+        tpBtn.Text = "TP"
+        tpBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        tpBtn.TextSize = 10
+        tpBtn.Font = Enum.Font.GothamBold
+        tpBtn.Parent = rowFrame
+
+        local tpCorner = Instance.new("UICorner")
+        tpCorner.CornerRadius = UDim.new(0, 4)
+        tpCorner.Parent = tpBtn
+
+        tpBtn.MouseButton1Click:Connect(function()
+            local curChar = lp.Character
+            local curRoot = curChar and curChar:FindFirstChild("HumanoidRootPart")
+            if curRoot then
+                curRoot.CFrame = CFrame.new(t.LastPos + Vector3.new(0, 6.5, 0))
+                curRoot.AssemblyLinearVelocity = Vector3.zero
+            end
+        end)
     end
 
-    TruckScroll.CanvasSize = UDim2.new(0, 0, 0, #RegisteredTrucks * 38)
+    TruckScroll.CanvasSize = UDim2.new(0, 0, 0, #PersistentTrucks * 40)
 end
 
 WidgetBtn.MouseButton1Click:Connect(function()
@@ -460,18 +527,30 @@ WidgetBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 5. BUCLE EN TIEMPO REAL: ESCANEO DE ESTRUCTURAS, COFRES Y ACTUALIZACIÓN
+-- 5. ESCANEO AMPLIO Y PERSISTENTE EN TIEMPO REAL
 -- ==============================================================================
 
--- Escaneo de Structures para Truck
+-- Escanear estructuras existentes
 local structFolder = workspace:FindFirstChild("Structures") or workspace
 for _, child in ipairs(structFolder:GetChildren()) do
-    tagTruck(child)
+    processTruck(child)
 end
 structFolder.ChildAdded:Connect(function(child)
     task.wait(0.2)
-    tagTruck(child)
+    processTruck(child)
     updateTruckMenu()
+end)
+
+-- Escanear cualquier modelo en Workspace que se llame Truck o tenga DriveSeat
+workspace.DescendantAdded:Connect(function(desc)
+    if desc:IsA("Model") and desc.Name:lower() == "truck" then
+        task.wait(0.2)
+        processTruck(desc)
+    elseif desc:IsA("VehicleSeat") and desc.Name == "DriveSeat" then
+        task.wait(0.2)
+        local parentModel = desc:FindFirstAncestorOfClass("Model")
+        if parentModel then processTruck(parentModel) end
+    end
 end)
 
 task.spawn(function()
@@ -481,13 +560,14 @@ task.spawn(function()
         local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
         local myPos = root and root.Position or Vector3.zero
 
-        -- 1. Actualizar distancias y etiquetas de Trucks
-        for _, t in ipairs(RegisteredTrucks) do
-            if t.Model and t.Model.Parent and t.Anchor then
+        -- 1. Actualizar etiquetas de Trucks presentes
+        for _, t in ipairs(PersistentTrucks) do
+            if t.Anchor and t.Anchor.Parent then
+                t.LastPos = t.Anchor.Position
                 local tag = t.Anchor:FindFirstChild("TruckESP_Tag")
                 local lbl = tag and tag:FindFirstChild("DistanceLabel")
                 if lbl then
-                    local d = math.floor((t.Anchor.Position - myPos).Magnitude)
+                    local d = math.floor((t.LastPos - myPos).Magnitude)
                     lbl.Text = string.format("🚚 TRUCK [%dm]", d)
                 end
             end
@@ -519,13 +599,12 @@ task.spawn(function()
         end
 
         -- 3. Mantener flecha actualizada si nos movemos
-        if SelectedTruck and GuideAttach0 and root and GuideAttach0.Parent ~= root then
+        if SelectedTruckId and GuideAttach0 and root and GuideAttach0.Parent ~= root then
             GuideAttach0.Parent = root
         end
     end
 end)
 
--- Actualizar la lista del menú cada 2 segundos
 task.spawn(function()
     while true do
         task.wait(2)
