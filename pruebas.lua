@@ -64,22 +64,33 @@ local function findNearestGroundFood()
 
     local myPos = root.Position
     local bestItem = nil
-    local shortestDist = Config.ScanRadius
+    
+    -- Usamos distancia al cuadrado para ahorrar CPU (18 studs * 18 studs = 324)
+    local maxRadius = Config.ScanRadius
+    local shortestDistSq = maxRadius * maxRadius
 
     for _, item in ipairs(dropped:GetChildren()) do
-        -- Filtro según el reporte: ItemType == "Food" o nombre Carrot/Zanahoria
+        -- 1. Filtro rápido de nombre/tipo
         local isFood = (item:GetAttribute("ItemType") == "Food")
             or item.Name:lower():find("carrot")
             or item.Name:lower():find("food")
-            or item.Name:lower():find("zanahoria")
 
         if isFood and item:GetAttribute("CanPickUp") ~= false then
             local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
             if part then
-                local dist = (part.Position - myPos).Magnitude
-                if dist <= shortestDist then
-                    shortestDist = dist
-                    bestItem = item
+                local pPos = part.Position
+                local dx = pPos.X - myPos.X
+                local dz = pPos.Z - myPos.Z
+
+                -- 2. Descarte rápido en cruz: si está a más del radio en X o Z, ni se molesta en calcular
+                if math.abs(dx) <= maxRadius and math.abs(dz) <= maxRadius then
+                    local dy = pPos.Y - myPos.Y
+                    local distSq = (dx * dx) + (dy * dy) + (dz * dz)
+
+                    if distSq <= shortestDistSq then
+                        shortestDistSq = distSq
+                        bestItem = item
+                    end
                 end
             end
         end
