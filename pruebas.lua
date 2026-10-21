@@ -1,393 +1,272 @@
 -- ==============================================================================
--- AUTO-EAT OPTIMIZADO (ZANAHORIAS / COMIDA NATIVA - 0% LAG)
+-- ESCÁNER FORENSE: COMIDA EN EL SUELO (DROPPEDITEMS) E INTERACCIÓN DE CONSUMO
 -- ==============================================================================
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 local lp = Players.LocalPlayer
 
-local Config = {
-    Enabled = true,
-    HealthThreshold = 50, -- Porcentaje de vida para comer (0 - 100)
-    HungerThreshold = 40, -- Porcentaje de hambre para comer (0 - 100)
-    FoodItemName = "Carrot", -- Nombre exacto o parcial (Zanahorias)
-    Cooldown = 1.2 -- Tiempo de espera entre cada bocado
+local ForensicLog = {
+    NearbyItems = {},
+    LiveInteractions = {},
+    RemotesCaptured = {}
 }
 
-local State = {
-    IsEating = false,
-    LastEatTick = 0,
-    Status = "Esperando..."
-}
-
--- ==============================================================================
--- 1. DETECCIÓN DE STATS (VIDA Y HAMBRE)
--- ==============================================================================
-
-local function getPlayerStats()
-    local char = lp.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if not hum then return 100, 100 end
-
-    -- Porcentaje de Vida
-    local hpPct = math.floor((hum.Health / math.max(hum.MaxHealth, 1)) * 100)
-
-    -- Porcentaje de Hambre / Comida (Leído desde Atributos del Personaje o Jugador)
-    local hunger = char:GetAttribute("Hunger") or lp:GetAttribute("Hunger")
-    local maxHunger = char:GetAttribute("MaxHunger") or lp:GetAttribute("MaxHunger") or 100
-
-    local hungerPct = 100
-    if type(hunger) == "number" then
-        hungerPct = math.floor((hunger / maxHunger) * 100)
-    else
-        -- Búsqueda secundaria en valores NumberValue/IntValue si el juego los usa
-        local hVal = char:FindFirstChild("Hunger") or lp:FindFirstChild("Hunger")
-        if hVal and (hVal:IsA("NumberValue") or hVal:IsA("IntValue")) then
-            hungerPct = math.floor((hVal.Value / 100) * 100)
-        end
-    end
-
-    return hpPct, hungerPct
+local function addLiveLog(msg)
+    local entry = string.format("[%s] %s", os.date("%X"), msg)
+    table.insert(ForensicLog.LiveInteractions, 1, entry)
+    if #ForensicLog.LiveInteractions > 25 then table.remove(ForensicLog.LiveInteractions) end
+    print("🥕 [FOOD FORENSIC]: " .. entry)
 end
 
 -- ==============================================================================
--- 2. LOCALIZACIÓN Y CONSUMO DEL ALIMENTO (NATIVO)
+-- 1. ESCUCHAR INTERACCIONES EN VIVO (REMOTES DE COMER / AGARRAR)
 -- ==============================================================================
+local function monitorInteractionRemotes()
+    local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
+    if not remotesFolder then return end
 
-local function findFoodTool()
+    for _, desc in ipairs(remotesFolder:GetDescendants()) do
+        if desc:IsA("RemoteEvent") or desc:IsA("RemoteFunction") then
+            local n = desc.Name:lower()
+            if n:find("eat") or n:find("food") or n:find("consume") or n:find("pickup") or n:find("interact") or n:find("drag") or n:find("item") then
+                table.insert(ForensicLog.RemotesCaptured, string.format("⚡ Remote hallado: %s (%s)", desc:GetFullName(), desc.ClassName))
+                
+                if desc:IsA("RemoteEvent") then
+                    -- Escuchar si el juego lo dispara localmente
+                    pcall(function()
+                        desc.OnClientEvent:Connect(function(...)
+                            local args = {...}
+                            addLiveLog(string.format("RemoteEvent OnClientEvent '%s' (Args: %d)", desc.Name, #args))
+                        end)
+                    end)
+                end
+            end
+        end
+    end
+end
+
+-- ==============================================================================
+-- 2. ESCANEAR OBJETOS EN EL SUELO (WORKSPACE.DROPPEDITEMS / 25 STUDS)
+-- ==============================================================================
+local function scanDroppedFood()
     local char = lp.Character
-    local bp = lp:FindFirstChild("Backpack")
-    local targetName = Config.FoodItemName:lower()
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    if not root then return "⚠️ No se detectó a tu personaje." end
 
-    for _, container in ipairs({char, bp}) do
+    local myPos = root.Position
+    local report = {
+        "==================================================================",
+        "      REPORTE DE COMIDA EN EL SUELO Y MECÁNICAS DE CONSUMO       ",
+        "==================================================================",
+        string.format("Mi Posición: Vector3.new(%.1f, %.1f, %.1f)", myPos.X, myPos.Y, myPos.Z),
+        "\n[1. OBJETOS CERCANOS EN DROPPEDITEMS O SUELO (25 STUDS)]:"
+    }
+
+    local searchRoots = {
+        workspace:FindFirstChild("DroppedItems"),
+        workspace:FindFirstChild("Map"),
+        workspace
+    }
+
+    local foundCount = 0
+
+    for _, container in ipairs(searchRoots) do
         if container then
             for _, item in ipairs(container:GetChildren()) do
-                if item:IsA("Tool") then
-                    local n = item.Name:lower()
-                    -- Búsqueda por Carrot o coincidencia de comida
-                    if n:find(targetName) or n:find("zanahoria") or item:GetAttribute("ItemType") == "Food" then
-                        return item
+                if (item:IsA("Model") or item:IsA("BasePart")) and item ~= char then
+                    local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
+                    if part then
+                        local dist = (part.Position - myPos).Magnitude
+                        if dist <= 25 then
+                            foundCount = foundCount + 1
+                            table.insert(report, string.format("\n🥕 OBJETO #%d: '%s' (%s)", foundCount, item.Name, item.ClassName))
+                            table.insert(report, "   Ruta: " .. item:GetFullName())
+                            table.insert(report, string.format("   Distancia: %.1f studs | Pos: (%.1f, %.1f, %.1f)", dist, part.Position.X, part.Position.Y, part.Position.Z))
+
+                            -- Atributos
+                            local attrs = {}
+                            for k, v in pairs(item:GetAttributes()) do
+                                table.insert(attrs, string.format("%s = %s", tostring(k), tostring(v)))
+                            end
+                            if #attrs > 0 then
+                                table.insert(report, "   [Atributos]: " .. table.concat(attrs, " | "))
+                            else
+                                table.insert(report, "   [Atributos]: (Sin atributos)")
+                            end
+
+                            -- Componentes interactivos
+                            local comps = {}
+                            for _, desc in ipairs(item:GetDescendants()) do
+                                if desc:IsA("ProximityPrompt") then
+                                    table.insert(comps, string.format("ProximityPrompt('%s' | Action: '%s' | Key: %s | Enabled: %s)", desc.Name, desc.ActionText, tostring(desc.KeyboardKeyCode), tostring(desc.Enabled)))
+                                elseif desc:IsA("ClickDetector") then
+                                    table.insert(comps, string.format("ClickDetector('%s' | MaxDist: %d)", desc.Name, desc.MaxActivationDistance))
+                                elseif desc:IsA("ValueBase") then
+                                    table.insert(comps, string.format("%s('%s' = %s)", desc.ClassName, desc.Name, tostring(desc.Value)))
+                                elseif desc:IsA("LocalScript") or desc:IsA("Script") then
+                                    table.insert(comps, string.format("Script('%s')", desc.Name))
+                                end
+                            end
+
+                            if #comps > 0 then
+                                table.insert(report, "   [Interacciones]:\n     • " .. table.concat(comps, "\n     • "))
+                            end
+                        end
                     end
                 end
             end
         end
     end
-    return nil
-end
 
-local function consumeFood()
-    if State.IsEating then return end
-    if (tick() - State.LastEatTick) < Config.Cooldown then return end
-
-    local char = lp.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return end
-
-    local foodTool = findFoodTool()
-    if not foodTool then
-        State.Status = "⚠️ Sin comida en inventario"
-        return
+    if foundCount == 0 then
+        table.insert(report, "\n⚠️ No se detectó ningún objeto tirado a menos de 25 studs. Párate cerca de la comida.")
     end
 
-    State.IsEating = true
-    State.Status = "🥕 Comiendo " .. foodTool.Name .. "..."
-
-    -- Guardar el arma o ítem que tenías equipado antes de comer
-    local previousTool = nil
-    for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") and item ~= foodTool then
-            previousTool = item
-            break
-        end
-    end
-
-    -- Equipar la zanahoria / comida
-    if foodTool.Parent ~= char then
-        hum:EquipTool(foodTool)
-        task.wait(0.08)
-    end
-
-    -- Activar consumo nativo
-    pcall(function() foodTool:Activate() end)
-
-    -- Ejecutar Remote de uso si existe adentro de la herramienta
-    local useRemote = foodTool:FindFirstChild("Use") or foodTool:FindFirstChild("Consume")
-    if useRemote and useRemote:IsA("RemoteEvent") then
-        pcall(function() useRemote:FireServer() end)
-    end
-
-    State.LastEatTick = tick()
-    task.wait(0.35)
-
-    -- Re-equipar el arma que tenías en la mano
-    if previousTool and previousTool.Parent then
-        hum:EquipTool(previousTool)
-    end
-
-    State.IsEating = false
-end
-
--- ==============================================================================
--- 3. BUCLE DE CONTROL (0% LAG: REVISIÓN CADA 0.4 SEGUNDOS)
--- ==============================================================================
-
-task.spawn(function()
-    while true do
-        task.wait(0.4)
-        if Config.Enabled then
-            local hpPct, hungerPct = getPlayerStats()
-
-            -- Evaluar si se cumple la condición de vida o hambre
-            if hpPct <= Config.HealthThreshold or hungerPct <= Config.HungerThreshold then
-                consumeFood()
-            else
-                State.Status = string.format("🟢 OK (Vida: %d%% | Comida: %d%%)", hpPct, hungerPct)
+    -- Revisar UI móvil de interacción (ej. InteractMobile)
+    table.insert(report, "\n[2. UI DE INTERACCIÓN MÓVIL EN PLAYERGUI]:")
+    local pGui = lp:FindFirstChild("PlayerGui")
+    if pGui then
+        local foundUI = false
+        for _, gui in ipairs(pGui:GetChildren()) do
+            local gName = gui.Name:lower()
+            if gName:find("interact") or gName:find("mobile") or gName:find("prompt") or gName:find("item") then
+                foundUI = true
+                table.insert(report, string.format(" 📱 GUI: '%s' (%s) [Enabled: %s]", gui.Name, gui.ClassName, tostring(gui.Enabled)))
+                for _, desc in ipairs(gui:GetDescendants()) do
+                    if desc:IsA("TextButton") or desc:IsA("ImageButton") then
+                        table.insert(report, string.format("    ↳ Botón: '%s' | Texto: '%s'", desc.Name, desc:IsA("TextButton") and desc.Text or "(Image)"))
+                    end
+                end
             end
-        else
-            State.Status = "🔴 OFF"
+        end
+        if not foundUI then
+            table.insert(report, " (No se detectaron GUIs de interacción específicas activas)")
         end
     end
-end)
+
+    table.insert(report, "\n[3. REMOTES DE INTERACCIÓN REGISTRADOS]:")
+    for _, rem in ipairs(ForensicLog.RemotesCaptured) do table.insert(report, " " .. rem) end
+
+    table.insert(report, "\n[4. HISTORIAL DE INTERACCIONES EN VIVO]:")
+    if #ForensicLog.LiveInteractions == 0 then
+        table.insert(report, " (Ninguna acción registrada aún. Intenta comer o interactuar con una zanahoria).")
+    else
+        for _, l in ipairs(ForensicLog.LiveInteractions) do table.insert(report, " " .. l) end
+    end
+
+    return table.concat(report, "\n")
+end
+
+monitorInteractionRemotes()
 
 -- ==============================================================================
--- 4. INTERFAZ TÁCTIL Y MENÚ DE CONFIGURACIÓN
+-- 3. VENTANA FLOTANTE Y COPIADO
 -- ==============================================================================
-
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "AutoEatProGui"
+ScreenGui.Name = "FoodForensicScannerGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
--- Botón Flotante / Widget
-local WidgetBtn = Instance.new("TextButton")
-WidgetBtn.Size = UDim2.new(0, 52, 0, 52)
-WidgetBtn.Position = UDim2.new(0.04, 0, 0.60, 0)
-WidgetBtn.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-WidgetBtn.Text = "🥕\nCOMER"
-WidgetBtn.TextColor3 = Color3.fromRGB(255, 150, 40)
-WidgetBtn.TextSize = 10
-WidgetBtn.Font = Enum.Font.GothamBold
-WidgetBtn.Active = true
-WidgetBtn.Draggable = true
-WidgetBtn.Parent = ScreenGui
-
-local WidgetCorner = Instance.new("UICorner")
-WidgetCorner.CornerRadius = UDim.new(1, 0)
-WidgetCorner.Parent = WidgetBtn
-
-local WidgetStroke = Instance.new("UIStroke")
-WidgetStroke.Color = Color3.fromRGB(255, 150, 40)
-WidgetStroke.Thickness = 1.5
-WidgetStroke.Parent = WidgetBtn
-
--- Ventana de Ajustes
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 380, 0, 310)
-MainFrame.Position = UDim2.new(0.5, -190, 0.5, -155)
-MainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
+MainFrame.Size = UDim2.new(0, 520, 0, 440)
+MainFrame.Position = UDim2.new(0.5, -260, 0.5, -220)
+MainFrame.BackgroundColor3 = Color3.fromRGB(16, 18, 24)
 MainFrame.Active = true
 MainFrame.Draggable = true
-MainFrame.Visible = true
 MainFrame.Parent = ScreenGui
 
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 10)
-MainCorner.Parent = MainFrame
+local Corner = Instance.new("UICorner")
+Corner.CornerRadius = UDim.new(0, 10)
+Corner.Parent = MainFrame
 
-local TitleBar = Instance.new("TextLabel")
-TitleBar.Size = UDim2.new(1, 0, 0, 36)
-TitleBar.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
-TitleBar.Text = "  🥕 AUTO-COMER (ZANAHORIAS / COMIDA)"
-TitleBar.TextColor3 = Color3.fromRGB(255, 150, 40)
-TitleBar.TextSize = 11
-TitleBar.Font = Enum.Font.GothamBold
-TitleBar.TextXAlignment = Enum.TextXAlignment.Left
-TitleBar.Parent = MainFrame
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 36)
+Title.BackgroundColor3 = Color3.fromRGB(26, 30, 42)
+Title.Text = "  🥕 REGISTRADOR FORENSE DE COMIDA EN EL SUELO"
+Title.TextColor3 = Color3.fromRGB(255, 160, 40)
+Title.TextSize = 11
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = MainFrame
 
-local TitleCorner = Instance.new("UICorner")
-TitleCorner.CornerRadius = UDim.new(0, 10)
-TitleCorner.Parent = TitleBar
+local OutputBox = Instance.new("TextBox")
+OutputBox.Size = UDim2.new(1, -20, 0, 330)
+OutputBox.Position = UDim2.new(0, 10, 0, 44)
+OutputBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+OutputBox.TextColor3 = Color3.fromRGB(220, 220, 220)
+OutputBox.TextSize = 10
+OutputBox.Font = Enum.Font.Code
+OutputBox.TextXAlignment = Enum.TextXAlignment.Left
+OutputBox.TextYAlignment = Enum.TextYAlignment.Top
+OutputBox.ClearTextOnFocus = false
+OutputBox.MultiLine = true
+OutputBox.TextEditable = false
+OutputBox.Text = scanDroppedFood()
+OutputBox.Parent = MainFrame
 
--- Interruptor ON/OFF
-local MainToggle = Instance.new("TextButton")
-MainToggle.Size = UDim2.new(1, -20, 0, 34)
-MainToggle.Position = UDim2.new(0, 10, 0, 44)
-MainToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
-MainToggle.Text = "⚡ AUTO-EAT: ON"
-MainToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-MainToggle.TextSize = 10
-MainToggle.Font = Enum.Font.GothamBold
-MainToggle.Parent = MainFrame
+local CopyBtn = Instance.new("TextButton")
+CopyBtn.Size = UDim2.new(0.48, -10, 0, 38)
+CopyBtn.Position = UDim2.new(0, 10, 0, 385)
+CopyBtn.BackgroundColor3 = Color3.fromRGB(200, 100, 30)
+CopyBtn.Text = "📋 COPIAR DATOS DE COMIDA"
+CopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CopyBtn.TextSize = 10
+CopyBtn.Font = Enum.Font.GothamBold
+CopyBtn.Parent = MainFrame
 
-local MainToggleCorner = Instance.new("UICorner")
-MainToggleCorner.CornerRadius = UDim.new(0, 6)
-MainToggleCorner.Parent = MainToggle
+local CopyCorner = Instance.new("UICorner")
+CopyCorner.CornerRadius = UDim.new(0, 6)
+CopyCorner.Parent = CopyBtn
 
-MainToggle.MouseButton1Click:Connect(function()
-    Config.Enabled = not Config.Enabled
-    if Config.Enabled then
-        MainToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
-        MainToggle.Text = "⚡ AUTO-EAT: ON"
-    else
-        MainToggle.BackgroundColor3 = Color3.fromRGB(150, 35, 40)
-        MainToggle.Text = "⚡ AUTO-EAT: OFF"
-    end
+local RefreshBtn = Instance.new("TextButton")
+RefreshBtn.Size = UDim2.new(0.48, -10, 0, 38)
+RefreshBtn.Position = UDim2.new(0.52, 0, 0, 385)
+RefreshBtn.BackgroundColor3 = Color3.fromRGB(30, 130, 80)
+RefreshBtn.Text = "🔄 ACTUALIZAR ESCANEO"
+RefreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+RefreshBtn.TextSize = 10
+RefreshBtn.Font = Enum.Font.GothamBold
+RefreshBtn.Parent = MainFrame
+
+local RefreshCorner = Instance.new("UICorner")
+RefreshCorner.CornerRadius = UDim.new(0, 6)
+RefreshCorner.Parent = RefreshBtn
+
+CopyBtn.MouseButton1Click:Connect(function()
+    local txt = scanDroppedFood()
+    OutputBox.Text = txt
+    if setclipboard then setclipboard(txt) elseif toclipboard then toclipboard(txt) end
+    CopyBtn.Text = "✅ ¡COPIADO AL PORTAPAPELES!"
+    task.wait(1.5)
+    CopyBtn.Text = "📋 COPIAR DATOS DE COMIDA"
 end)
 
--- Configuración de Vida (%)
-local HpLabel = Instance.new("TextLabel")
-HpLabel.Size = UDim2.new(0.65, 0, 0, 24)
-HpLabel.Position = UDim2.new(0, 10, 0, 88)
-HpLabel.BackgroundTransparency = 1
-HpLabel.Text = "Comer si la Vida baja de (%):"
-HpLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
-HpLabel.TextSize = 10
-HpLabel.Font = Enum.Font.GothamBold
-HpLabel.TextXAlignment = Enum.TextXAlignment.Left
-HpLabel.Parent = MainFrame
-
-local HpBox = Instance.new("TextBox")
-HpBox.Size = UDim2.new(0.30, -10, 0, 26)
-HpBox.Position = UDim2.new(0.70, 0, 0, 88)
-HpBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-HpBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-HpBox.Text = tostring(Config.HealthThreshold)
-HpBox.TextSize = 11
-HpBox.Font = Enum.Font.Code
-HpBox.ClearTextOnFocus = false
-HpBox.Parent = MainFrame
-
-local HpBoxCorner = Instance.new("UICorner")
-HpBoxCorner.CornerRadius = UDim.new(0, 4)
-HpBoxCorner.Parent = HpBox
-
-HpBox.FocusLost:Connect(function()
-    local val = tonumber(HpBox.Text)
-    if val then
-        Config.HealthThreshold = math.clamp(math.floor(val), 1, 100)
-    end
-    HpBox.Text = tostring(Config.HealthThreshold)
+RefreshBtn.MouseButton1Click:Connect(function()
+    OutputBox.Text = scanDroppedFood()
+    RefreshBtn.Text = "✅ ¡ACTUALIZADO!"
+    task.wait(1)
+    RefreshBtn.Text = "🔄 ACTUALIZAR ESCANEO"
 end)
 
--- Configuración de Comida/Hambre (%)
-local HungerLabel = Instance.new("TextLabel")
-HungerLabel.Size = UDim2.new(0.65, 0, 0, 24)
-HungerLabel.Position = UDim2.new(0, 10, 0, 122)
-HungerLabel.BackgroundTransparency = 1
-HungerLabel.Text = "Comer si el Hambre baja de (%):"
-HungerLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
-HungerLabel.TextSize = 10
-HungerLabel.Font = Enum.Font.GothamBold
-HungerLabel.TextXAlignment = Enum.TextXAlignment.Left
-HungerLabel.Parent = MainFrame
+-- Botón flotante / minimizador
+local FloatBtn = Instance.new("TextButton")
+FloatBtn.Size = UDim2.new(0, 48, 0, 48)
+FloatBtn.Position = UDim2.new(0.04, 0, 0.45, 0)
+FloatBtn.BackgroundColor3 = Color3.fromRGB(200, 100, 30)
+FloatBtn.Text = "🥕"
+FloatBtn.TextSize = 20
+FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+FloatBtn.Active = true
+FloatBtn.Draggable = true
+FloatBtn.Parent = ScreenGui
 
-local HungerBox = Instance.new("TextBox")
-HungerBox.Size = UDim2.new(0.30, -10, 0, 26)
-HungerBox.Position = UDim2.new(0.70, 0, 0, 122)
-HungerBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-HungerBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-HungerBox.Text = tostring(Config.HungerThreshold)
-HungerBox.TextSize = 11
-HungerBox.Font = Enum.Font.Code
-HungerBox.ClearTextOnFocus = false
-HungerBox.Parent = MainFrame
+local FloatCorner = Instance.new("UICorner")
+FloatCorner.CornerRadius = UDim.new(1, 0)
+FloatCorner.Parent = FloatBtn
 
-local HungerBoxCorner = Instance.new("UICorner")
-HungerBoxCorner.CornerRadius = UDim.new(0, 4)
-HungerBoxCorner.Parent = HungerBox
-
-HungerBox.FocusLost:Connect(function()
-    local val = tonumber(HungerBox.Text)
-    if val then
-        Config.HungerThreshold = math.clamp(math.floor(val), 1, 100)
-    end
-    HungerBox.Text = tostring(Config.HungerThreshold)
-end)
-
--- Nombre de la Comida
-local FoodNameLabel = Instance.new("TextLabel")
-FoodNameLabel.Size = UDim2.new(0.45, 0, 0, 24)
-FoodNameLabel.Position = UDim2.new(0, 10, 0, 156)
-FoodNameLabel.BackgroundTransparency = 1
-FoodNameLabel.Text = "Nombre del Alimento:"
-FoodNameLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
-FoodNameLabel.TextSize = 10
-FoodNameLabel.Font = Enum.Font.GothamBold
-FoodNameLabel.TextXAlignment = Enum.TextXAlignment.Left
-FoodNameLabel.Parent = MainFrame
-
-local FoodBox = Instance.new("TextBox")
-FoodBox.Size = UDim2.new(0.50, -10, 0, 26)
-FoodBox.Position = UDim2.new(0.50, 0, 0, 156)
-FoodBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-FoodBox.TextColor3 = Color3.fromRGB(255, 170, 40)
-FoodBox.Text = Config.FoodItemName
-FoodBox.TextSize = 10
-FoodBox.Font = Enum.Font.Code
-FoodBox.ClearTextOnFocus = false
-FoodBox.Parent = MainFrame
-
-local FoodBoxCorner = Instance.new("UICorner")
-FoodBoxCorner.CornerRadius = UDim.new(0, 4)
-FoodBoxCorner.Parent = FoodBox
-
-FoodBox.FocusLost:Connect(function()
-    if FoodBox.Text ~= "" then
-        Config.FoodItemName = FoodBox.Text
-    end
-end)
-
--- Monitor de Estado en Tiempo Real
-local StatusFrame = Instance.new("Frame")
-StatusFrame.Size = UDim2.new(1, -20, 0, 50)
-StatusFrame.Position = UDim2.new(0, 10, 0, 194)
-StatusFrame.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
-StatusFrame.Parent = MainFrame
-
-local StatusCorner = Instance.new("UICorner")
-StatusCorner.CornerRadius = UDim.new(0, 6)
-StatusCorner.Parent = StatusFrame
-
-local StatusText = Instance.new("TextLabel")
-StatusText.Size = UDim2.new(1, -12, 1, 0)
-StatusText.Position = UDim2.new(0, 6, 0, 0)
-StatusText.BackgroundTransparency = 1
-StatusText.Text = "Estado: Inicializando..."
-StatusText.TextColor3 = Color3.fromRGB(255, 200, 80)
-StatusText.TextSize = 10
-StatusText.Font = Enum.Font.Code
-StatusText.TextXAlignment = Enum.TextXAlignment.Left
-StatusText.Parent = StatusFrame
-
--- Botón Comer Manual Ahora
-local EatNowBtn = Instance.new("TextButton")
-EatNowBtn.Size = UDim2.new(1, -20, 0, 34)
-EatNowBtn.Position = UDim2.new(0, 10, 0, 256)
-EatNowBtn.BackgroundColor3 = Color3.fromRGB(210, 105, 30)
-EatNowBtn.Text = "🍽️ FORZAR COMER AHORA"
-EatNowBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-EatNowBtn.TextSize = 10
-EatNowBtn.Font = Enum.Font.GothamBold
-EatNowBtn.Parent = MainFrame
-
-local EatNowCorner = Instance.new("UICorner")
-EatNowCorner.CornerRadius = UDim.new(0, 6)
-EatNowCorner.Parent = EatNowBtn
-
-EatNowBtn.MouseButton1Click:Connect(function()
-    consumeFood()
-end)
-
-WidgetBtn.MouseButton1Click:Connect(function()
+FloatBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
-end)
-
--- Actualización periódica del monitor visual
-task.spawn(function()
-    while true do
-        task.wait(0.35)
-        local hp, hg = getPlayerStats()
-        StatusText.Text = string.format("Vida actual: %d%% | Hambre: %d%%\nAcción: %s", hp, hg, State.Status)
-    end
 end)
