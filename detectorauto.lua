@@ -9,7 +9,7 @@ local lp = Players.LocalPlayer
 local cam = workspace.CurrentCamera
 
 local Config = {
-    TruckESP = true,
+    TruckESP = false,
     ChestESP = true
 }
 
@@ -309,8 +309,8 @@ TitleCorner.Parent = TitleBar
 local TruckToggle = Instance.new("TextButton")
 TruckToggle.Size = UDim2.new(0.48, -8, 0, 34)
 TruckToggle.Position = UDim2.new(0, 10, 0, 44)
-TruckToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
-TruckToggle.Text = "🚚 AUTOS (TRUCK): ON"
+TruckToggle.BackgroundColor3 = Color3.fromRGB(150, 35, 40)
+TruckToggle.Text = "🚚 AUTOS (TRUCK): OFF"
 TruckToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
 TruckToggle.TextSize = 10
 TruckToggle.Font = Enum.Font.GothamBold
