@@ -1,267 +1,171 @@
 -- ==============================================================================
--- PANEL INTEGRADO: RADAR DE AUTOS (CON RASTREO Y GUÍA) + COFRES ROJOS
+-- AUTO-EAT OPTIMIZADO (ZANAHORIAS / COMIDA NATIVA - 0% LAG)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
-local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
-local cam = workspace.CurrentCamera
 
 local Config = {
-    TruckESP = true,
-    ChestESP = true
+    Enabled = true,
+    HealthThreshold = 50, -- Porcentaje de vida para comer (0 - 100)
+    HungerThreshold = 40, -- Porcentaje de hambre para comer (0 - 100)
+    FoodItemName = "Carrot", -- Nombre exacto o parcial (Zanahorias)
+    Cooldown = 1.2 -- Tiempo de espera entre cada bocado
 }
 
-local RegisteredTrucks = {}
-local SelectedTruck = nil
+local State = {
+    IsEating = false,
+    LastEatTick = 0,
+    Status = "Esperando..."
+}
 
 -- ==============================================================================
--- 1. FLECHA GUÍA 3D HACIA EL AUTO SELECCIONADO
+-- 1. DETECCIÓN DE STATS (VIDA Y HAMBRE)
 -- ==============================================================================
-local GuideBeam = nil
-local GuideAttach0 = nil
-local GuideAttach1 = nil
 
-local function clearGuide()
-    if GuideBeam then GuideBeam:Destroy(); GuideBeam = nil end
-    if GuideAttach0 then GuideAttach0:Destroy(); GuideAttach0 = nil end
-    if GuideAttach1 then GuideAttach1:Destroy(); GuideAttach1 = nil end
+local function getPlayerStats()
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum then return 100, 100 end
+
+    -- Porcentaje de Vida
+    local hpPct = math.floor((hum.Health / math.max(hum.MaxHealth, 1)) * 100)
+
+    -- Porcentaje de Hambre / Comida (Leído desde Atributos del Personaje o Jugador)
+    local hunger = char:GetAttribute("Hunger") or lp:GetAttribute("Hunger")
+    local maxHunger = char:GetAttribute("MaxHunger") or lp:GetAttribute("MaxHunger") or 100
+
+    local hungerPct = 100
+    if type(hunger) == "number" then
+        hungerPct = math.floor((hunger / maxHunger) * 100)
+    else
+        -- Búsqueda secundaria en valores NumberValue/IntValue si el juego los usa
+        local hVal = char:FindFirstChild("Hunger") or lp:FindFirstChild("Hunger")
+        if hVal and (hVal:IsA("NumberValue") or hVal:IsA("IntValue")) then
+            hungerPct = math.floor((hVal.Value / 100) * 100)
+        end
+    end
+
+    return hpPct, hungerPct
 end
 
-local function setGuideToTarget(targetPart)
-    clearGuide()
-    if not targetPart then return end
+-- ==============================================================================
+-- 2. LOCALIZACIÓN Y CONSUMO DEL ALIMENTO (NATIVO)
+-- ==============================================================================
+
+local function findFoodTool()
+    local char = lp.Character
+    local bp = lp:FindFirstChild("Backpack")
+    local targetName = Config.FoodItemName:lower()
+
+    for _, container in ipairs({char, bp}) do
+        if container then
+            for _, item in ipairs(container:GetChildren()) do
+                if item:IsA("Tool") then
+                    local n = item.Name:lower()
+                    -- Búsqueda por Carrot o coincidencia de comida
+                    if n:find(targetName) or n:find("zanahoria") or item:GetAttribute("ItemType") == "Food" then
+                        return item
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function consumeFood()
+    if State.IsEating then return end
+    if (tick() - State.LastEatTick) < Config.Cooldown then return end
 
     local char = lp.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-    if not root then return end
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
 
-    GuideAttach0 = Instance.new("Attachment")
-    GuideAttach0.Name = "TruckGuide_Attach0"
-    GuideAttach0.Parent = root
-
-    GuideAttach1 = Instance.new("Attachment")
-    GuideAttach1.Name = "TruckGuide_Attach1"
-    GuideAttach1.Parent = targetPart
-
-    GuideBeam = Instance.new("Beam")
-    GuideBeam.Name = "TruckGuide_Beam"
-    GuideBeam.Attachment0 = GuideAttach0
-    GuideBeam.Attachment1 = GuideAttach1
-    GuideBeam.Color = ColorSequence.new(Color3.fromRGB(255, 170, 0))
-    GuideBeam.Width0 = 0.8
-    GuideBeam.Width1 = 2.0
-    GuideBeam.FaceCamera = true
-    GuideBeam.Segments = 10
-    GuideBeam.LightEmission = 1
-    GuideBeam.Texture = "rbxassetid://446111271"
-    GuideBeam.TextureSpeed = 2.5
-    GuideBeam.TextureLength = 4
-    GuideBeam.Parent = root
-end
-
--- ==============================================================================
--- 2. LÓGICA DE COFRES (EXACTA, ROJO 360°, SE APAGA AL ABRIRSE)
--- ==============================================================================
-local function getCratePrompt(model)
-    return model:FindFirstChildWhichIsA("ProximityPrompt", true)
-end
-
-local function isCrateClosed(model)
-    if not model or not model.Parent then return false end
-    local prompt = getCratePrompt(model)
-    if prompt and prompt.Enabled then
-        return true
-    end
-    return false
-end
-
-local function clearCustomCrateESP(model)
-    local tag = model:FindFirstChild("CustomCrateTag", true)
-    if tag then tag:Destroy() end
-
-    for _, desc in ipairs(model:GetDescendants()) do
-        if desc:IsA("Highlight") and desc.Name == "CrateESP_RedOverride" then
-            desc:Destroy()
-        end
-    end
-end
-
-local function applyStrongRedESP(model)
-    if not model:IsA("Model") or not Config.ChestESP then return end
-
-    local isCrate = (model.Parent and model.Parent.Name == "Crates")
-        or model:GetAttribute("Crate") == true
-        or model:FindFirstChild("CrateServer") ~= nil
-
-    if not isCrate then return end
-
-    if not isCrateClosed(model) then
-        clearCustomCrateESP(model)
+    local foodTool = findFoodTool()
+    if not foodTool then
+        State.Status = "⚠️ Sin comida en inventario"
         return
     end
 
-    local existingHl = model:FindFirstChildWhichIsA("Highlight", true)
-    if existingHl then
-        existingHl.Name = "CrateESP_RedOverride"
-        existingHl.FillColor = Color3.fromRGB(255, 0, 0)
-        existingHl.OutlineColor = Color3.fromRGB(255, 255, 255)
-        existingHl.FillTransparency = 0.3
-        existingHl.OutlineTransparency = 0
-        existingHl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        existingHl.Enabled = true
-    else
-        local newHl = Instance.new("Highlight")
-        newHl.Name = "CrateESP_RedOverride"
-        newHl.FillColor = Color3.fromRGB(255, 0, 0)
-        newHl.OutlineColor = Color3.fromRGB(255, 255, 255)
-        newHl.FillTransparency = 0.3
-        newHl.OutlineTransparency = 0
-        newHl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        newHl.Adornee = model
-        newHl.Parent = model
-    end
+    State.IsEating = true
+    State.Status = "🥕 Comiendo " .. foodTool.Name .. "..."
 
-    local anchorPart = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
-    if anchorPart and not anchorPart:FindFirstChild("CustomCrateTag") then
-        local bb = Instance.new("BillboardGui")
-        bb.Name = "CustomCrateTag"
-        bb.Size = UDim2.new(0, 120, 0, 30)
-        bb.StudsOffset = Vector3.new(0, 3, 0)
-        bb.AlwaysOnTop = true
-        bb.Adornee = anchorPart
-        bb.Parent = anchorPart
-
-        local lbl = Instance.new("TextLabel")
-        lbl.Name = "DistanceLabel"
-        lbl.Size = UDim2.new(1, 0, 1, 0)
-        lbl.BackgroundTransparency = 1
-        lbl.Text = "📦 COFRE"
-        lbl.TextColor3 = Color3.fromRGB(255, 40, 40)
-        lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        lbl.TextStrokeTransparency = 0
-        lbl.TextSize = 13
-        lbl.Font = Enum.Font.GothamBold
-        lbl.Parent = bb
-    end
-
-    local prompt = getCratePrompt(model)
-    if prompt then
-        prompt:GetPropertyChangedSignal("Enabled"):Connect(function()
-            if not prompt.Enabled then
-                clearCustomCrateESP(model)
-                local hl = model:FindFirstChildWhichIsA("Highlight", true)
-                if hl then hl.Enabled = false end
-            end
-        end)
-        prompt.Triggered:Connect(function()
-            task.wait(0.1)
-            if not isCrateClosed(model) then
-                clearCustomCrateESP(model)
-                local hl = model:FindFirstChildWhichIsA("Highlight", true)
-                if hl then hl.Enabled = false end
-            end
-        end)
-    end
-
-    model.DescendantRemoving:Connect(function(desc)
-        if desc:IsA("ProximityPrompt") then
-            clearCustomCrateESP(model)
-            local hl = model:FindFirstChildWhichIsA("Highlight", true)
-            if hl then hl.Enabled = false end
-        end
-    end)
-end
-
--- ==============================================================================
--- 3. LÓGICA DE AUTOS (TRUCK EXACTO + REGISTRO PARA MENÚ)
--- ==============================================================================
-local function clearTruckESP(model)
-    local hl = model:FindFirstChild("TruckESP_Highlight")
-    if hl then hl:Destroy() end
-
-    for _, desc in ipairs(model:GetDescendants()) do
-        if desc.Name == "TruckESP_Tag" then
-            desc:Destroy()
+    -- Guardar el arma o ítem que tenías equipado antes de comer
+    local previousTool = nil
+    for _, item in ipairs(char:GetChildren()) do
+        if item:IsA("Tool") and item ~= foodTool then
+            previousTool = item
+            break
         end
     end
-end
 
-local function tagTruck(model)
-    if not model:IsA("Model") then return end
-    if model.Name:lower() ~= "truck" then return end
-
-    local anchorPart = model:FindFirstChild("DriveSeat") or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
-    
-    -- Registrar en la tabla de autos si aún no está
-    local exists = false
-    for _, t in ipairs(RegisteredTrucks) do
-        if t.Model == model then exists = true; break end
-    end
-    if not exists and anchorPart then
-        table.insert(RegisteredTrucks, {
-            Model = model,
-            Anchor = anchorPart,
-            Name = model.Name
-        })
+    -- Equipar la zanahoria / comida
+    if foodTool.Parent ~= char then
+        hum:EquipTool(foodTool)
+        task.wait(0.08)
     end
 
-    if not Config.TruckESP then
-        clearTruckESP(model)
-        return
+    -- Activar consumo nativo
+    pcall(function() foodTool:Activate() end)
+
+    -- Ejecutar Remote de uso si existe adentro de la herramienta
+    local useRemote = foodTool:FindFirstChild("Use") or foodTool:FindFirstChild("Consume")
+    if useRemote and useRemote:IsA("RemoteEvent") then
+        pcall(function() useRemote:FireServer() end)
     end
 
-    if model:FindFirstChild("TruckESP_Highlight") then return end
+    State.LastEatTick = tick()
+    task.wait(0.35)
 
-    local hl = Instance.new("Highlight")
-    hl.Name = "TruckESP_Highlight"
-    hl.FillColor = Color3.fromRGB(255, 160, 0)
-    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-    hl.FillTransparency = 0.4
-    hl.OutlineTransparency = 0
-    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.Parent = model
-
-    if anchorPart and not anchorPart:FindFirstChild("TruckESP_Tag") then
-        local bb = Instance.new("BillboardGui")
-        bb.Name = "TruckESP_Tag"
-        bb.Size = UDim2.new(0, 100, 0, 26)
-        bb.StudsOffset = Vector3.new(0, 4.5, 0)
-        bb.AlwaysOnTop = true
-        bb.Adornee = anchorPart
-        bb.Parent = anchorPart
-
-        local lbl = Instance.new("TextLabel")
-        lbl.Name = "DistanceLabel"
-        lbl.Size = UDim2.new(1, 0, 1, 0)
-        lbl.BackgroundTransparency = 1
-        lbl.Text = "🚚 TRUCK"
-        lbl.TextColor3 = Color3.fromRGB(255, 180, 0)
-        lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-        lbl.TextStrokeTransparency = 0.2
-        lbl.TextSize = 13
-        lbl.Font = Enum.Font.GothamBold
-        lbl.Parent = bb
+    -- Re-equipar el arma que tenías en la mano
+    if previousTool and previousTool.Parent then
+        hum:EquipTool(previousTool)
     end
+
+    State.IsEating = false
 end
 
 -- ==============================================================================
--- 4. INTERFAZ VISUAL (WIDGET FLOTANTE + MENÚ COMPLETO)
+-- 3. BUCLE DE CONTROL (0% LAG: REVISIÓN CADA 0.4 SEGUNDOS)
 -- ==============================================================================
+
+task.spawn(function()
+    while true do
+        task.wait(0.4)
+        if Config.Enabled then
+            local hpPct, hungerPct = getPlayerStats()
+
+            -- Evaluar si se cumple la condición de vida o hambre
+            if hpPct <= Config.HealthThreshold or hungerPct <= Config.HungerThreshold then
+                consumeFood()
+            else
+                State.Status = string.format("🟢 OK (Vida: %d%% | Comida: %d%%)", hpPct, hungerPct)
+            end
+        else
+            State.Status = "🔴 OFF"
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 4. INTERFAZ TÁCTIL Y MENÚ DE CONFIGURACIÓN
+-- ==============================================================================
+
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RadarTruckChestProGui"
+ScreenGui.Name = "AutoEatProGui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
 -- Botón Flotante / Widget
 local WidgetBtn = Instance.new("TextButton")
 WidgetBtn.Size = UDim2.new(0, 52, 0, 52)
-WidgetBtn.Position = UDim2.new(0.04, 0, 0.35, 0)
+WidgetBtn.Position = UDim2.new(0.04, 0, 0.60, 0)
 WidgetBtn.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-WidgetBtn.Text = "📡\nRADAR"
-WidgetBtn.TextColor3 = Color3.fromRGB(0, 255, 190)
+WidgetBtn.Text = "🥕\nCOMER"
+WidgetBtn.TextColor3 = Color3.fromRGB(255, 150, 40)
 WidgetBtn.TextSize = 10
 WidgetBtn.Font = Enum.Font.GothamBold
 WidgetBtn.Active = true
@@ -273,14 +177,14 @@ WidgetCorner.CornerRadius = UDim.new(1, 0)
 WidgetCorner.Parent = WidgetBtn
 
 local WidgetStroke = Instance.new("UIStroke")
-WidgetStroke.Color = Color3.fromRGB(0, 255, 190)
+WidgetStroke.Color = Color3.fromRGB(255, 150, 40)
 WidgetStroke.Thickness = 1.5
 WidgetStroke.Parent = WidgetBtn
 
--- Ventana Principal
+-- Ventana de Ajustes
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 450, 0, 400)
-MainFrame.Position = UDim2.new(0.5, -225, 0.5, -200)
+MainFrame.Size = UDim2.new(0, 380, 0, 310)
+MainFrame.Position = UDim2.new(0.5, -190, 0.5, -155)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -294,8 +198,8 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
-TitleBar.Text = "  📡 RADAR | AUTOS (TRUCKS) & COFRES ROJOS"
-TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
+TitleBar.Text = "  🥕 AUTO-COMER (ZANAHORIAS / COMIDA)"
+TitleBar.TextColor3 = Color3.fromRGB(255, 150, 40)
 TitleBar.TextSize = 11
 TitleBar.Font = Enum.Font.GothamBold
 TitleBar.TextXAlignment = Enum.TextXAlignment.Left
@@ -305,234 +209,185 @@ local TitleCorner = Instance.new("UICorner")
 TitleCorner.CornerRadius = UDim.new(0, 10)
 TitleCorner.Parent = TitleBar
 
--- Interruptor de Autos
-local TruckToggle = Instance.new("TextButton")
-TruckToggle.Size = UDim2.new(0.48, -8, 0, 34)
-TruckToggle.Position = UDim2.new(0, 10, 0, 44)
-TruckToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
-TruckToggle.Text = "🚚 AUTOS (TRUCK): ON"
-TruckToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-TruckToggle.TextSize = 10
-TruckToggle.Font = Enum.Font.GothamBold
-TruckToggle.Parent = MainFrame
+-- Interruptor ON/OFF
+local MainToggle = Instance.new("TextButton")
+MainToggle.Size = UDim2.new(1, -20, 0, 34)
+MainToggle.Position = UDim2.new(0, 10, 0, 44)
+MainToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
+MainToggle.Text = "⚡ AUTO-EAT: ON"
+MainToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+MainToggle.TextSize = 10
+MainToggle.Font = Enum.Font.GothamBold
+MainToggle.Parent = MainFrame
 
-local TruckToggleCorner = Instance.new("UICorner")
-TruckToggleCorner.CornerRadius = UDim.new(0, 6)
-TruckToggleCorner.Parent = TruckToggle
+local MainToggleCorner = Instance.new("UICorner")
+MainToggleCorner.CornerRadius = UDim.new(0, 6)
+MainToggleCorner.Parent = MainToggle
 
--- Interruptor de Cofres
-local ChestToggle = Instance.new("TextButton")
-ChestToggle.Size = UDim2.new(0.48, -8, 0, 34)
-ChestToggle.Position = UDim2.new(0.52, 0, 0, 44)
-ChestToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
-ChestToggle.Text = "📦 COFRES ROJOS: ON"
-ChestToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-ChestToggle.TextSize = 10
-ChestToggle.Font = Enum.Font.GothamBold
-ChestToggle.Parent = MainFrame
-
-local ChestToggleCorner = Instance.new("UICorner")
-ChestToggleCorner.CornerRadius = UDim.new(0, 6)
-ChestToggleCorner.Parent = ChestToggle
-
-TruckToggle.MouseButton1Click:Connect(function()
-    Config.TruckESP = not Config.TruckESP
-    if Config.TruckESP then
-        TruckToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
-        TruckToggle.Text = "🚚 AUTOS (TRUCK): ON"
-        for _, t in ipairs(RegisteredTrucks) do tagTruck(t.Model) end
+MainToggle.MouseButton1Click:Connect(function()
+    Config.Enabled = not Config.Enabled
+    if Config.Enabled then
+        MainToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
+        MainToggle.Text = "⚡ AUTO-EAT: ON"
     else
-        TruckToggle.BackgroundColor3 = Color3.fromRGB(150, 35, 40)
-        TruckToggle.Text = "🚚 AUTOS (TRUCK): OFF"
-        for _, t in ipairs(RegisteredTrucks) do clearTruckESP(t.Model) end
-        clearGuide()
-        SelectedTruck = nil
+        MainToggle.BackgroundColor3 = Color3.fromRGB(150, 35, 40)
+        MainToggle.Text = "⚡ AUTO-EAT: OFF"
     end
 end)
 
-ChestToggle.MouseButton1Click:Connect(function()
-    Config.ChestESP = not Config.ChestESP
-    if Config.ChestESP then
-        ChestToggle.BackgroundColor3 = Color3.fromRGB(30, 130, 75)
-        ChestToggle.Text = "📦 COFRES ROJOS: ON"
-    else
-        ChestToggle.BackgroundColor3 = Color3.fromRGB(150, 35, 40)
-        ChestToggle.Text = "📦 COFRES ROJOS: OFF"
-        local cratesFolder = workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("Crates")
-        if cratesFolder then
-            for _, crate in ipairs(cratesFolder:GetChildren()) do
-                clearCustomCrateESP(crate)
-                local hl = crate:FindFirstChildWhichIsA("Highlight", true)
-                if hl then hl.Enabled = false end
-            end
-        end
+-- Configuración de Vida (%)
+local HpLabel = Instance.new("TextLabel")
+HpLabel.Size = UDim2.new(0.65, 0, 0, 24)
+HpLabel.Position = UDim2.new(0, 10, 0, 88)
+HpLabel.BackgroundTransparency = 1
+HpLabel.Text = "Comer si la Vida baja de (%):"
+HpLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+HpLabel.TextSize = 10
+HpLabel.Font = Enum.Font.GothamBold
+HpLabel.TextXAlignment = Enum.TextXAlignment.Left
+HpLabel.Parent = MainFrame
+
+local HpBox = Instance.new("TextBox")
+HpBox.Size = UDim2.new(0.30, -10, 0, 26)
+HpBox.Position = UDim2.new(0.70, 0, 0, 88)
+HpBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+HpBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+HpBox.Text = tostring(Config.HealthThreshold)
+HpBox.TextSize = 11
+HpBox.Font = Enum.Font.Code
+HpBox.ClearTextOnFocus = false
+HpBox.Parent = MainFrame
+
+local HpBoxCorner = Instance.new("UICorner")
+HpBoxCorner.CornerRadius = UDim.new(0, 4)
+HpBoxCorner.Parent = HpBox
+
+HpBox.FocusLost:Connect(function()
+    local val = tonumber(HpBox.Text)
+    if val then
+        Config.HealthThreshold = math.clamp(math.floor(val), 1, 100)
+    end
+    HpBox.Text = tostring(Config.HealthThreshold)
+end)
+
+-- Configuración de Comida/Hambre (%)
+local HungerLabel = Instance.new("TextLabel")
+HungerLabel.Size = UDim2.new(0.65, 0, 0, 24)
+HungerLabel.Position = UDim2.new(0, 10, 0, 122)
+HungerLabel.BackgroundTransparency = 1
+HungerLabel.Text = "Comer si el Hambre baja de (%):"
+HungerLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+HungerLabel.TextSize = 10
+HungerLabel.Font = Enum.Font.GothamBold
+HungerLabel.TextXAlignment = Enum.TextXAlignment.Left
+HungerLabel.Parent = MainFrame
+
+local HungerBox = Instance.new("TextBox")
+HungerBox.Size = UDim2.new(0.30, -10, 0, 26)
+HungerBox.Position = UDim2.new(0.70, 0, 0, 122)
+HungerBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+HungerBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+HungerBox.Text = tostring(Config.HungerThreshold)
+HungerBox.TextSize = 11
+HungerBox.Font = Enum.Font.Code
+HungerBox.ClearTextOnFocus = false
+HungerBox.Parent = MainFrame
+
+local HungerBoxCorner = Instance.new("UICorner")
+HungerBoxCorner.CornerRadius = UDim.new(0, 4)
+HungerBoxCorner.Parent = HungerBox
+
+HungerBox.FocusLost:Connect(function()
+    local val = tonumber(HungerBox.Text)
+    if val then
+        Config.HungerThreshold = math.clamp(math.floor(val), 1, 100)
+    end
+    HungerBox.Text = tostring(Config.HungerThreshold)
+end)
+
+-- Nombre de la Comida
+local FoodNameLabel = Instance.new("TextLabel")
+FoodNameLabel.Size = UDim2.new(0.45, 0, 0, 24)
+FoodNameLabel.Position = UDim2.new(0, 10, 0, 156)
+FoodNameLabel.BackgroundTransparency = 1
+FoodNameLabel.Text = "Nombre del Alimento:"
+FoodNameLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+FoodNameLabel.TextSize = 10
+FoodNameLabel.Font = Enum.Font.GothamBold
+FoodNameLabel.TextXAlignment = Enum.TextXAlignment.Left
+FoodNameLabel.Parent = MainFrame
+
+local FoodBox = Instance.new("TextBox")
+FoodBox.Size = UDim2.new(0.50, -10, 0, 26)
+FoodBox.Position = UDim2.new(0.50, 0, 0, 156)
+FoodBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+FoodBox.TextColor3 = Color3.fromRGB(255, 170, 40)
+FoodBox.Text = Config.FoodItemName
+FoodBox.TextSize = 10
+FoodBox.Font = Enum.Font.Code
+FoodBox.ClearTextOnFocus = false
+FoodBox.Parent = MainFrame
+
+local FoodBoxCorner = Instance.new("UICorner")
+FoodBoxCorner.CornerRadius = UDim.new(0, 4)
+FoodBoxCorner.Parent = FoodBox
+
+FoodBox.FocusLost:Connect(function()
+    if FoodBox.Text ~= "" then
+        Config.FoodItemName = FoodBox.Text
     end
 end)
 
-local ListHeader = Instance.new("TextLabel")
-ListHeader.Size = UDim2.new(1, -20, 0, 22)
-ListHeader.Position = UDim2.new(0, 10, 0, 84)
-ListHeader.BackgroundTransparency = 1
-ListHeader.Text = "REGISTRO DE AUTOS ENCONTRADOS (Toca uno para activar flecha guía):"
-ListHeader.TextColor3 = Color3.fromRGB(200, 200, 200)
-ListHeader.TextSize = 9
-ListHeader.Font = Enum.Font.GothamBold
-ListHeader.TextXAlignment = Enum.TextXAlignment.Left
-ListHeader.Parent = MainFrame
+-- Monitor de Estado en Tiempo Real
+local StatusFrame = Instance.new("Frame")
+StatusFrame.Size = UDim2.new(1, -20, 0, 50)
+StatusFrame.Position = UDim2.new(0, 10, 0, 194)
+StatusFrame.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
+StatusFrame.Parent = MainFrame
 
-local TruckScroll = Instance.new("ScrollingFrame")
-TruckScroll.Size = UDim2.new(1, -20, 0, 250)
-TruckScroll.Position = UDim2.new(0, 10, 0, 108)
-TruckScroll.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-TruckScroll.BorderSizePixel = 0
-TruckScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-TruckScroll.Parent = MainFrame
+local StatusCorner = Instance.new("UICorner")
+StatusCorner.CornerRadius = UDim.new(0, 6)
+StatusCorner.Parent = StatusFrame
 
-local TruckScrollCorner = Instance.new("UICorner")
-TruckScrollCorner.CornerRadius = UDim.new(0, 6)
-TruckScrollCorner.Parent = TruckScroll
+local StatusText = Instance.new("TextLabel")
+StatusText.Size = UDim2.new(1, -12, 1, 0)
+StatusText.Position = UDim2.new(0, 6, 0, 0)
+StatusText.BackgroundTransparency = 1
+StatusText.Text = "Estado: Inicializando..."
+StatusText.TextColor3 = Color3.fromRGB(255, 200, 80)
+StatusText.TextSize = 10
+StatusText.Font = Enum.Font.Code
+StatusText.TextXAlignment = Enum.TextXAlignment.Left
+StatusText.Parent = StatusFrame
 
-local UIList = Instance.new("UIListLayout")
-UIList.SortOrder = Enum.SortOrder.LayoutOrder
-UIList.Padding = UDim.new(0, 4)
-UIList.Parent = TruckScroll
+-- Botón Comer Manual Ahora
+local EatNowBtn = Instance.new("TextButton")
+EatNowBtn.Size = UDim2.new(1, -20, 0, 34)
+EatNowBtn.Position = UDim2.new(0, 10, 0, 256)
+EatNowBtn.BackgroundColor3 = Color3.fromRGB(210, 105, 30)
+EatNowBtn.Text = "🍽️ FORZAR COMER AHORA"
+EatNowBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+EatNowBtn.TextSize = 10
+EatNowBtn.Font = Enum.Font.GothamBold
+EatNowBtn.Parent = MainFrame
 
-local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, -20, 0, 24)
-StatusLabel.Position = UDim2.new(0, 10, 0, 366)
-StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Guía activa: Ninguna"
-StatusLabel.TextColor3 = Color3.fromRGB(255, 180, 0)
-StatusLabel.TextSize = 10
-StatusLabel.Font = Enum.Font.GothamBold
-StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-StatusLabel.Parent = MainFrame
+local EatNowCorner = Instance.new("UICorner")
+EatNowCorner.CornerRadius = UDim.new(0, 6)
+EatNowCorner.Parent = EatNowBtn
 
-local function updateTruckMenu()
-    for _, child in ipairs(TruckScroll:GetChildren()) do
-        if child:IsA("TextButton") then child:Destroy() end
-    end
-
-    local char = lp.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-    local myPos = root and root.Position or Vector3.zero
-
-    for i, t in ipairs(RegisteredTrucks) do
-        if t.Model and t.Model.Parent and t.Anchor then
-            local pos = t.Anchor.Position
-            local dist = math.floor((pos - myPos).Magnitude)
-
-            local itemBtn = Instance.new("TextButton")
-            itemBtn.Size = UDim2.new(1, -6, 0, 34)
-            itemBtn.BackgroundColor3 = (SelectedTruck == t.Model) and Color3.fromRGB(50, 75, 110) or Color3.fromRGB(20, 24, 34)
-            itemBtn.Text = string.format(" 🚚 Auto #%d | Pos: (%.0f, %.0f, %.0f) | Distancia: %dm", i, pos.X, pos.Y, pos.Z, dist)
-            itemBtn.TextColor3 = Color3.fromRGB(255, 200, 80)
-            itemBtn.TextSize = 10
-            itemBtn.Font = Enum.Font.Code
-            itemBtn.TextXAlignment = Enum.TextXAlignment.Left
-            itemBtn.Parent = TruckScroll
-
-            local itemCorner = Instance.new("UICorner")
-            itemCorner.CornerRadius = UDim.new(0, 4)
-            itemCorner.Parent = itemBtn
-
-            itemBtn.MouseButton1Click:Connect(function()
-                if SelectedTruck == t.Model then
-                    -- Deseleccionar y apagar flecha
-                    SelectedTruck = nil
-                    clearGuide()
-                    StatusLabel.Text = "Guía activa: Ninguna"
-                else
-                    SelectedTruck = t.Model
-                    setGuideToTarget(t.Anchor)
-                    StatusLabel.Text = string.format("Guía activa: ➜ Auto #%d (%.0f, %.0f, %.0f)", i, pos.X, pos.Y, pos.Z)
-                end
-                updateTruckMenu()
-            end)
-        end
-    end
-
-    TruckScroll.CanvasSize = UDim2.new(0, 0, 0, #RegisteredTrucks * 38)
-end
+EatNowBtn.MouseButton1Click:Connect(function()
+    consumeFood()
+end)
 
 WidgetBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
 
--- ==============================================================================
--- 5. BUCLE EN TIEMPO REAL: ESCANEO DE ESTRUCTURAS, COFRES Y ACTUALIZACIÓN
--- ==============================================================================
-
--- Escaneo de Structures para Truck
-local structFolder = workspace:FindFirstChild("Structures") or workspace
-for _, child in ipairs(structFolder:GetChildren()) do
-    tagTruck(child)
-end
-structFolder.ChildAdded:Connect(function(child)
-    task.wait(0.2)
-    tagTruck(child)
-    updateTruckMenu()
-end)
-
+-- Actualización periódica del monitor visual
 task.spawn(function()
     while true do
-        task.wait(0.5)
-        local char = lp.Character
-        local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-        local myPos = root and root.Position or Vector3.zero
-
-        -- 1. Actualizar distancias y etiquetas de Trucks
-        for _, t in ipairs(RegisteredTrucks) do
-            if t.Model and t.Model.Parent and t.Anchor then
-                local tag = t.Anchor:FindFirstChild("TruckESP_Tag")
-                local lbl = tag and tag:FindFirstChild("DistanceLabel")
-                if lbl then
-                    local d = math.floor((t.Anchor.Position - myPos).Magnitude)
-                    lbl.Text = string.format("🚚 TRUCK [%dm]", d)
-                end
-            end
-        end
-
-        -- 2. Procesar Cofres Cerrados (si está activado)
-        if Config.ChestESP then
-            local cratesFolder = workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("Crates")
-            if cratesFolder then
-                for _, crate in ipairs(cratesFolder:GetChildren()) do
-                    if crate:IsA("Model") then
-                        if isCrateClosed(crate) then
-                            applyStrongRedESP(crate)
-                            local part = crate.PrimaryPart or crate:FindFirstChildWhichIsA("BasePart")
-                            local tag = crate:FindFirstChild("CustomCrateTag", true)
-                            local lbl = tag and tag:FindFirstChild("DistanceLabel")
-                            if part and lbl then
-                                local dist = math.floor((part.Position - myPos).Magnitude)
-                                lbl.Text = string.format("📦 COFRE [%dm]", dist)
-                            end
-                        else
-                            clearCustomCrateESP(crate)
-                            local hl = crate:FindFirstChildWhichIsA("Highlight", true)
-                            if hl then hl.Enabled = false end
-                        end
-                    end
-                end
-            end
-        end
-
-        -- 3. Mantener flecha actualizada si nos movemos
-        if SelectedTruck and GuideAttach0 and root and GuideAttach0.Parent ~= root then
-            GuideAttach0.Parent = root
-        end
+        task.wait(0.35)
+        local hp, hg = getPlayerStats()
+        StatusText.Text = string.format("Vida actual: %d%% | Hambre: %d%%\nAcción: %s", hp, hg, State.Status)
     end
 end)
-
--- Actualizar la lista del menú cada 2 segundos
-task.spawn(function()
-    while true do
-        task.wait(2)
-        if MainFrame.Visible then
-            updateTruckMenu()
-        end
-    end
-end)
-
-updateTruckMenu()
