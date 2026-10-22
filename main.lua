@@ -10,26 +10,16 @@ local RunService = game:GetService("RunService")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local lp = Players.LocalPlayer
 
--- COORDENADAS DE LA PARTIDA (NUEVO MAPA)
-local DEFAULT_DOOR = Vector3.new(-1140.6, 5.5, -230.0)
-local DEFAULT_CENTER = Vector3.new(-1123.2, 5.2, -176.4)
+-- COORDENADAS DE LA PARTIDA ( ACTUALIZADAS )
+local DEFAULT_DOOR = Vector3.new(419.4, 5.6, 1125.8)
+local DEFAULT_CENTER = Vector3.new(412.8, 5.2, 1063.4)
 
--- 7 COFRES REGISTRADOS (NUEVO MAPA)
-local CHESTS = {
-    Vector3.new(-1179.9, -13.7, -167.1),
-    Vector3.new(-1170.7, -13.8, -147.0),
-    Vector3.new(-1170.5, -13.8, -139.4),
-    Vector3.new(-1153.3, -13.8, -125.6),
-    Vector3.new(-1144.1, -13.8, -124.4),
-    Vector3.new(-1072.1, -33.5, -124.7),
-    Vector3.new(-1068.9, -33.5, -138.4)
-}
-
--- 3 GASOLINERAS REGISTRADAS (NUEVO MAPA)
+-- GASOLINERAS REGISTRADAS ( ACTUALIZADAS )
 local GAS_STATIONS = {
-    Vector3.new(-477.6, 5.0, -338.8),
-    Vector3.new(19.1, 4.5, -364.0),
-    Vector3.new(594.4, 5.8, -562.4)
+    Vector3.new(363.9, 2.1, 259.0),
+    Vector3.new(784.8, 2.3, 618.7),
+    Vector3.new(427.3, 1.5, 1339.5),
+    Vector3.new(417.7, 1.6, 1363.7)
 }
 
 local State = {
@@ -37,7 +27,7 @@ local State = {
     Paused = false,
     NoclipEnabled = false,    -- Se activa 3 segundos después del Fly
     CurrentStatus = "Inactivo",
-    LootChests = true,       -- DESACTIVADO POR DEFECTO
+    LootChests = false,       -- DESACTIVADO POR DEFECTO
     ChestWaitTime = 0.8,
     BaseNuclearWait = 900,    -- 15 minutos de espera en gasolineras
     GasStationStop = 4.0,     -- 4 segundos de parada por ciclo
@@ -168,7 +158,7 @@ local function secureFlightStart()
     return true
 end
 
--- VUELO HACIA UN DESTINO (CON +3 STUDS DE ALTURA AL DIRIGIRSE AL CENTRO)
+-- VUELO HACIA UN DESTINO (ALTURA ORIGINAL CONSERVADA)
 local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     stopDistance = stopDistance or 3.0
     local root = getRootPart()
@@ -176,7 +166,7 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
 
     local targetY = targetPos.Y + 3.0
     if lockAltitudeToDoor and Point2_Door then
-        targetY = Point2_Door.Y + 6.0 -- (+3 studs de elevación)
+        targetY = Point2_Door.Y + 3.0
     end
 
     local finalDest = Vector3.new(targetPos.X, targetY, targetPos.Z)
@@ -222,31 +212,24 @@ local function flyMoveTo(targetPos, speed, stopDistance, lockAltitudeToDoor)
     return false
 end
 
--- ATAQUE CIRCULAR (DESDE EL SUELO -2 STUDS HACIA ARRIBA)
+-- ATAQUE CIRCULAR (ALTURA ORIGINAL CONSERVADA)
 local function orbitTarget(targetRoot, radius, duration, speed)
     local root = getRootPart()
     if not root or not targetRoot or not targetRoot.Parent or not Point2_Door then return end
 
-    local startTime = tick()
-    local endTime = startTime + duration
+    local targetY = Point2_Door.Y + 4.0
+    local endTime = tick() + duration
     local angle = 0
 
-    local initialTPos = targetRoot.Position
-    local startY = initialTPos.Y - 2.0 -- Inicia pegado al suelo (-2 studs del torso)
-    local bodyPos = getOrCreatePhysics(root, startY)
+    local bodyPos = getOrCreatePhysics(root, targetY)
 
     while State.Running and not State.Paused and targetRoot.Parent and tick() < endTime do
         RunService.Heartbeat:Wait()
         angle = angle + (speed * 0.010)
         local tPos = targetRoot.Position
-
-        -- Ascenso dinámico durante el giro: desde -2 studs (suelo) subiendo hasta +2.5 studs
-        local progress = math.clamp((tick() - startTime) / duration, 0, 1)
-        local currentY = (tPos.Y - 2.0) + (progress * 4.5)
-
         local orbitDest = Vector3.new(
             tPos.X + math.cos(angle) * radius,
-            currentY,
+            targetY,
             tPos.Z + math.sin(angle) * radius
         )
         bodyPos.Position = orbitDest
@@ -372,29 +355,6 @@ local function interactWithGasPump(stationPos)
                 end
             end
         end
-    end
-end
-
--- RUTINA PARA SAQUEAR LOS 7 COFRES
-local function lootAllChests()
-    if not State.LootChests then return end
-    updateStatus("📦 Saqueando cofres del reactor...")
-    for idx, chestPos in ipairs(CHESTS) do
-        if not State.Running or State.Paused then break end
-        updateStatus(string.format("📦 Yendo a Cofre [%d/%d]...", idx, #CHESTS))
-        flyMoveTo(chestPos, 48, 2.5, false)
-        task.wait(0.2)
-
-        for _, prompt in ipairs(workspace:GetDescendants()) do
-            if prompt:IsA("ProximityPrompt") and prompt.Enabled then
-                local pPart = prompt.Parent
-                local pPos = pPart and (pPart:IsA("BasePart") and pPart.Position or (pPart:IsA("Attachment") and pPart.WorldPosition))
-                if pPos and (pPos - chestPos).Magnitude <= 15 then
-                    triggerPromptRobust(prompt)
-                end
-            end
-        end
-        task.wait(State.ChestWaitTime)
     end
 end
 
@@ -695,7 +655,7 @@ Tabs.Main:AddButton({
 
 Tabs.Main:AddToggle("LootChestsQuickToggle", {
     Title = "Saquear Cofres tras Limpiar",
-    Default = true,
+    Default = false,
     Callback = function(Value) State.LootChests = Value end
 })
 
@@ -857,11 +817,11 @@ task.spawn(function()
                         local approachPos = rootBefore and rootBefore.Position or Point2_Door
 
                         -- === PARADA 1: VUELO Y ACTIVACIÓN (4 SEGUNDOS) ===
-                        updateStatus(string.format("[Gas %d/%d] Parada 1/2 (Vuelo 128)... | Cooldown: %02dm %02ds", idx, #GAS_STATIONS, mins, secs))
+                        updateStatus(string.format("[Gas %d/4] Parada 1/2 (Vuelo 128)... | Cooldown: %02dm %02ds", idx, mins, secs))
                         flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
                         task.wait(0.15)
 
-                        updateStatus(string.format("[Gas %d/%d] Surtidor Activo 1 (4s)... | Cooldown: %02dm %02ds", idx, #GAS_STATIONS, mins, secs))
+                        updateStatus(string.format("[Gas %d/4] Surtidor Activo 1 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
                         local stop1 = tick()
                         while State.Running and not State.Paused and (tick() - stop1 < State.GasStationStop) do
                             interactWithGasPump(gasPos)
@@ -871,7 +831,7 @@ task.spawn(function()
                         if not State.Running or State.Paused then break end
 
                         -- === RETROCESO DE 20 STUDS ===
-                        updateStatus(string.format("[Gas %d/%d] Retrocediendo 20 studs...", idx, #GAS_STATIONS))
+                        updateStatus(string.format("[Gas %d/4] Retrocediendo 20 studs...", idx))
                         local dirAway = (approachPos - gasPos).Unit
                         if dirAway.Magnitude == 0 or dirAway ~= dirAway then
                             dirAway = Vector3.new(0, 0, 1)
@@ -883,7 +843,7 @@ task.spawn(function()
                         if not State.Running or State.Paused then break end
 
                         -- === PARADA 2: REINGRESO Y ACTIVACIÓN (4 SEGUNDOS) ===
-                        updateStatus(string.format("[Gas %d/%d] Reingreso Parada 2/2 (4s)... | Cooldown: %02dm %02ds", idx, #GAS_STATIONS, mins, secs))
+                        updateStatus(string.format("[Gas %d/4] Reingreso Parada 2/2 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
                         flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
                         task.wait(0.15)
 
@@ -916,9 +876,11 @@ task.spawn(function()
                             local pName = phaserTarget.Name
                             updateStatus(string.format("👻 Cazando PHASER [%s] (%02dm %02ds rest)...", pName, m, s))
                             flyMoveTo(phaserRoot.Position, 45, 6, true)
-                            orbitTarget(phaserRoot, 7, 55.0, 3) -- Aumentado +30s (de 25s a 55s)
+                            orbitTarget(phaserRoot, 7, 25.0, 3)
+
+                            -- Nota: NO regresa al centro de inmediato, el bucle revisa si queda otro Phaser vivo
                         else
-                            -- 2. Si no hay ningún Phaser vivo en el radio de 950 studs, regresar/mantenerse en el centro
+                            -- 2. Si no hay ningún Phaser vivo en el radio de 750 studs, regresar/mantenerse en el centro
                             local myRoot = getRootPart()
                             local distToCenter = myRoot and (myRoot.Position - CalculatedCenter).Magnitude or 0
 
@@ -926,7 +888,7 @@ task.spawn(function()
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
                             else
                                 local bp = myRoot and myRoot:FindFirstChild("ReactorFloatBP")
-                                local targetY = Point2_Door.Y + 6.0 -- (+3 studs de elevación en el centro)
+                                local targetY = Point2_Door.Y + 3.0
                                 if bp then
                                     bp.Position = Vector3.new(CalculatedCenter.X, targetY, CalculatedCenter.Z)
                                 end
@@ -940,8 +902,8 @@ task.spawn(function()
                     updateStatus("✅ 10 min completados. Iniciando cacería completa...")
                 end
 
-                -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 950)
-                updateStatus("[3/4] Cacería en Reactor (Radio 950)...")
+                -- FASE 2: CACERÍA UNO POR UNO EN EL REACTOR (RADIO 750)
+                updateStatus("[3/4] Cacería en Reactor (Radio 750)...")
                 local inCombat = true
                 local screamerPhaserStuckTimer = nil
 
@@ -971,18 +933,18 @@ task.spawn(function()
                     if targetModel and targetRoot then
                         local name = targetModel.Name
 
-                        -- CASO 1: SCREAMER (PRIORIDAD #1) -> Aumentado +30s (de 25s a 55s)
+                        -- CASO 1: SCREAMER (PRIORIDAD #1)
                         if targetType == "screamer" then
                             updateStatus("🚨 PRIORIDAD #1: Caza del SCREAMER para el dron...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
-                            orbitTarget(targetRoot, 7, 55.0, 3)
+                            orbitTarget(targetRoot, 7, 25.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
-                        -- CASO 2: PHASER (PRIORIDAD #2) -> Aumentado +30s (de 25s a 55s)
+                        -- CASO 2: PHASER (PRIORIDAD #2)
                         elseif targetType == "phaser" then
                             updateStatus("👻 PRIORIDAD #2: Caza del PHASER...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
-                            orbitTarget(targetRoot, 7, 55.0, 3)
+                            orbitTarget(targetRoot, 7, 25.0, 3)
                             flyMoveTo(CalculatedCenter, 42, 3, true)
 
                         -- CASO 4: EXPERIMENT (JEFE FINAL - ANCLADO EN EL CENTRO SI ESTÁ CERCA)
@@ -1012,22 +974,23 @@ task.spawn(function()
                             else
                                 updateStatus(string.format("👑 Buscando a EXPERIMENT (%d studs)...", math.floor(distToCenter)))
                                 flyMoveTo(targetRoot.Position, 45, 6, true)
-                                orbitTarget(targetRoot, 8, 44.0, 2.5) -- Aumentado +30s (de 14s a 44s)
+                                orbitTarget(targetRoot, 8, 14.0, 2.5)
                                 flyMoveTo(CalculatedCenter, 42, 3, true)
                             end
 
-                        -- CASO 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES -> Aumentado +30s
+                        -- CASO 3: RESTO DE ZOMBIES NUCLEARES RESPLANDECIENTES
                         else
                             updateStatus("Rodeando a " .. name .. " [Resplandor]...")
                             flyMoveTo(targetRoot.Position, 45, 6, true)
-                            orbitTarget(targetRoot, 7, 55.0, 3) -- Aumentado +30s (de 25s a 55s)
+                            orbitTarget(targetRoot, 7, 25.0, 3)
                             if targetModel.Parent and targetRoot.Parent then
-                                orbitTarget(targetRoot, 14, 60.0, 2.5) -- Aumentado +30s (de 30s a 60s)
+                                orbitTarget(targetRoot, 14, 30.0, 2.5)
                             end
                             flyMoveTo(CalculatedCenter, 42, 3, true)
                         end
 
                     else
+                        -- No hay zombies en la sala: ir al centro y esperar 40s a que aparezca la siguiente ronda
                         screamerPhaserStuckTimer = nil
                         flyMoveTo(CalculatedCenter, 45, 3, true)
                         local roundCleared = true
@@ -1051,15 +1014,10 @@ task.spawn(function()
                     end
                 end
 
-                -- FASE 3: SAQUEO DE COFRES TRAS LIMPIAR (SI SE ENCUENTRA ACTIVADO)
-                if State.LootChests and State.Running and not State.Paused then
-                    lootAllChests()
-                end
-
-                -- TRAS COMPLETAR LAS RONDAS, INICIAR EL RECORRIDO DE LAS 3 GASOLINERAS
+                -- TRAS COMPLETAR LAS RONDAS, INICIAR EL RECORRIDO DE LAS GASOLINERAS
                 if State.Running and not State.Paused then
                     local cooldownStart = tick()
-                    updateStatus(string.format("Reactor Despejado (3 Rondas). Iniciando %d gasolineras...", #GAS_STATIONS))
+                    updateStatus("Reactor Despejado (3 Rondas). Iniciando gasolineras...")
 
                     while State.Running and not State.Paused and (tick() - cooldownStart < State.BaseNuclearWait) do
                         for idx, gasPos in ipairs(GAS_STATIONS) do
@@ -1074,11 +1032,11 @@ task.spawn(function()
                             local approachPos = rootBefore and rootBefore.Position or Point2_Door
 
                             -- === PARADA 1: VUELO Y ACTIVACIÓN (4 SEGUNDOS) ===
-                            updateStatus(string.format("[Gas %d/%d] Parada 1/2 (Vuelo 128)... | Cooldown: %02dm %02ds", idx, #GAS_STATIONS, mins, secs))
+                            updateStatus(string.format("[Gas %d/4] Parada 1/2 (Vuelo 128)... | Cooldown: %02dm %02ds", idx, mins, secs))
                             flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
                             task.wait(0.15)
 
-                            updateStatus(string.format("[Gas %d/%d] Surtidor Activo 1 (4s)... | Cooldown: %02dm %02ds", idx, #GAS_STATIONS, mins, secs))
+                            updateStatus(string.format("[Gas %d/4] Surtidor Activo 1 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
                             local stop1 = tick()
                             while State.Running and not State.Paused and (tick() - stop1 < State.GasStationStop) do
                                 interactWithGasPump(gasPos)
@@ -1088,7 +1046,7 @@ task.spawn(function()
                             if not State.Running or State.Paused then break end
 
                             -- === RETROCESO DE 20 STUDS ===
-                            updateStatus(string.format("[Gas %d/%d] Retrocediendo 20 studs...", idx, #GAS_STATIONS))
+                            updateStatus(string.format("[Gas %d/4] Retrocediendo 20 studs...", idx))
                             local dirAway = (approachPos - gasPos).Unit
                             if dirAway.Magnitude == 0 or dirAway ~= dirAway then
                                 dirAway = Vector3.new(0, 0, 1)
@@ -1100,7 +1058,7 @@ task.spawn(function()
                             if not State.Running or State.Paused then break end
 
                             -- === PARADA 2: REINGRESO Y ACTIVACIÓN (4 SEGUNDOS) ===
-                            updateStatus(string.format("[Gas %d/%d] Reingreso Parada 2/2 (4s)... | Cooldown: %02dm %02ds", idx, #GAS_STATIONS, mins, secs))
+                            updateStatus(string.format("[Gas %d/4] Reingreso Parada 2/2 (4s)... | Cooldown: %02dm %02ds", idx, mins, secs))
                             flyMoveTo(gasPos, State.GasFlySpeed, 3.5, false)
                             task.wait(0.15)
 
@@ -1128,7 +1086,7 @@ end)
 
 Fluent:Notify({
     Title = "REACTOR HUB V3 PERFECCIONADO",
-    Content = "Órbita al ras del suelo ascendente y centro elevado +3 studs activos.",
+    Content = "Caza total de Phasers sin filtros de hibernación activada.",
     Duration = 4
 })
 
