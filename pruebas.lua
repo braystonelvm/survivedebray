@@ -1,5 +1,5 @@
 -- ==============================================================================
--- SCRAP HIGHWAY CRUSHER & SPIDERWEB RELAY V2.0 (1200 STUDS / 0% LAG)
+-- SCRAP HIGHWAY CRUSHER & SPIDERWEB RELAY V2.5 (MOTOR CINÉTICO V16 SIN VIBRACIÓN)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -14,11 +14,12 @@ local BaseCenter = Vector3.new(0, 0, 0)
 local MAX_MAP_RADIUS = 1200
 
 local Config = {
-    -- Auto-Conducción por Pistas
+    -- Auto-Conducción por Pistas (Motor V16)
     AutoFarmRoads = false,
-    VehicleSpeed = 125,
+    VehicleSpeed = 135,
     RoadMaxHalfWidth = 14,      -- Límite lateral desde el centro de la pista (nunca sale a tierra)
     ScrapSearchRadius = 500,    -- Radio de detección de cúmulos a tu alrededor
+    CrushOvershoot = 18,        -- Rebasa el cúmulo 18 studs hacia adelante para no frenar ni vibrar
 
     -- Red Telaraña de Teletransporte (1 por 1, pasos cortos)
     AutoSendItems = true,
@@ -36,11 +37,17 @@ local Config = {
 local RoadNodes = {}            -- Nodos de todas las pistas cargadas hasta 1200 studs
 local DeliveryPoints = {}       -- Bolitas de la telaraña (automáticas + manuales)
 local RoadScrapList = {}        -- Cúmulos y autos chatarra validados dentro de la pista
-local VisitedRoadHistory = {}   -- Memoria para recorrer las pistas sin quedarse atascado
+local IgnoredScrapUntil = {}    -- Evita quedarse pegado en un mismo cúmulo tras atravesarlo
 
 local CachedGeneratorPos = nil
 local CurrentScrapTarget = nil
-local CurrentRoadTarget = nil
+
+-- Estado de Ruta Fluida (idéntico al TransitState del V16.0)
+local RoadTransit = {
+    Waypoints = {},
+    Index = 1,
+    CurrentDirection = Vector3.new(0, 0, 1)
+}
 
 -- Mantener cursor visible
 RunService.RenderStepped:Connect(function()
@@ -48,7 +55,33 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ==============================================================================
--- 1. POSICIÓN DEL GENERADOR Y RED DE BOLITAS (TELARAÑA AUTOMÁTICA)
+-- 1. OBTENCIÓN DE PERSONAJE Y VEHÍCULO (EXACTO AL V16.0)
+-- ==============================================================================
+
+local function getCharacterParts()
+    local char = lp.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    return char, root, hum
+end
+
+local function applyBrake(duration)
+    duration = duration or 0.8
+    task.spawn(function()
+        local endTime = tick() + duration
+        while tick() < endTime do
+            local _, root, hum = getCharacterParts()
+            if root and hum and hum.SeatPart then
+                root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y, 0)
+                root.AssemblyAngularVelocity = Vector3.zero
+            end
+            RunService.Heartbeat:Wait()
+        end
+    end)
+end
+
+-- ==============================================================================
+-- 2. POSICIÓN DEL GENERADOR Y RED DE BOLITAS (TELARAÑA AUTOMÁTICA + MANUAL)
 -- ==============================================================================
 
 local function getGeneratorPosition()
@@ -81,7 +114,6 @@ local function createWebMarker(pos, isManual)
     return marker
 end
 
--- Si la pista nueva está lejos de otra bolita, le planta un nodo de telaraña automáticamente
 local function tryAddWebNodeAtRoad(roadPos)
     local genPos = getGeneratorPosition()
     if (roadPos - genPos).Magnitude <= (Config.GeneratorSafeRadius - 15) then return end
@@ -97,7 +129,7 @@ local function tryAddWebNodeAtRoad(roadPos)
 end
 
 -- ==============================================================================
--- 2. MAPEO PROGRESIVO DE PISTAS (HASTA 1200 STUDS SIN LAG)
+-- 3. MAPEO PROGRESIVO DE PISTAS Y CONEXIÓN DE CARRILES (1200 STUDS)
 -- ==============================================================================
 
 local function isRoadObject(obj)
@@ -112,36 +144,36 @@ local function isRoadObject(obj)
 end
 
 local function registerRoadPiece(obj)
-    local pos = nil
+    local pos, size
     if obj:IsA("Model") then
-        local cf = select(1, obj:GetBoundingBox())
+        local cf, sz = obj:GetBoundingBox()
         pos = cf.Position
+        size = sz
     else
         pos = obj.Position
+        size = obj.Size
     end
 
-    -- Ignorar lo que supere los 1200 studs desde la base
     local distFromCenter = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude
     if distFromCenter > MAX_MAP_RADIUS or distFromCenter < 95 then return end
 
     for _, node in ipairs(RoadNodes) do
-        if (node.Pos - pos).Magnitude < 18 then
+        if (Vector3.new(node.Pos.X, 0, node.Pos.Z) - Vector3.new(pos.X, 0, pos.Z)).Magnitude < 24 then
             return
         end
     end
 
     local newNode = {
-        Pos = Vector3.new(pos.X, 1.5, pos.Z),
+        Pos = Vector3.new(pos.X, pos.Y + 1.5, pos.Z),
+        Size = size,
         Instance = obj,
         LastVisited = 0
     }
     table.insert(RoadNodes, newNode)
-
-    -- Tejer nodo de la telaraña sobre esta pista
     tryAddWebNodeAtRoad(newNode.Pos)
 end
 
--- Escaneo inicial suave por lotes (0% congelamiento al ejecutar)
+-- Escaneo inicial por lotes sin congelar
 task.spawn(function()
     local mapFolder = workspace:FindFirstChild("Map") or workspace:FindFirstChild("Tiles") or workspace
     local descendants = mapFolder:GetDescendants()
@@ -153,7 +185,6 @@ task.spawn(function()
     end
 end)
 
--- A medida que el auto sale y explora hasta 1200 studs, registra las nuevas pistas automáticamente
 workspace.DescendantAdded:Connect(function(desc)
     if isRoadObject(desc) then
         task.wait(0.15)
@@ -161,26 +192,42 @@ workspace.DescendantAdded:Connect(function(desc)
     end
 end)
 
-local function getClosestRoadNode(pos)
+-- Verifica si un punto está realmente dentro de la superficie de alguna pista (no solo cerca del centro)
+local function getRoadInfoAtPosition(pos)
     local bestNode = nil
-    local shortest = math.huge
+    local minCenterDist = math.huge
+    local minEdgeDist = math.huge
+
     for _, node in ipairs(RoadNodes) do
-        local d = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(node.Pos.X, 0, node.Pos.Z)).Magnitude
-        if d < shortest then
-            shortest = d
+        local dx = math.abs(pos.X - node.Pos.X)
+        local dz = math.abs(pos.Z - node.Pos.Z)
+        local centerDist = math.sqrt(dx * dx + dz * dz)
+
+        local halfX = math.max((node.Size.X * 0.5), 18)
+        local halfZ = math.max((node.Size.Z * 0.5), 18)
+
+        local overX = math.max(0, dx - halfX)
+        local overZ = math.max(0, dz - halfZ)
+        local edgeDist = math.sqrt(overX * overX + overZ * overZ)
+
+        if edgeDist < minEdgeDist or (edgeDist == 0 and centerDist < minCenterDist) then
+            minEdgeDist = edgeDist
+            minCenterDist = centerDist
             bestNode = node
         end
     end
-    return bestNode, shortest
+
+    return bestNode, minEdgeDist, minCenterDist
 end
 
 -- ==============================================================================
--- 3. ESCÁNER DE SCRAP PILE Y CRASHED CAR (SOLO DENTRO DE LAS PISTAS)
+-- 4. ESCÁNER DE SCRAP PILE Y CRASHED CAR (SOLO DENTRO DE LAS PISTAS)
 -- ==============================================================================
 
 local function isValidScrapTarget(model)
     if not model or not model.Parent or not model:IsA("Model") then return false end
     if model:GetAttribute("Dead") == true then return false end
+    if IgnoredScrapUntil[model] and tick() < IgnoredScrapUntil[model] then return false end
 
     local n = model.Name:lower()
     if n:find("scrap pile") or n:find("crashed car") then
@@ -190,8 +237,7 @@ local function isValidScrapTarget(model)
 end
 
 local function scanRoadScrapTargets()
-    local char = lp.Character
-    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    local _, root = getCharacterParts()
     if not root then return end
 
     local myPos = root.Position
@@ -205,18 +251,24 @@ local function scanRoadScrapTargets()
                 local sPos = part.Position
                 local distToBase = (Vector3.new(sPos.X, 0, sPos.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude
 
-                if distToBase <= MAX_MAP_RADIUS and distToBase >= 100 then
-                    local distToMe = (sPos - myPos).Magnitude
+                if distToBase <= MAX_MAP_RADIUS and distToBase >= 95 then
+                    local distToMe = (Vector3.new(sPos.X, 0, sPos.Z) - Vector3.new(myPos.X, 0, myPos.Z)).Magnitude
                     if distToMe <= Config.ScrapSearchRadius then
-                        -- Filtro estricto: comprobar que esté sobre una pista (máximo 18 studs del eje central de la pista)
-                        local roadNode, distToRoadCenter = getClosestRoadNode(sPos)
-                        if roadNode and distToRoadCenter <= 18 then
+                        -- Confirmar que el cúmulo o auto chatarra está sobre el asfalto (edgeDist <= 6)
+                        local roadNode, edgeDist = getRoadInfoAtPosition(sPos)
+                        if roadNode and edgeDist <= 6 then
+                            -- Priorizar los que están hacia adelante de nuestra dirección actual para no hacer ida y vuelta
+                            local toTarget = Vector3.new(sPos.X - myPos.X, 0, sPos.Z - myPos.Z)
+                            local forwardDot = (toTarget.Magnitude > 0) and toTarget.Unit:Dot(RoadTransit.CurrentDirection) or 1
+                            local priorityScore = distToMe - (forwardDot * 35)
+
                             table.insert(validTargets, {
                                 Model = item,
                                 Part = part,
                                 Pos = sPos,
-                                RoadCenter = roadNode.Pos,
-                                Dist = distToMe
+                                RoadNode = roadNode,
+                                Dist = distToMe,
+                                Score = priorityScore
                             })
                         end
                     end
@@ -226,14 +278,14 @@ local function scanRoadScrapTargets()
     end
 
     table.sort(validTargets, function(a, b)
-        return a.Dist < b.Dist
+        return a.Score < b.Score
     end)
 
     RoadScrapList = validTargets
 end
 
 -- ==============================================================================
--- 4. BUCLE DE TELETRANSPORTE EN TELARAÑA (1 POR 1, SALTOS CORTOS, CERO LAG)
+-- 5. BUCLE DE TELETRANSPORTE EN TELARAÑA (1 POR 1, SALTOS CORTOS, CERO LAG)
 -- ==============================================================================
 
 local overlapParams = OverlapParams.new()
@@ -252,7 +304,6 @@ local function getNextSpiderwebPoint(itemPos)
             local pointDistToGen = (ptPos - genPos).Magnitude
 
             if Config.ChainTeleport then
-                -- El siguiente punto debe acercar el objeto al generador en un tramo corto (entre 6 y WebStepDistance + 35 studs)
                 if pointDistToGen < (currentDistToGen - 5) and stepDist > 5 and stepDist <= (Config.WebStepDistance + 40) then
                     if stepDist < shortestStep then
                         shortestStep = stepDist
@@ -268,7 +319,6 @@ local function getNextSpiderwebPoint(itemPos)
         end
     end
 
-    -- Si no hay nodo intermedio en ese radio, busca cualquier nodo que esté más cerca de la base
     if not bestPoint then
         for _, pt in ipairs(DeliveryPoints) do
             if pt and pt.Parent then
@@ -290,15 +340,14 @@ task.spawn(function()
     while true do
         task.wait(Config.TeleportInterval)
         if Config.AutoSendItems and #DeliveryPoints > 0 then
-            local char = lp.Character
-            local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+            local char, root = getCharacterParts()
             if root then
                 overlapParams.FilterDescendantsInstances = {char}
                 local partsNearby = workspace:GetPartBoundsInRadius(root.Position, Config.CollectRadius, overlapParams)
                 local processedOne = false
 
                 for _, hitPart in ipairs(partsNearby) do
-                    if processedOne then break end -- Estrictamente 1 por 1 para evitar lag y bugs físicos
+                    if processedOne then break end
 
                     if not hitPart.Anchored and not hitPart:FindFirstAncestorOfClass("Humanoid") then
                         local itemModel = hitPart:FindFirstAncestorOfClass("Model")
@@ -354,122 +403,165 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 5. MOTOR DE CONDUCCIÓN INTELIGENTE SOBRE PISTAS (SIN SALIRSE JAMÁS)
+-- 6. MOTOR CINÉTICO DE CONDUCCIÓN FLUIDA (ESTILO ZOMBIE HUB V16.0 - CERO VIBRACIÓN)
 -- ==============================================================================
 
-local function getCurrentCar()
-    local char = lp.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
-        local seat = hum.SeatPart
-        local car = seat:FindFirstAncestorOfClass("Model")
-        return car, seat
-    end
-    return nil, nil
-end
+-- Construye una cadena de nodos hacia adelante por la pista (igual que TransitState.Waypoints)
+local function buildForwardRoadChain(startPos, currentDir)
+    local chain = {}
+    local curPos = startPos
+    local curDir = currentDir
+    local used = {}
 
--- Elige el siguiente tramo de pista conectado para seguir avanzando sin repetir
-local function getNextExplorationRoadNode(myPos)
-    local bestNode = nil
-    local bestScore = math.huge
-    local now = tick()
+    for step = 1, 6 do
+        local bestNode = nil
+        local bestScore = math.huge
+        local now = tick()
 
-    for _, node in ipairs(RoadNodes) do
-        local dist = (Vector3.new(myPos.X, 0, myPos.Z) - Vector3.new(node.Pos.X, 0, node.Pos.Z)).Magnitude
-        -- Buscar el siguiente segmento de pista consecutivo (entre 25 y 140 studs)
-        if dist >= 22 and dist <= 150 then
-            local timeSinceVisit = now - node.LastVisited
-            -- Penalizar pistas recién visitadas para que recorra todo el mapa hasta 1200 studs
-            local score = dist - math.min(timeSinceVisit * 2, 120)
-            if score < bestScore then
-                bestScore = score
-                bestNode = node
+        for _, node in ipairs(RoadNodes) do
+            if not used[node] then
+                local diff = Vector3.new(node.Pos.X - curPos.X, 0, node.Pos.Z - curPos.Z)
+                local dist = diff.Magnitude
+
+                if dist >= 28 and dist <= 170 then
+                    local dirToNode = diff.Unit
+                    local dot = dirToNode:Dot(curDir) -- Preferir seguir recto hacia adelante (> 0.2)
+                    local unvisitedBonus = math.min((now - node.LastVisited) * 1.5, 90)
+
+                    -- Penalizar fuertemente dar media vuelta hacia atrás para que nunca vibre
+                    local backwardPenalty = (dot < -0.2) and 300 or ((dot < 0.2) and 80 or 0)
+                    local score = dist + backwardPenalty - (dot * 45) - unvisitedBonus
+
+                    if score < bestScore then
+                        bestScore = score
+                        bestNode = node
+                    end
+                end
             end
+        end
+
+        if bestNode then
+            used[bestNode] = true
+            table.insert(chain, bestNode)
+            local stepVec = Vector3.new(bestNode.Pos.X - curPos.X, 0, bestNode.Pos.Z - curPos.Z)
+            if stepVec.Magnitude > 0.1 then
+                curDir = stepVec.Unit
+            end
+            curPos = bestNode.Pos
+        else
+            break
         end
     end
 
-    if not bestNode then
-        bestNode = getClosestRoadNode(myPos)
-    end
-    return bestNode
+    return chain
 end
 
 RunService.Heartbeat:Connect(function()
     if not Config.AutoFarmRoads then return end
 
-    local car, seat = getCurrentCar()
-    local root = car and (car.PrimaryPart or seat)
-    if not root then return end
+    -- Exactamente igual que en V16.0: obtener root del jugador sentado en VehicleSeat
+    local _, root, hum = getCharacterParts()
+    if not root or not hum or hum.Health <= 0 then return end
+    if not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat") then return end
 
     local myPos = root.Position
-    local closestRoad, distToRoad = getClosestRoadNode(myPos)
+    local currentRoad, edgeDist = getRoadInfoAtPosition(myPos)
 
-    -- 1. PROTECCIÓN ANTI-SALIDA DE PISTA: Si el auto se sale de la calzada (> 18 studs), regresa inmediatamente a la pista más cercana
-    if closestRoad and distToRoad > 18 then
-        local recoverDiff = closestRoad.Pos - myPos
-        local recoverDir = Vector3.new(recoverDiff.X, 0, recoverDiff.Z).Unit
-        root.AssemblyLinearVelocity = Vector3.new(
-            recoverDir.X * Config.VehicleSpeed,
-            root.AssemblyLinearVelocity.Y,
-            recoverDir.Z * Config.VehicleSpeed
-        )
+    if currentRoad and edgeDist <= 8 then
+        currentRoad.LastVisited = tick()
+    end
+
+    -- 1. PROTECCIÓN ANTI-SALIDA DE PISTA: Solo actúa si realmente saliste del borde de asfalto (edgeDist > 12)
+    if currentRoad and edgeDist > 12 then
+        local toRoad = Vector3.new(currentRoad.Pos.X - myPos.X, 0, currentRoad.Pos.Z - myPos.Z)
+        if toRoad.Magnitude > 1.5 then
+            local mDir = toRoad.Unit
+            RoadTransit.CurrentDirection = mDir
+            root.AssemblyLinearVelocity = Vector3.new(mDir.X * Config.VehicleSpeed, root.AssemblyLinearVelocity.Y, mDir.Z * Config.VehicleSpeed)
+        end
         return
     end
 
-    if closestRoad and distToRoad <= 20 then
-        closestRoad.LastVisited = tick()
-    end
-
-    -- 2. BUSCAR CÚMULO DE CHATARRA O AUTO CHATARRA EN LA PISTA
+    -- 2. MODO IMPACTO DE CHATARRA EN PISTA (CON OVERSHOOT PARA ATRAVESAR SIN FRENAR)
     local activeScrap = nil
     for _, sc in ipairs(RoadScrapList) do
-        if sc.Model and sc.Model.Parent and sc.Model:GetAttribute("Dead") ~= true then
+        if sc.Model and sc.Model.Parent and sc.Model:GetAttribute("Dead") ~= true and not (IgnoredScrapUntil[sc.Model] and tick() < IgnoredScrapUntil[sc.Model]) then
             activeScrap = sc
             break
         end
     end
 
-    local targetDestination = nil
-
     if activeScrap then
         CurrentScrapTarget = activeScrap.Model
-        -- Limitar la posición del impacto dentro del margen seguro de la pista para no pisar tierra
-        local offsetFromRoadCenter = activeScrap.Pos - activeScrap.RoadCenter
-        local safeOffset = Vector3.new(
-            math.clamp(offsetFromRoadCenter.X, -Config.RoadMaxHalfWidth, Config.RoadMaxHalfWidth),
-            0,
-            math.clamp(offsetFromRoadCenter.Z, -Config.RoadMaxHalfWidth, Config.RoadMaxHalfWidth)
-        )
-        targetDestination = activeScrap.RoadCenter + safeOffset
+        local scrapPos = activeScrap.Pos
+        local rNode = activeScrap.RoadNode
+
+        -- Limitar desplazamiento lateral respecto al eje de la pista para no pisar fuera
+        local roadAxisX = rNode.Size.X >= rNode.Size.Z
+        local safeTargetPos = scrapPos
+        if roadAxisX then
+            local clampedZ = math.clamp(scrapPos.Z - rNode.Pos.Z, -Config.RoadMaxHalfWidth, Config.RoadMaxHalfWidth)
+            safeTargetPos = Vector3.new(scrapPos.X, scrapPos.Y, rNode.Pos.Z + clampedZ)
+        else
+            local clampedX = math.clamp(scrapPos.X - rNode.Pos.X, -Config.RoadMaxHalfWidth, Config.RoadMaxHalfWidth)
+            safeTargetPos = Vector3.new(rNode.Pos.X + clampedX, scrapPos.Y, scrapPos.Z)
+        end
+
+        local diffToScrap = Vector3.new(safeTargetPos.X - myPos.X, 0, safeTargetPos.Z - myPos.Z)
+        local distToScrap = diffToScrap.Magnitude
+
+        -- Si ya estamos encima/atravesándolo (<= 6.5 studs), marcarlo como embestido por 3s y pasar al siguiente sin frenar
+        if distToScrap <= 6.5 then
+            IgnoredScrapUntil[activeScrap.Model] = tick() + 3.0
+        else
+            local driveDir = diffToScrap.Unit
+            RoadTransit.CurrentDirection = driveDir
+
+            -- Apuntar con Overshoot (18 studs más allá del cúmulo) igual que Depredador en V16.0
+            local overshootDest = safeTargetPos + (driveDir * Config.CrushOvershoot)
+            local hDir = Vector3.new(overshootDest.X - myPos.X, 0, overshootDest.Z - myPos.Z)
+
+            if hDir.Magnitude > 1.2 then
+                local vel = hDir.Unit * Config.VehicleSpeed
+                root.AssemblyLinearVelocity = Vector3.new(vel.X, root.AssemblyLinearVelocity.Y, vel.Z)
+            end
+            return
+        end
     else
         CurrentScrapTarget = nil
-        -- Si no hay chatarra en este tramo, avanza por la pista hacia el siguiente segmento
-        if not CurrentRoadTarget or (Vector3.new(myPos.X, 0, myPos.Z) - Vector3.new(CurrentRoadTarget.Pos.X, 0, CurrentRoadTarget.Pos.Z)).Magnitude < 22 then
-            CurrentRoadTarget = getNextExplorationRoadNode(myPos)
-        end
-        if CurrentRoadTarget then
-            targetDestination = CurrentRoadTarget.Pos
-        end
     end
 
-    -- 3. APLICAR MOVIMIENTO SUAVE SOBRE EL ASFALTO
-    if targetDestination then
-        local diff = targetDestination - myPos
+    -- 3. NAVEGACIÓN CONTINUA POR WAYPOINTS DE PISTA (IDÉNTICO A TRANSITSTATE DE V16.0)
+    local wpNode = RoadTransit.Waypoints[RoadTransit.Index]
+    if not wpNode then
+        RoadTransit.Waypoints = buildForwardRoadChain(myPos, RoadTransit.CurrentDirection)
+        RoadTransit.Index = 1
+        wpNode = RoadTransit.Waypoints[1]
+    end
+
+    if wpNode then
+        local diff = wpNode.Pos - myPos
         local horiz = Vector3.new(diff.X, 0, diff.Z)
-        if horiz.Magnitude > 2.0 then
-            local dir = horiz.Unit
-            root.AssemblyLinearVelocity = Vector3.new(
-                dir.X * Config.VehicleSpeed,
-                root.AssemblyLinearVelocity.Y,
-                dir.Z * Config.VehicleSpeed
-            )
+
+        -- Igual que en tu V16.0: al estar a <= 22.0 studs salta al siguiente waypoint sin detenerse
+        if horiz.Magnitude <= 22.0 then
+            wpNode.LastVisited = tick()
+            RoadTransit.Index = RoadTransit.Index + 1
+            if RoadTransit.Index > #RoadTransit.Waypoints then
+                RoadTransit.Waypoints = buildForwardRoadChain(myPos, RoadTransit.CurrentDirection)
+                RoadTransit.Index = 1
+            end
+        else
+            local mDir = horiz.Unit
+            RoadTransit.CurrentDirection = mDir
+            root.AssemblyLinearVelocity = Vector3.new(mDir.X * Config.VehicleSpeed, root.AssemblyLinearVelocity.Y, mDir.Z * Config.VehicleSpeed)
         end
     end
 end)
 
 task.spawn(function()
     while true do
-        task.wait(0.6)
+        task.wait(0.4)
         if Config.AutoFarmRoads then
             scanRoadScrapTargets()
         end
@@ -477,12 +569,12 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 6. INTERFAZ FLUENT + WIDGETS FLOTANTES
+-- 7. INTERFAZ FLUENT + WIDGETS FLOTANTES
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "SCRAP HIGHWAY & WEB RELAY V2.0",
-    SubTitle = "Auto-Pistas (1200m) + Telaraña 1x1",
+    Title = "SCRAP HIGHWAY & WEB RELAY V2.5",
+    SubTitle = "Manejo V16.0 Fluido + Telaraña 1x1",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 480),
     Acrylic = false,
@@ -496,14 +588,19 @@ local Tabs = {
 }
 
 -- PESTAÑA 1: AUTO-PISTAS
-Tabs.RoadFarm:AddSection("Atropello de Chatarra en Pistas (1200 Studs)")
+Tabs.RoadFarm:AddSection("Atropello Fluido en Pistas (1200 Studs)")
 
 local AutoFarmToggle = Tabs.RoadFarm:AddToggle("AutoFarmToggle", {
     Title = "🚜 Activar Auto-Atropello en Pistas",
     Default = false,
     Callback = function(v)
         Config.AutoFarmRoads = v
-        if v then scanRoadScrapTargets() end
+        if v then
+            RoadTransit.Waypoints = {}
+            scanRoadScrapTargets()
+        else
+            applyBrake(0.8)
+        end
     end
 })
 
@@ -513,12 +610,22 @@ local StatusParagraph = Tabs.RoadFarm:AddParagraph({
 })
 
 Tabs.RoadFarm:AddSlider("CarSpeedSlider", {
-    Title = "Velocidad del Auto en Pista",
-    Default = 125,
+    Title = "Velocidad de Embestida en Pista",
+    Default = 135,
     Min = 60,
-    Max = 190,
+    Max = 200,
     Rounding = 0,
     Callback = function(v) Config.VehicleSpeed = v end
+})
+
+Tabs.RoadFarm:AddSlider("OvershootSlider", {
+    Title = "Rebase de Impacto (Overshoot Studs)",
+    Description = "Atraviesa el cúmulo de largo sin frenar ni vibrar",
+    Default = 18,
+    Min = 8,
+    Max = 35,
+    Rounding = 0,
+    Callback = function(v) Config.CrushOvershoot = v end
 })
 
 Tabs.RoadFarm:AddSlider("RoadWidthSlider", {
@@ -531,14 +638,13 @@ Tabs.RoadFarm:AddSlider("RoadWidthSlider", {
     Callback = function(v) Config.RoadMaxHalfWidth = v end
 })
 
--- PESTAÑA 2: TELETRANSPORTE EN TELARAÑA (BASADO EN TU LÓGICA DE BOLITAS)
+-- PESTAÑA 2: TELETRANSPORTE EN TELARAÑA
 Tabs.Items:AddSection("Red de Puntos de Entrega (Telaraña Automática + Manual)")
 
 Tabs.Items:AddButton({
     Title = "+ Agregar Bolita Manual Aquí",
     Callback = function()
-        local char = lp.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local _, root = getCharacterParts()
         if not root then return end
         createWebMarker(root.Position - Vector3.new(0, 1.5, 0), true)
         Fluent:Notify({ Title = "Punto Agregado", Content = "Nodos totales en la red: " .. #DeliveryPoints, Duration = 2 })
@@ -627,7 +733,7 @@ Tabs.Items:AddSlider("BaseRadiusSlider", {
 })
 
 -- ==============================================================================
--- 7. WIDGETS FLOTANTES (MENÚ + BOTÓN ON/OFF RÁPIDO)
+-- 8. WIDGETS FLOTANTES (MENÚ + BOTÓN ON/OFF RÁPIDO)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
@@ -682,6 +788,7 @@ DriveBtn.MouseButton1Click:Connect(function()
     else
         DriveBtn.BackgroundColor3 = Color3.fromRGB(160, 30, 40)
         DriveBtn.Text = "🚜\nOFF"
+        applyBrake(0.8)
     end
 end)
 
@@ -689,7 +796,7 @@ end)
 task.spawn(function()
     while true do
         task.wait(0.6)
-        local targetText = CurrentScrapTarget and CurrentScrapTarget.Name or "Recorriendo red vial"
+        local targetText = CurrentScrapTarget and ("Embestida -> " .. CurrentScrapTarget.Name) or "Recorriendo red vial"
         StatusParagraph:SetDesc(string.format(
             "Pistas registradas (hasta 1200m): %d\nNodos de Telaraña activos: %d\nCúmulos en pista detectados: %d\nAcción actual: %s",
             #RoadNodes,
