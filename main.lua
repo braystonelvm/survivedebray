@@ -10,16 +10,16 @@ local RunService = game:GetService("RunService")
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local lp = Players.LocalPlayer
 
--- COORDENADAS DE LA PARTIDA ( ACTUALIZADAS )
-local DEFAULT_DOOR = Vector3.new(419.4, 5.6, 1125.8)
-local DEFAULT_CENTER = Vector3.new(412.8, 5.2, 1063.4)
+-- COORDENADAS DE LA PARTIDA
+local DEFAULT_DOOR = Vector3.new(957.7, 3.5, -713.3)
+local DEFAULT_CENTER = Vector3.new(949.5, 2.9, -644.9)
 
--- GASOLINERAS REGISTRADAS ( ACTUALIZADAS )
+-- GASOLINERAS REGISTRADAS
 local GAS_STATIONS = {
-    Vector3.new(363.9, 2.1, 259.0),
-    Vector3.new(784.8, 2.3, 618.7),
-    Vector3.new(427.3, 1.5, 1339.5),
-    Vector3.new(417.7, 1.6, 1363.7)
+    Vector3.new(1135.5, 1.7, -198.1),
+    Vector3.new(1143.5, 1.6, -224.3),
+    Vector3.new(341.0, 2.3, -56.4),
+    Vector3.new(116.6, 2.3, -259.1)
 }
 
 local State = {
