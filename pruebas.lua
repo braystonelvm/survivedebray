@@ -17,7 +17,7 @@ end)
 
 local Config = {
     WatchdogEnabled = true,
-    StuckTimeout = 1.5,       -- Segundos detenido antes de considerarse atascado
+    StuckTimeout = 3.5,       -- Segundos detenido antes de considerarse atascado
     MinMoveDistance = 2.0,    -- Mínimo de studs que debe avanzar en ese tiempo
     MaxWheelDisplacement = 12 -- Si una llanta está a más de 12 studs del chasis, se considera salida
 }
