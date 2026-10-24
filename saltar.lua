@@ -515,7 +515,7 @@ local function startDynamicSectorTransition(newSector)
 end
 
 -- ==============================================================================
--- 4. RADAR HÍBRIDO (COORDENADAS CALIBRADAS DEL JUEGO)
+-- 4. RADAR HÍBRIDO (CORRECCIÓN DIRECCIONAL)
 -- ==============================================================================
 
 local function parseSectorFromAttribute(val)
@@ -531,13 +531,11 @@ local function parseSectorFromAttribute(val)
 
     if not vec then return "DESCONOCIDO" end
 
-    -- Calibración exacta validada:
-    -- X(+) = OESTE, X(-) = ESTE
-    -- Z(+) = NORTE, Z(-) = SUR
+    -- Inversión directa para corregir la trayectoria del vehículo:
     if math.abs(vec.Z) > math.abs(vec.X) then
-        return (vec.Z > 0) and "NORTE" or "SUR"
+        return (vec.Z > 0) and "SUR" or "NORTE"
     else
-        return (vec.X > 0) and "OESTE" or "ESTE"
+        return (vec.X > 0) and "ESTE" or "OESTE"
     end
 end
 
