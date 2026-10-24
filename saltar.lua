@@ -515,7 +515,7 @@ local function startDynamicSectorTransition(newSector)
 end
 
 -- ==============================================================================
--- 4. RADAR HÍBRIDO (INCOMINGPOSITION + ZOMBIES VIVOS)
+-- 4. RADAR HÍBRIDO (COORDENADAS CALIBRADAS DEL JUEGO)
 -- ==============================================================================
 
 local function parseSectorFromAttribute(val)
@@ -530,10 +530,14 @@ local function parseSectorFromAttribute(val)
     end
 
     if not vec then return "DESCONOCIDO" end
+
+    -- Calibración exacta validada:
+    -- X(+) = OESTE, X(-) = ESTE
+    -- Z(+) = NORTE, Z(-) = SUR
     if math.abs(vec.Z) > math.abs(vec.X) then
-        return (vec.Z > 0) and "SUR" or "NORTE"
+        return (vec.Z > 0) and "NORTE" or "SUR"
     else
-        return (vec.X > 0) and "ESTE" or "OESTE"
+        return (vec.X > 0) and "OESTE" or "ESTE"
     end
 end
 
@@ -542,10 +546,9 @@ workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(function()
     if rawVal then
         local sec = parseSectorFromAttribute(rawVal)
         if sec ~= "DESCONOCIDO" and sec ~= CurrentActiveSector then
+            CurrentActiveSector = sec
             if Config.AutoRouteToWave and Config.ZigZagEnabled then
                 startDynamicSectorTransition(sec)
-            else
-                CurrentActiveSector = sec
             end
         end
     end
@@ -566,47 +569,6 @@ local function isValidZombie(entity)
     local root = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
     return root ~= nil, root
 end
-
-task.spawn(function()
-    while true do
-        task.wait(2.5)
-        local counts = { NORTE = 0, SUR = 0, ESTE = 0, OESTE = 0 }
-        local totalZombies = 0
-        local charFolder = workspace:FindFirstChild("Characters") or workspace
-
-        for _, entity in ipairs(charFolder:GetChildren()) do
-            local valid, eRoot = isValidZombie(entity)
-            if valid then
-                local p = eRoot.Position - BaseCenter
-                if p.Magnitude <= 900 then
-                    totalZombies = totalZombies + 1
-                    if math.abs(p.Z) > math.abs(p.X) then
-                        if p.Z > 0 then counts.SUR = counts.SUR + 1 else counts.NORTE = counts.NORTE + 1 end
-                    else
-                        if p.X > 0 then counts.ESTE = counts.ESTE + 1 else counts.OESTE = counts.OESTE + 1 end
-                    end
-                end
-            end
-        end
-
-        local topSector = CurrentActiveSector
-        local maxCount = 0
-        for s, c in pairs(counts) do
-            if c > maxCount then
-                maxCount = c
-                topSector = s
-            end
-        end
-
-        if maxCount >= 12 and topSector ~= CurrentActiveSector then
-            if Config.AutoRouteToWave and Config.ZigZagEnabled then
-                startDynamicSectorTransition(topSector)
-            else
-                CurrentActiveSector = topSector
-            end
-        end
-    end
-end)
 
 -- ==============================================================================
 -- 5. DENSIDAD LATERAL DEPREDADOR
@@ -875,7 +837,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 8. INTERFAZ FLUENT (PESTAÑAS COMBATE, DEFENSA, RESCATE, RADAR Y AUTO-EAT)
+-- 8. INTERFAZ FLUENT
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
@@ -1158,36 +1120,6 @@ end
 AutoPilotBtn.MouseButton1Click:Connect(toggleAutoPilot)
 Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (ON / OFF)", Callback = toggleAutoPilot })
 
--- Widget Auto-Eat (Por defecto activo)
-local AutoEatWidgetBtn = Instance.new("TextButton")
-AutoEatWidgetBtn.Size = UDim2.new(0, 48, 0, 48)
-AutoEatWidgetBtn.Position = UDim2.new(0.04, 0, 0.56, 0)
-AutoEatWidgetBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 60)
-AutoEatWidgetBtn.Text = "🥕\nON"
-AutoEatWidgetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-AutoEatWidgetBtn.TextSize = 11
-AutoEatWidgetBtn.Font = Enum.Font.GothamBold
-AutoEatWidgetBtn.Active = true
-AutoEatWidgetBtn.Draggable = true
-AutoEatWidgetBtn.Parent = ScreenGui
-
-local EatCorner = Instance.new("UICorner")
-EatCorner.CornerRadius = UDim.new(1, 0)
-EatCorner.Parent = AutoEatWidgetBtn
-
-AutoEatWidgetBtn.MouseButton1Click:Connect(function()
-    Config.AutoEatEnabled = not Config.AutoEatEnabled
-    if Config.AutoEatEnabled then
-        AutoEatWidgetBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 60)
-        AutoEatWidgetBtn.Text = "🥕\nON"
-        Fluent:Notify({ Title = "🥕 AUTO-EAT", Content = "Consumo automático activado.", Duration = 2 })
-    else
-        AutoEatWidgetBtn.BackgroundColor3 = Color3.fromRGB(160, 35, 40)
-        AutoEatWidgetBtn.Text = "🥕\nOFF"
-        Fluent:Notify({ Title = "🥕 AUTO-EAT", Content = "Consumo automático pausado.", Duration = 2 })
-    end
-end)
-
 -- Teclado
 local function getCompleteObject(target)
     if not target then return nil end
@@ -1254,7 +1186,7 @@ task.spawn(function()
         ))
 
         HordeStatusParagraph:SetDesc(string.format(
-            "Frente Dominante: %s\nIncomingPosition: %s\nZombies Restantes: %d",
+            "Frente Activo (Ataque): %s\nIncomingPosition Raw: %s\nZombies Restantes: %d",
             CurrentActiveSector,
             tostring(workspace:GetAttribute("IncomingPosition") or "N/A"),
             workspace:GetAttribute("RemainingMobs") or 0
@@ -1400,7 +1332,7 @@ end)
 
 Fluent:Notify({
     Title = "ZOMBIE HUB MASTER V16.0",
-    Content = "Auto-Eat (Zanahorias Doradas) activo por defecto y vinculado al menú.",
+    Content = "Radar calibrado según tu reporte. Auto-Eat siempre activo.",
     Duration = 4
 })
 
