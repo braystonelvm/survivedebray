@@ -161,45 +161,47 @@ end
 -- 2. ESCÁNER DE COFRES EN TODO EL MAPA (LIVIANO, SIN LAG)
 -- ==============================================================================
 
-local function isChestModel(obj)
-    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
-    if obj == lp.Character or obj:IsDescendantOf(lp.Character) then return false end
-
-    local n = obj.Name:lower()
-    if n:find("chest") or n:find("cofr") or n:find("caja fuerte") or n:find("safe") or n:find("crate") or n:find("loot") then
-        if not n:find("dropped") and not n:find("debris") and not n:find("prompt") then
-            return true
-        end
-    end
-
-    -- Si tiene un ProximityPrompt que diga "abrir" o "open" o "search"
-    local prompt = obj:FindFirstChildOfClass("ProximityPrompt") or obj:FindFirstChildWhichIsA("ProximityPrompt", true)
-    if prompt then
-        local pText = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
-        if pText:find("open") or pText:find("abrir") or pText:find("chest") or pText:find("cofr") or pText:find("loot") or pText:find("search") then
-            return true
-        end
-    end
-
-    return false
-end
-
 local function scanMapChests()
     local root = getRootPart()
     local myPos = root and root.Position or BaseCenter
     local found = {}
     local seen = {}
 
-    local folders = {
+    local mapFolder = workspace:FindFirstChild("Map")
+    local cratesFolder = mapFolder and mapFolder:FindFirstChild("Crates")
+
+    -- 1. Si existe la carpeta directa de Crates, la escaneamos primero
+    if cratesFolder then
+        for _, desc in ipairs(cratesFolder:GetChildren()) do
+            if isChestModel(desc) and not seen[desc] then
+                seen[desc] = true
+                local part = desc:IsA("BasePart") and desc or (desc.PrimaryPart or desc:FindFirstChildWhichIsA("BasePart"))
+                if part then
+                    local cPos = part.Position
+                    local dist = (cPos - myPos).Magnitude
+                    if dist <= State.ScanRadius then
+                        table.insert(found, {
+                            Instance = desc,
+                            Part = part,
+                            Pos = cPos,
+                            Name = desc.Name,
+                            Dist = dist
+                        })
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2. Respaldo por si hay cajas sueltas en Structures u otras zonas de Map
+    local fallbackFolders = {
         workspace:FindFirstChild("Structures"),
-        workspace:FindFirstChild("Map"),
-        workspace:FindFirstChild("Tiles"),
-        workspace
+        mapFolder
     }
 
-    for _, container in ipairs(folders) do
+    for _, container in ipairs(fallbackFolders) do
         if container then
-            for _, desc in ipairs(container:GetChildren()) do
+            for _, desc in ipairs(container:GetDescendants()) do
                 if isChestModel(desc) and not seen[desc] then
                     seen[desc] = true
                     local part = desc:IsA("BasePart") and desc or (desc.PrimaryPart or desc:FindFirstChildWhichIsA("BasePart"))
