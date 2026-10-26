@@ -1,5 +1,5 @@
 -- ==============================================================================
--- CHEST ROAMER 3D (FLY + NOCLIP TOTAL EN TODO EL MAPA - CERO LAG)
+-- CHEST ROAMER 3D V2: EXPEDICIÓN ACTIVA + CARGA DINÁMICA DE STREAMING
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -17,20 +17,20 @@ local State = {
     Paused = false,
     NoclipEnabled = false,
     CurrentStatus = "Inactivo",
-    FlySpeed = 160,              -- Velocidad alta por defecto (configurable hasta 260)
-    ChestWaitTime = 1.0,         -- Exactamente 1 segundo por cofre
-    ScanRadius = 2500,           -- Todo el mapa
-    LoopAllChests = true,        -- Al terminar todos, vuelve a empezar la ruta
-    AutoSortRoute = true,        -- Ordena los cofres por cercanía para no volar en zigzag
-    CurrentChestIndex = 0,
-    TotalChestsFound = 0
+    FlySpeed = 160,              -- Velocidad de vuelo (configurable de 60 a 260)
+    ChestWaitTime = 1.0,         -- Tiempo en cada cofre (1 segundo)
+    MapBoundaryRadius = 1250,    -- Distancia máxima de patrulla hacia los bordes
+    NearbyRadarRadius = 350,     -- Radio para desviar la ruta hacia cofres recién cargados
+    LoopAll = true,              -- Repetir el recorrido de exploración infinitamente
+    TotalLooted = 0,
+    PatrolStep = 1
 }
 
-local DetectedChests = {}
-local VisitedChestsThisRound = {}
+local KnownChests = {}           -- Lista de cofres cargados en memoria
+local VisitedChests = {}         -- Cofres ya visitados en la ronda actual
 
 -- ==============================================================================
--- 1. FÍSICAS DE VUELO 3D Y NOCLIP (IDÉNTICO A TU SCRIPT BASE)
+-- 1. FÍSICAS DE VUELO 3D Y NOCLIP
 -- ==============================================================================
 
 local function getRootPart()
@@ -58,7 +58,6 @@ local function restoreCollisions()
     end
 end
 
--- NOCLIP ACTIVO SOLO TRAS 3 SEGUNDOS DE FLY
 RunService.Stepped:Connect(function()
     if State.Running and not State.Paused and State.NoclipEnabled then
         local char = lp.Character
@@ -105,14 +104,13 @@ local function secureFlightStart()
     return true
 end
 
--- VUELO 3D REAL (SUBE Y BAJA LIBREMENTE A CUALQUIER ALTURA Y)
+-- Vuelo 3D libre hacia cualquier coordenada X, Y, Z
 local function flyMoveTo3D(targetPos, speed, stopDistance)
     stopDistance = stopDistance or 3.2
     local root = getRootPart()
     if not root then return false end
 
-    -- Posicionarse 2.5 studs sobre el cofre para tener visión directa
-    local finalDest = targetPos + Vector3.new(0, 2.5, 0)
+    local finalDest = targetPos + Vector3.new(0, 2.2, 0)
     local bodyPos = getOrCreatePhysics(root, root.Position)
     local timeout = tick() + 25
     local lastPos = root.Position
@@ -136,7 +134,6 @@ local function flyMoveTo3D(targetPos, speed, stopDistance)
             return true
         end
 
-        -- Detección por si algo traba el movimiento en el aire
         if (root.Position - lastPos).Magnitude < 0.25 then
             stuckCounter = stuckCounter + 1
             if stuckCounter >= 25 then
@@ -158,83 +155,119 @@ local function flyMoveTo3D(targetPos, speed, stopDistance)
 end
 
 -- ==============================================================================
--- 2. ESCÁNER DE COFRES EN TODO EL MAPA (LIVIANO, SIN LAG)
+-- 2. DISCRIMINADOR Y ESCÁNER EN VIVO (CARGA POR PROXIMIDAD)
 -- ==============================================================================
 
-local function scanMapChests()
+local function isChestModel(obj)
+    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
+    if obj == lp.Character or obj:IsDescendantOf(lp.Character) then return false end
+
+    -- 1. Atributo oficial del servidor
+    if obj:GetAttribute("Crate") == true then return true end
+
+    -- 2. Si está dentro de la carpeta Crates
+    if obj.Parent and obj.Parent.Name == "Crates" then return true end
+
+    -- 3. Por ProximityPrompt de apertura
+    local prompt = obj:FindFirstChildOfClass("ProximityPrompt") or obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if prompt then
+        local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
+        if text:find("open") or text:find("abrir") or text:find("crate") or text:find("chest") then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function registerChest(item)
+    if not item or not item.Parent then return end
+    if isChestModel(item) and not KnownChests[item] then
+        local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
+        if part then
+            KnownChests[item] = {
+                Instance = item,
+                Part = part,
+                Name = item.Name
+            }
+        end
+    end
+end
+
+-- Detección reactiva instantánea cuando el mapa hace Streaming de un cofre
+task.spawn(function()
+    local mapFolder = workspace:FindFirstChild("Map")
+    local cratesFolder = mapFolder and mapFolder:FindFirstChild("Crates")
+
+    if cratesFolder then
+        cratesFolder.ChildAdded:Connect(registerChest)
+        for _, c in ipairs(cratesFolder:GetChildren()) do registerChest(c) end
+    end
+
+    workspace.DescendantAdded:Connect(function(desc)
+        if desc.Parent and desc.Parent.Name == "Crates" then
+            registerChest(desc)
+        elseif isChestModel(desc) then
+            registerChest(desc)
+        end
+    end)
+end)
+
+-- Escaneo de proximidad constante (alrededor de 350 studs)
+local function scanLoadedChestsAroundPlayer()
     local root = getRootPart()
-    local myPos = root and root.Position or BaseCenter
-    local found = {}
-    local seen = {}
+    if not root then return end
+    local myPos = root.Position
 
     local mapFolder = workspace:FindFirstChild("Map")
     local cratesFolder = mapFolder and mapFolder:FindFirstChild("Crates")
 
-    -- 1. Si existe la carpeta directa de Crates, la escaneamos primero
     if cratesFolder then
-        for _, desc in ipairs(cratesFolder:GetChildren()) do
-            if isChestModel(desc) and not seen[desc] then
-                seen[desc] = true
-                local part = desc:IsA("BasePart") and desc or (desc.PrimaryPart or desc:FindFirstChildWhichIsA("BasePart"))
-                if part then
-                    local cPos = part.Position
-                    local dist = (cPos - myPos).Magnitude
-                    if dist <= State.ScanRadius then
-                        table.insert(found, {
-                            Instance = desc,
-                            Part = part,
-                            Pos = cPos,
-                            Name = desc.Name,
-                            Dist = dist
-                        })
-                    end
-                end
-            end
-        end
+        for _, c in ipairs(cratesFolder:GetChildren()) do registerChest(c) end
     end
 
-    -- 2. Respaldo por si hay cajas sueltas en Structures u otras zonas de Map
-    local fallbackFolders = {
-        workspace:FindFirstChild("Structures"),
-        mapFolder
-    }
-
-    for _, container in ipairs(fallbackFolders) do
+    for _, container in ipairs({workspace:FindFirstChild("Structures"), mapFolder}) do
         if container then
-            for _, desc in ipairs(container:GetDescendants()) do
-                if isChestModel(desc) and not seen[desc] then
-                    seen[desc] = true
-                    local part = desc:IsA("BasePart") and desc or (desc.PrimaryPart or desc:FindFirstChildWhichIsA("BasePart"))
-                    if part then
-                        local cPos = part.Position
-                        local dist = (cPos - myPos).Magnitude
-                        if dist <= State.ScanRadius then
-                            table.insert(found, {
-                                Instance = desc,
-                                Part = part,
-                                Pos = cPos,
-                                Name = desc.Name,
-                                Dist = dist
-                            })
-                        end
-                    end
-                end
+            for _, desc in ipairs(container:GetChildren()) do
+                if isChestModel(desc) then registerChest(desc) end
             end
         end
     end
-
-    DetectedChests = found
-    State.TotalChestsFound = #found
-    return found
 end
 
 -- ==============================================================================
--- 3. INTERFAZ FLUENT
+-- 3. GENERADOR DE RUTA DE PATRULLA POR EL MAPA (STREAMING TRIGGER)
+-- ==============================================================================
+
+local function buildExplorationWaypoints(maxRadius)
+    local gen = workspace:FindFirstChild("Generator") or workspace:FindFirstChild("Center")
+    local center = (gen and gen:IsA("BasePart") and gen.Position) or BaseCenter
+    local waypoints = {}
+    local rOuter = maxRadius
+    local rMid = maxRadius * 0.55
+
+    -- Anillo exterior para cargar los bordes del mapa
+    for angle = 0, 315, 45 do
+        local rad = math.rad(angle)
+        table.insert(waypoints, Vector3.new(center.X + math.cos(rad) * rOuter, 18, center.Z + math.sin(rad) * rOuter))
+    end
+
+    -- Anillo intermedio
+    for angle = 22.5, 337.5, 45 do
+        local rad = math.rad(angle)
+        table.insert(waypoints, Vector3.new(center.X + math.cos(rad) * rMid, 18, center.Z + math.sin(rad) * rMid))
+    end
+
+    return waypoints
+end
+
+-- ==============================================================================
+-- 4. INTERFAZ FLUENT
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "CHEST ROAMER 3D | V1.0",
-    SubTitle = "Fly + Noclip Libre en Todo el Mapa",
+    Title = "CHEST ROAMER 3D | V2.0",
+    SubTitle = "Expedición Activa + Streaming Radar",
     TabWidth = 160,
     Size = UDim2.fromOffset(560, 480),
     Acrylic = true,
@@ -250,7 +283,7 @@ local Tabs = {
 
 local StatusParagraph = Tabs.Main:AddParagraph({
     Title = "Estado del Roamer",
-    Content = "Inactivo. Presiona PLAY para iniciar el recorrido de cofres."
+    Content = "Inactivo. Presiona PLAY para iniciar el patrullaje exploratorio."
 })
 
 local function updateStatus(text)
@@ -262,14 +295,15 @@ end
 Tabs.Main:AddSection("Operación de Vuelo")
 
 Tabs.Main:AddButton({
-    Title = "▶ PLAY / INICIAR RECORRIDO DE COFRES",
+    Title = "▶ PLAY / INICIAR EXPEDICIÓN DE COFRES",
     Callback = function()
         if State.Running then return end
 
         State.Running = true
         State.Paused = false
         State.NoclipEnabled = false
-        table.clear(VisitedChestsThisRound)
+        State.PatrolStep = 1
+        table.clear(VisitedChests)
 
         updateStatus("Iniciando Fly seguro...")
         secureFlightStart()
@@ -283,7 +317,7 @@ Tabs.Main:AddButton({
 
             if State.Running then
                 State.NoclipEnabled = true
-                updateStatus("Noclip activado. Escaneando cofres en todo el mapa...")
+                updateStatus("Noclip activo. Iniciando vuelo hacia los bordes del mapa para cargar cofres...")
             end
         end)
     end
@@ -301,35 +335,29 @@ Tabs.Main:AddButton({
 
 Tabs.Main:AddButton({
     Title = "⏹ STOP (CANCELAR Y RESTAURAR COLISIONES)",
-    Description = "Apaga el vuelo, devuelve colisiones y físicas normales",
     Callback = function()
         State.Running = false
         State.Paused = false
         State.NoclipEnabled = false
         removePhysicsHelpers()
         restoreCollisions()
-        updateStatus("Detenido. Físicas y colisiones normales restauradas.")
+        updateStatus("Detenido. Físicas y colisiones restauradas.")
     end
 })
 
 Tabs.Main:AddButton({
-    Title = "🔄 FORZAR RE-ESCANEO DE COFRES AHORA",
+    Title = "🔄 REINICIAR LISTA DE COFRES VISITADOS",
     Callback = function()
-        local list = scanMapChests()
-        Fluent:Notify({
-            Title = "Escaneo Completo",
-            Content = string.format("Se detectaron %d cofres en un radio de %d studs.", #list, State.ScanRadius),
-            Duration = 2.5
-        })
+        table.clear(VisitedChests)
+        Fluent:Notify({ Title = "Lista Reiniciada", Content = "Todos los cofres del mapa podrán ser visitados nuevamente.", Duration = 2.5 })
     end
 })
 
 -- PESTAÑA 2: AJUSTES
-Tabs.Settings:AddSection("Velocidad y Tiempos de Detención")
+Tabs.Settings:AddSection("Velocidad y Rango de Patrullaje")
 
 Tabs.Settings:AddSlider("FlySpeedSlider", {
     Title = "Velocidad de Vuelo (Studs/seg)",
-    Description = "Aumenta para desplazarte mucho más rápido por el mapa",
     Default = 160,
     Min = 60,
     Max = 260,
@@ -339,7 +367,6 @@ Tabs.Settings:AddSlider("FlySpeedSlider", {
 
 Tabs.Settings:AddSlider("ChestWaitSlider", {
     Title = "Tiempo de Detención en Cada Cofre (Segundos)",
-    Description = "Por defecto 1 segundo exacto",
     Default = 1.0,
     Min = 0.2,
     Max = 5.0,
@@ -347,23 +374,34 @@ Tabs.Settings:AddSlider("ChestWaitSlider", {
     Callback = function(v) State.ChestWaitTime = v end
 })
 
-Tabs.Settings:AddSlider("ScanRadiusSlider", {
-    Title = "Radio de Escaneo en el Mapa (Studs)",
-    Default = 2500,
-    Min = 500,
-    Max = 4000,
+Tabs.Settings:AddSlider("MapBoundarySlider", {
+    Title = "Distancia de Patrullaje hacia los Bordes (Studs)",
+    Description = "Hasta dónde vuela para obligar al juego a cargar cofres lejanos",
+    Default = 1250,
+    Min = 600,
+    Max = 1600,
     Rounding = 0,
-    Callback = function(v) State.ScanRadius = v end
+    Callback = function(v) State.MapBoundaryRadius = v end
 })
 
-Tabs.Settings:AddToggle("LoopChestsToggle", {
-    Title = "Repetir Recorrido en Bucle Infinito",
+Tabs.Settings:AddSlider("NearbyRadarSlider", {
+    Title = "Radio de Desvío hacia Cofres Cargados (Studs)",
+    Description = "Distancia a la redonda para detener la patrulla y saquear",
+    Default = 350,
+    Min = 150,
+    Max = 600,
+    Rounding = 0,
+    Callback = function(v) State.NearbyRadarRadius = v end
+})
+
+Tabs.Settings:AddToggle("LoopAllToggle", {
+    Title = "Repetir Patrulla en Bucle Infinito",
     Default = true,
-    Callback = function(v) State.LoopAllChests = v end
+    Callback = function(v) State.LoopAll = v end
 })
 
 -- PESTAÑA 3: COORDS
-Tabs.Coords:AddSection("Telemetría en Vivo")
+Tabs.Coords:AddSection("Posición en Vivo")
 
 local LiveCoordsParagraph = Tabs.Coords:AddParagraph({
     Title = "Posición Actual",
@@ -395,7 +433,7 @@ Tabs.Coords:AddButton({
 })
 
 -- ==============================================================================
--- 4. BOTÓN FLOTANTE CIRCULAR (DELTA / MÓVIL)
+-- 5. BOTÓN FLOTANTE CIRCULAR (DELTA / MÓVIL)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
@@ -424,19 +462,30 @@ FloatBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 5. BUCLE PRINCIPAL: REBUSQUEDA SECUENCIAL DE COFRES
+-- 6. BUCLE PRINCIPAL: EXPEDICIÓN ACTIVA + SAQUEO OPORTUNISTA
 -- ==============================================================================
 
-local function getNextNearestChest(currentPos)
+local function getNearestUnvisitedChestNearby(currentPos, maxDist)
     local best = nil
-    local shortest = math.huge
+    local shortest = maxDist
 
-    for _, c in ipairs(DetectedChests) do
-        if c.Instance and c.Instance.Parent and not VisitedChestsThisRound[c.Instance] then
-            local d = (c.Pos - currentPos).Magnitude
-            if d < shortest then
-                shortest = d
-                best = c
+    for inst, data in pairs(KnownChests) do
+        if inst and inst.Parent and not VisitedChests[inst] then
+            local part = data.Part
+            if part and part.Parent then
+                local d = (part.Position - currentPos).Magnitude
+                if d <= shortest then
+                    shortest = d
+                    best = {
+                        Instance = inst,
+                        Part = part,
+                        Pos = part.Position,
+                        Name = data.Name,
+                        Dist = d
+                    }
+                end
+            else
+                KnownChests[inst] = nil
             end
         end
     end
@@ -446,65 +495,70 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.5)
+        task.wait(0.4)
 
         if State.Running and not State.Paused then
-            -- Esperar hasta que se cumplan los 3s de Fly para activar Noclip
             if not State.NoclipEnabled then
                 task.wait(0.3)
                 continue
             end
 
-            -- 1. Escanear cofres si la lista está vacía o se terminó la vuelta
-            if #DetectedChests == 0 then
-                updateStatus("Buscando cofres en todo el mapa...")
-                scanMapChests()
-                task.wait(0.5)
-            end
-
             local root = getRootPart()
             local myPos = root and root.Position or BaseCenter
 
-            -- 2. Elegir el cofre más cercano que aún no hayamos visitado
-            local targetChest = getNextNearestChest(myPos)
+            -- 1. Actualizar el escáner de memoria
+            scanLoadedChestsAroundPlayer()
 
-            if targetChest then
-                State.CurrentChestIndex = State.CurrentChestIndex + 1
-                local cPos = targetChest.Pos
+            -- 2. PRIORIDAD MÁXIMA: Si hay cofres cargados alrededor, saquearlos primero
+            local nearbyChest = getNearestUnvisitedChestNearby(myPos, State.NearbyRadarRadius)
+
+            if nearbyChest then
+                local cPos = nearbyChest.Pos
                 local heightLabel = (cPos.Y > 15) and "Arriba" or ((cPos.Y < -5) and "Bajo Tierra" or "Superficie")
 
                 updateStatus(string.format(
-                    "Volando hacia cofre #%d/%d: '%s' [%s]\nAltura: %.1f Y | Distancia: %d studs",
-                    State.CurrentChestIndex,
-                    State.TotalChestsFound,
-                    targetChest.Name,
-                    heightLabel,
-                    cPos.Y,
-                    math.floor((cPos - myPos).Magnitude)
+                    "📦 Cofre detectado a %d studs: '%s' [%s]\nVolando a saquear...",
+                    math.floor(nearbyChest.Dist), nearbyChest.Name, heightLabel
                 ))
 
-                -- Volar con precisión 3D al cofre
                 flyMoveTo3D(cPos, State.FlySpeed, 3.5)
 
                 if State.Running and not State.Paused then
-                    -- Quedarse exactamente el tiempo configurado (1 segundo por defecto)
-                    updateStatus(string.format("Rebuscando '%s' (Esperando %.1fs)...", targetChest.Name, State.ChestWaitTime))
+                    updateStatus(string.format("Rebuscando '%s' (Esperando %.1fs)...", nearbyChest.Name, State.ChestWaitTime))
                     task.wait(State.ChestWaitTime)
-                    VisitedChestsThisRound[targetChest.Instance] = true
+                    VisitedChests[nearbyChest.Instance] = true
+                    State.TotalLooted = State.TotalLooted + 1
                 end
+
+            -- 3. MODO EXPEDICIÓN: Si no hay cofres cerca, continuar recorriendo el mapa para forzar la carga
             else
-                -- Si ya visitó todos los cofres detectados
-                if State.LoopAllChests and State.Running and not State.Paused then
-                    updateStatus("✅ Ronda completada. Re-escaneando mapa para reiniciar...")
-                    table.clear(VisitedChestsThisRound)
-                    State.CurrentChestIndex = 0
-                    scanMapChests()
-                    task.wait(2.0)
-                else
-                    updateStatus("✅ Todos los cofres del mapa han sido visitados.")
-                    State.Running = false
-                    removePhysicsHelpers()
-                    restoreCollisions()
+                local waypoints = buildExplorationWaypoints(State.MapBoundaryRadius)
+                if #waypoints == 0 then continue end
+
+                if State.PatrolStep > #waypoints then
+                    if State.LoopAll then
+                        State.PatrolStep = 1
+                    else
+                        updateStatus("✅ Expedición completa de todo el mapa terminada.")
+                        State.Running = false
+                        removePhysicsHelpers()
+                        restoreCollisions()
+                        continue
+                    end
+                end
+
+                local targetWp = waypoints[State.PatrolStep]
+                local distToWp = (Vector3.new(targetWp.X, 0, targetWp.Z) - Vector3.new(myPos.X, 0, myPos.Z)).Magnitude
+
+                updateStatus(string.format(
+                    "🚀 Explorando mapa hacia Punto #%d/%d (Borde: %d studs)\nBuscando cofres ocultos en camino... [Visitados: %d]",
+                    State.PatrolStep, #waypoints, math.floor(distToWp), State.TotalLooted
+                ))
+
+                -- Volar hacia el waypoint
+                local reached = flyMoveTo3D(targetWp, State.FlySpeed, 25.0)
+                if reached or distToWp <= 28.0 then
+                    State.PatrolStep = State.PatrolStep + 1
                 end
             end
         else
