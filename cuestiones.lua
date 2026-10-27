@@ -1,5 +1,5 @@
 -- ==============================================================================
--- REGISTRADOR FORENSE DE DÍAS Y EVENTOS (0% LAG - ACCIONADO POR EVENTOS)
+-- PREDICTOR EXACTO DE EVENTOS Y CLIMAS V5 (CICLO DE 6 NOCHES - 0% LAG)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -9,7 +9,6 @@ local CoreGui = game:GetService("CoreGui")
 local Lighting = game:GetService("Lighting")
 local lp = Players.LocalPlayer
 
--- Eliminar cualquier rastro de desenfoque
 pcall(function()
     for _, obj in ipairs(Lighting:GetChildren()) do
         if obj:IsA("BlurEffect") then obj:Destroy() end
@@ -22,41 +21,25 @@ RunService.RenderStepped:Connect(function()
     end)
 end)
 
-local DayHistory = {}
-local TotalRecorded = 0
-local LastLoggedDay = -1
-local LastPhaseLogged = ""
+local State = {
+    CurrentDay = 0,
+    PreviousDay = 0,
+    DetectedMultiplier = 1,
+    CycleStep = 1, -- Pasos del 1 al 6
+    TodayEvent = "Normal",
+    TomorrowPrediction = "Normal",
+    WeatherTomorrow = "Despejado",
+    Countdown = 0,
+    IsNight = false,
+    Season = "Summer",
+    LastAlertTime = 0
+}
 
 -- ==============================================================================
--- 1. DETECTOR ULTRA-LIGERO DE MULTIPLICADOR (SOLO CUANDO CAMBIA EL DÍA)
+-- 1. MOTOR DE CÁLCULO DEL CICLO DE 6 NOCHES
 -- ==============================================================================
 
-local function getMultiplierFast()
-    local pg = lp:FindFirstChild("PlayerGui")
-    if pg then
-        -- Buscar solo en carteles visibles de nivel superior sin recorrer todo en profundidad
-        for _, gui in ipairs(pg:GetChildren()) do
-            if gui:IsA("ScreenGui") and gui.Enabled then
-                for _, el in ipairs(gui:GetChildren()) do
-                    if el:IsA("TextLabel") and el.Visible then
-                        local m = el.Text:match("x(%d+)")
-                        if m then return tonumber(m) end
-                    end
-                end
-            end
-        end
-    end
-
-    local diff = workspace:GetAttribute("PlayerDifficulty")
-    if diff and type(diff) == "number" then return diff end
-    return 1
-end
-
--- ==============================================================================
--- 2. REGISTRADOR AUTOMÁTICO DE EVENTOS (SNAPSHOT)
--- ==============================================================================
-
-local function logDaySnapshot(triggerReason)
+local function analyzeCycle()
     local ws = workspace
     local curDay = ws:GetAttribute("CurrentDay") or 0
     local isNight = ws:GetAttribute("Night")
@@ -64,86 +47,101 @@ local function logDaySnapshot(triggerReason)
         isNight = (Lighting.ClockTime >= 18.0 or Lighting.ClockTime <= 6.0)
     end
 
-    local phaseKey = string.format("%d_%s", curDay, isNight and "Noche" or "Dia")
-    if phaseKey == LastPhaseLogged then return end
-    LastPhaseLogged = phaseKey
-    LastLoggedDay = curDay
-    TotalRecorded = TotalRecorded + 1
-
     local isBM = ws:GetAttribute("BloodMoon") == true
     local isRaid = ws:GetAttribute("BanditRaid") == true
-    local isBlizz = ws:GetAttribute("Blizzard") == true
-    local isRain = ws:GetAttribute("Raining") == true
-    local lastBM = ws:GetAttribute("LastBloodMoonDay") or "N/A"
-    local season = tostring(ws:GetAttribute("Season") or "N/A")
-    local mult = getMultiplierFast()
-    local timeOfDay = string.format("%.2f", Lighting.ClockTime)
+    local season = tostring(ws:GetAttribute("Season") or "Summer")
+    local countdown = math.floor(tonumber(ws:GetAttribute("Countdown") or 0) or 0)
 
-    local eventName = "Normal"
-    if isBM then
-        eventName = "🔴 LUNA ROJA"
-    elseif isRaid then
-        eventName = "🤠 BANDIDOS"
-    elseif isBlizz then
-        eventName = "❄️ VENTISCA"
-    elseif isRain then
-        eventName = "🌧️ LLUVIA"
+    -- Detectar multiplicador real según el salto de días
+    if State.PreviousDay == 0 then State.PreviousDay = curDay end
+    if curDay > State.PreviousDay then
+        local delta = curDay - State.PreviousDay
+        if delta >= 1 and delta <= 20 then
+            State.DetectedMultiplier = delta
+        end
+        State.PreviousDay = curDay
     end
 
-    local entry = {
-        Index = TotalRecorded,
-        RealTime = os.date("%X"),
-        Day = curDay,
-        Phase = isNight and "🌙 NOCHE" or "☀️ DÍA",
-        Event = eventName,
-        Multiplier = mult,
-        LastBMDay = lastBM,
-        Season = season,
-        ClockTime = timeOfDay,
-        Trigger = triggerReason or "Auto"
+    -- Sincronizar el paso del ciclo (1 al 6) con los eventos reales
+    if isBM then
+        if State.CycleStep ~= 1 and State.CycleStep ~= 4 then
+            -- Si viene de Bandidos (paso 6), la Luna Roja es paso 1; de lo contrario es paso 4
+            State.CycleStep = (State.CycleStep == 6 or State.CycleStep == 0) and 1 or 4
+        end
+    elseif isRaid then
+        State.CycleStep = 6
+    end
+
+    -- Definición de los 6 pasos
+    local CYCLE_NAMES = {
+        [1] = "🔴 LUNA ROJA (Paso 1/6)",
+        [2] = "🟢 Noche Normal (Paso 2/6)",
+        [3] = "🟢 Noche Normal (Paso 3/6)",
+        [4] = "🔴 LUNA ROJA (Paso 4/6)",
+        [5] = "🟢 Noche Normal (Paso 5/6)",
+        [6] = "🤠 INCURSIÓN DE BANDIDOS (Paso 6/6)"
     }
 
-    table.insert(DayHistory, 1, entry)
-    if #DayHistory > 60 then table.remove(DayHistory) end
+    local NEXT_NAMES = {
+        [1] = "🟢 Mañana: Noche Normal",
+        [2] = "🟢 Mañana: Noche Normal",
+        [3] = "🚨 MAÑANA: 🔴 LUNA ROJA GARANTIZADA",
+        [4] = "🟢 Mañana: Noche Normal",
+        [5] = "🚨 MAÑANA: 🤠 BANDIDOS GARANTIZADOS",
+        [6] = "🚨 MAÑANA: 🔴 LUNA ROJA GARANTIZADA"
+    }
+
+    local currentStep = State.CycleStep
+    local nextStep = (currentStep % 6) + 1
+
+    local todayText = CYCLE_NAMES[currentStep] or "Normal"
+    local todayColor = isBM and Color3.fromRGB(255, 45, 55) or (isRaid and Color3.fromRGB(255, 170, 0) or Color3.fromRGB(0, 255, 170))
+
+    local tomorrowText = NEXT_NAMES[currentStep] or "Normal"
+    local tomorrowColor = (nextStep == 1 or nextStep == 4) and Color3.fromRGB(255, 50, 60) or (nextStep == 6 and Color3.fromRGB(255, 170, 0) or Color3.fromRGB(180, 200, 220))
+
+    -- Predicción de clima matutino: tras Luna Roja siempre hay precipitación
+    local weatherTomorrow = "☀️ Despejado"
+    if currentStep == 1 or currentStep == 4 then
+        if season == "Winter" then
+            weatherTomorrow = "❄️ VENTISCA (Post-Luna Roja)"
+        else
+            weatherTomorrow = "🌧️ LLUVIA (Post-Luna Roja)"
+        end
+    end
+
+    State.CurrentDay = curDay
+    State.IsNight = isNight
+    State.Countdown = countdown
+    State.Season = season
+    State.TodayEvent = todayText
+    State.TomorrowPrediction = tomorrowText
+    State.WeatherTomorrow = weatherTomorrow
+
+    return todayText, todayColor, tomorrowText, tomorrowColor, weatherTomorrow, countdown, curDay, isNight, season, State.DetectedMultiplier, currentStep
 end
 
--- ==============================================================================
--- 3. ESCUCHA EXCLUSIVA POR EVENTOS (CERO LAG: NO USA BUCLES PESADOS)
--- ==============================================================================
-
-workspace:GetAttributeChangedSignal("CurrentDay"):Connect(function()
-    task.wait(0.5)
-    logDaySnapshot("Cambio de Día")
-end)
-
+-- Avanzar paso al cambiar la noche
 workspace:GetAttributeChangedSignal("Night"):Connect(function()
     task.wait(0.5)
-    logDaySnapshot("Cambio de Fase (Día/Noche)")
-end)
-
-workspace:GetAttributeChangedSignal("BloodMoon"):Connect(function()
-    task.wait(0.2)
-    logDaySnapshot("Activación Luna Roja")
-end)
-
-workspace:GetAttributeChangedSignal("BanditRaid"):Connect(function()
-    task.wait(0.2)
-    logDaySnapshot("Activación Bandidos")
-end)
-
--- Snapshot inicial al cargar
-task.spawn(function()
-    task.wait(1.5)
-    logDaySnapshot("Inicio de Script")
+    local isNight = workspace:GetAttribute("Night")
+    if isNight then
+        -- Al caer la noche, avanzamos al siguiente paso si no fue forzado por evento
+        local isBM = workspace:GetAttribute("BloodMoon") == true
+        local isRaid = workspace:GetAttribute("BanditRaid") == true
+        if not isBM and not isRaid then
+            State.CycleStep = (State.CycleStep % 6) + 1
+        end
+    end
 end)
 
 -- ==============================================================================
--- 4. INTERFAZ GRÁFICA ULTRA-LIVIANA
+-- 2. INTERFAZ GRÁFICA DEL PREDICTOR (ACRYLIC = FALSE)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "DayLoggerZeroLagGui"
+ScreenGui.Name = "EventPredictorV5Gui"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -162,7 +160,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-TitleBar.Text = "  📅 REGISTRADOR DE DÍAS Y EVENTOS (0% LAG)"
+TitleBar.Text = "  🔮 PREDICTOR EXACTO DE EVENTOS (CICLO 6 NOCHES)"
 TitleBar.TextColor3 = Color3.fromRGB(255, 170, 0)
 TitleBar.TextSize = 11
 TitleBar.Font = Enum.Font.GothamBold
@@ -173,48 +171,148 @@ local TitleCorner = Instance.new("UICorner")
 TitleCorner.CornerRadius = UDim.new(0, 10)
 TitleCorner.Parent = TitleBar
 
--- Panel de Estado Actual
-local CurrentStatusLabel = Instance.new("TextLabel")
-CurrentStatusLabel.Size = UDim2.new(1, -20, 0, 58)
-CurrentStatusLabel.Position = UDim2.new(0, 10, 0, 44)
-CurrentStatusLabel.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
-CurrentStatusLabel.TextColor3 = Color3.fromRGB(0, 255, 170)
-CurrentStatusLabel.TextSize = 11
-CurrentStatusLabel.Font = Enum.Font.Code
-CurrentStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-CurrentStatusLabel.Text = "Esperando eventos del juego..."
-CurrentStatusLabel.Parent = MainFrame
+-- Panel 1: Hoy
+local TodayCard = Instance.new("Frame")
+TodayCard.Size = UDim2.new(1, -20, 0, 85)
+TodayCard.Position = UDim2.new(0, 10, 0, 44)
+TodayCard.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
+TodayCard.Parent = MainFrame
 
-local StatusCorner = Instance.new("UICorner")
-StatusCorner.CornerRadius = UDim.new(0, 6)
-StatusCorner.Parent = CurrentStatusLabel
+local TodayCorner = Instance.new("UICorner")
+TodayCorner.CornerRadius = UDim.new(0, 8)
+TodayCorner.Parent = TodayCard
 
--- Historial
-local HistoryBox = Instance.new("TextBox")
-HistoryBox.Size = UDim2.new(1, -20, 0, 220)
-HistoryBox.Position = UDim2.new(0, 10, 0, 110)
-HistoryBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-HistoryBox.TextColor3 = Color3.fromRGB(220, 220, 220)
-HistoryBox.TextSize = 9
-HistoryBox.Font = Enum.Font.Code
-HistoryBox.TextXAlignment = Enum.TextXAlignment.Left
-HistoryBox.TextYAlignment = Enum.TextYAlignment.Top
-HistoryBox.MultiLine = true
-HistoryBox.ClearTextOnFocus = false
-HistoryBox.TextEditable = false
-HistoryBox.Text = "(El historial de cada día transcurrido aparecerá aquí...)"
-HistoryBox.Parent = MainFrame
+local TodayTitle = Instance.new("TextLabel")
+TodayTitle.Size = UDim2.new(1, -20, 0, 30)
+TodayTitle.Position = UDim2.new(0, 10, 0, 6)
+TodayTitle.BackgroundTransparency = 1
+TodayTitle.Text = "CALCULANDO HOY..."
+TodayTitle.TextColor3 = Color3.fromRGB(0, 255, 170)
+TodayTitle.TextSize = 15
+TodayTitle.Font = Enum.Font.GothamBold
+TodayTitle.TextXAlignment = Enum.TextXAlignment.Left
+TodayTitle.Parent = TodayCard
 
-local HistoryCorner = Instance.new("UICorner")
-HistoryCorner.CornerRadius = UDim.new(0, 6)
-HistoryCorner.Parent = HistoryBox
+local TodayDetail = Instance.new("TextLabel")
+TodayDetail.Size = UDim2.new(1, -20, 0, 44)
+TodayDetail.Position = UDim2.new(0, 10, 0, 36)
+TodayDetail.BackgroundTransparency = 1
+TodayDetail.Text = "Día: 0 | Multiplicador: Calculando..."
+TodayDetail.TextColor3 = Color3.fromRGB(180, 190, 205)
+TodayDetail.TextSize = 10
+TodayDetail.Font = Enum.Font.Code
+TodayDetail.TextXAlignment = Enum.TextXAlignment.Left
+TodayDetail.Parent = TodayCard
 
--- Botones
+-- Panel 2: Predicción Mañana
+local TomorrowCard = Instance.new("Frame")
+TomorrowCard.Size = UDim2.new(1, -20, 0, 85)
+TomorrowCard.Position = UDim2.new(0, 10, 0, 136)
+TomorrowCard.BackgroundColor3 = Color3.fromRGB(16, 18, 26)
+TomorrowCard.Parent = MainFrame
+
+local TomorrowCorner = Instance.new("UICorner")
+TomorrowCorner.CornerRadius = UDim.new(0, 8)
+TomorrowCorner.Parent = TomorrowCard
+
+local TomorrowHeader = Instance.new("TextLabel")
+TomorrowHeader.Size = UDim2.new(1, -20, 0, 24)
+TomorrowHeader.Position = UDim2.new(0, 10, 0, 6)
+TomorrowHeader.BackgroundTransparency = 1
+TomorrowHeader.Text = "PREDICCIÓN PARA LA PRÓXIMA NOCHE Y MAÑANA:"
+TomorrowHeader.TextColor3 = Color3.fromRGB(255, 215, 0)
+TomorrowHeader.TextSize = 10
+TomorrowHeader.Font = Enum.Font.GothamBold
+TomorrowHeader.TextXAlignment = Enum.TextXAlignment.Left
+TomorrowHeader.Parent = TomorrowCard
+
+local TomorrowDesc = Instance.new("TextLabel")
+TomorrowDesc.Size = UDim2.new(1, -20, 0, 48)
+TomorrowDesc.Position = UDim2.new(0, 10, 0, 30)
+TomorrowDesc.BackgroundTransparency = 1
+TomorrowDesc.Text = "Calculando paso del ciclo..."
+TomorrowDesc.TextColor3 = Color3.fromRGB(220, 220, 220)
+TomorrowDesc.TextSize = 11
+TomorrowDesc.Font = Enum.Font.Code
+TomorrowDesc.TextXAlignment = Enum.TextXAlignment.Left
+TomorrowDesc.Parent = TomorrowCard
+
+-- Panel 3: Reloj Regresivo (Alerta 30s)
+local ClockCard = Instance.new("Frame")
+ClockCard.Size = UDim2.new(1, -20, 0, 75)
+ClockCard.Position = UDim2.new(0, 10, 0, 228)
+ClockCard.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+ClockCard.Parent = MainFrame
+
+local ClockCorner = Instance.new("UICorner")
+ClockCorner.CornerRadius = UDim.new(0, 8)
+ClockCorner.Parent = ClockCard
+
+local ClockText = Instance.new("TextLabel")
+ClockText.Size = UDim2.new(0.45, 0, 1, 0)
+ClockText.Position = UDim2.new(0, 10, 0, 0)
+ClockText.BackgroundTransparency = 1
+ClockText.Text = "00:00"
+ClockText.TextColor3 = Color3.fromRGB(255, 255, 255)
+ClockText.TextSize = 32
+ClockText.Font = Enum.Font.GothamBold
+ClockText.TextXAlignment = Enum.TextXAlignment.Left
+ClockText.Parent = ClockCard
+
+local ClockInfo = Instance.new("TextLabel")
+ClockInfo.Size = UDim2.new(0.53, -10, 1, 0)
+ClockInfo.Position = UDim2.new(0.47, 0, 0, 0)
+ClockInfo.BackgroundTransparency = 1
+ClockInfo.Text = "Fase: Día\nHora Solar: 12.00\nAlerta: Inactiva"
+ClockInfo.TextColor3 = Color3.fromRGB(180, 190, 205)
+ClockInfo.TextSize = 10
+ClockInfo.Font = Enum.Font.Code
+ClockInfo.TextXAlignment = Enum.TextXAlignment.Left
+ClockInfo.Parent = ClockCard
+
+-- Selector manual de sincronización
+local SyncContainer = Instance.new("Frame")
+SyncContainer.Size = UDim2.new(1, -20, 0, 32)
+SyncContainer.Position = UDim2.new(0, 10, 0, 310)
+SyncContainer.BackgroundTransparency = 1
+SyncContainer.Parent = MainFrame
+
+local function createSyncBtn(name, stepNumber, posX, sizeX)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(sizeX, -4, 1, 0)
+    btn.Position = UDim2.new(posX, 0, 0, 0)
+    btn.BackgroundColor3 = Color3.fromRGB(35, 40, 55)
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 9
+    btn.Font = Enum.Font.GothamBold
+    btn.Parent = SyncContainer
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+
+    btn.MouseButton1Click:Connect(function()
+        State.CycleStep = stepNumber
+        btn.Text = "✅ " .. name
+        task.wait(0.5)
+        btn.Text = name
+    end)
+end
+
+createSyncBtn("1: ROJA", 1, 0.00, 0.166)
+createSyncBtn("2: NORM", 2, 0.166, 0.166)
+createSyncBtn("3: NORM", 3, 0.333, 0.166)
+createSyncBtn("4: ROJA", 4, 0.500, 0.166)
+createSyncBtn("5: NORM", 5, 0.666, 0.166)
+createSyncBtn("6: BAND", 6, 0.833, 0.166)
+
+-- Botón Copiar Estado
 local CopyBtn = Instance.new("TextButton")
-CopyBtn.Size = UDim2.new(0.68, -8, 0, 36)
-CopyBtn.Position = UDim2.new(0, 10, 0, 340)
+CopyBtn.Size = UDim2.new(1, -20, 0, 36)
+CopyBtn.Position = UDim2.new(0, 10, 0, 350)
 CopyBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 20)
-CopyBtn.Text = "📋 COPIAR HISTORIAL COMPLETO"
+CopyBtn.Text = "📋 COPIAR ESTADO ACTUAL DEL CICLO"
 CopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 CopyBtn.TextSize = 10
 CopyBtn.Font = Enum.Font.GothamBold
@@ -224,69 +322,31 @@ local CopyCorner = Instance.new("UICorner")
 CopyCorner.CornerRadius = UDim.new(0, 6)
 CopyCorner.Parent = CopyBtn
 
-local function compileReport()
-    local lines = {
-        "==================================================================",
-        "          HISTORIAL DE DÍAS Y EVENTOS REGISTRADOS                 ",
-        "==================================================================",
-        string.format("Fecha de Extracción: %s", os.date("%Y-%m-%d %X")),
-        string.format("Total de Registros Capturados: %d", #DayHistory),
-        "\n[CRONOLOGÍA DE DÍAS Y NOCHES TRANSCURRIDAS]:"
-    }
-
-    if #DayHistory == 0 then
-        table.insert(lines, "  (Sin eventos registrados aún)")
-    else
-        for i = #DayHistory, 1, -1 do
-            local e = DayHistory[i]
-            table.insert(lines, string.format(
-                "• [%s] Día: %d (x%d) | %s | Evento: %s | LastBloodMoon: %s | Clima/Estación: %s | Hora: %s",
-                e.RealTime, e.Day, e.Multiplier, e.Phase, e.Event, tostring(e.LastBMDay), e.Season, e.ClockTime
-            ))
-        end
-    end
-
-    lines[#lines + 1] = "=================================================================="
-    return table.concat(lines, "\n")
-end
-
 CopyBtn.MouseButton1Click:Connect(function()
-    local text = compileReport()
+    local text = string.format(
+        "Día: %d | Multiplicador: x%d | Fase: %s\n" ..
+        "Estado del Ciclo: %s (Paso %d/6)\n" ..
+        "Predicción Próxima Noche: %s\n" ..
+        "Clima Próximo Día: %s\n" ..
+        "Countdown: %ds | Hora Solar: %.2f",
+        State.CurrentDay, State.DetectedMultiplier, State.IsNight and "Noche" or "Día",
+        State.TodayEvent, State.CycleStep,
+        State.TomorrowPrediction,
+        State.WeatherTomorrow,
+        State.Countdown, Lighting.ClockTime
+    )
     if setclipboard then setclipboard(text) elseif toclipboard then toclipboard(text) end
-    CopyBtn.Text = "✅ ¡HISTORIAL COPIADO!"
-    task.wait(1.2)
-    CopyBtn.Text = "📋 COPIAR HISTORIAL COMPLETO"
-end)
-
-local ResetBtn = Instance.new("TextButton")
-ResetBtn.Size = UDim2.new(0.32, -6, 0, 36)
-ResetBtn.Position = UDim2.new(0.68, 4, 0, 340)
-ResetBtn.BackgroundColor3 = Color3.fromRGB(140, 35, 40)
-ResetBtn.Text = "🗑️ LIMPIAR"
-ResetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ResetBtn.TextSize = 10
-ResetBtn.Font = Enum.Font.GothamBold
-ResetBtn.Parent = MainFrame
-
-local ResetCorner = Instance.new("UICorner")
-ResetCorner.CornerRadius = UDim.new(0, 6)
-ResetCorner.Parent = ResetBtn
-
-ResetBtn.MouseButton1Click:Connect(function()
-    table.clear(DayHistory)
-    TotalRecorded = 0
-    HistoryBox.Text = "(Historial reiniciado)"
-    ResetBtn.Text = "✅ LISTO"
-    task.wait(0.8)
-    ResetBtn.Text = "🗑️ LIMPIAR"
+    CopyBtn.Text = "✅ ¡COPIADO AL PORTAPAPELES!"
+    task.wait(1.5)
+    CopyBtn.Text = "📋 COPIAR ESTADO ACTUAL DEL CICLO"
 end)
 
 -- Botón Flotante para Delta
 local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 20)
-FloatBtn.Text = "📅\nDIAS"
+FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 50)
+FloatBtn.Text = "🔮\nCYCLE"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -303,34 +363,52 @@ FloatBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 5. BUCLE DE TEXTO DE BAJA FRECUENCIA (1s - ACTUALIZACIÓN SENCILLA)
+-- 3. BUCLE DE ACTUALIZACIÓN VISUAL (BAJO CONSUMO)
 -- ==============================================================================
 
 task.spawn(function()
     while true do
-        task.wait(1.0)
-        local curDay = workspace:GetAttribute("CurrentDay") or 0
-        local isNight = workspace:GetAttribute("Night")
-        if isNight == nil then
-            isNight = (Lighting.ClockTime >= 18.0 or Lighting.ClockTime <= 6.0)
-        end
-        local countdown = math.floor(tonumber(workspace:GetAttribute("Countdown") or 0) or 0)
+        task.wait(0.5)
+        local todayText, todayColor, tomorrowText, tomorrowColor, weatherTomorrow, countdown, curDay, isNight, season, mult, step = analyzeCycle()
 
-        CurrentStatusLabel.Text = string.format(
-            " DÍA ACTUAL: %d  |  FASE: %s  |  RELOJ: %02d:%02d\n" ..
-            " Eventos Registrados: %d  |  Último Guardado: Día %d",
-            curDay, isNight and "🌙 NOCHE" or "☀️ DÍA",
-            math.floor(countdown / 60), countdown % 60,
-            #DayHistory, LastLoggedDay
+        TodayTitle.Text = todayText
+        TodayTitle.TextColor3 = todayColor
+        TodayDetail.Text = string.format(
+            "Día: %d  (Salto real: x%d) | Estación: %s\nFase: %s | Paso activo: %d/6",
+            curDay, mult, season,
+            isNight and "🌙 NOCHE" or "☀️ DÍA", step
         )
 
-        if #DayHistory > 0 then
-            local lines = {}
-            for i = 1, math.min(8, #DayHistory) do
-                local e = DayHistory[i]
-                table.insert(lines, string.format("[%s] Día %d (%s) -> %s (LastBM: %s)", e.RealTime, e.Day, e.Phase, e.Event, tostring(e.LastBMDay)))
+        TomorrowDesc.Text = string.format(
+            "• Evento: %s\n• Clima de mañana: %s",
+            tomorrowText, weatherTomorrow
+        )
+
+        local mins = math.floor(countdown / 60)
+        local secs = math.floor(countdown % 60)
+        ClockText.Text = string.format("%02d:%02d", mins, secs)
+
+        -- Alerta a los 30 segundos
+        if countdown > 0 and countdown <= 30 then
+            ClockCard.BackgroundColor3 = Color3.fromRGB(80, 20, 25)
+            ClockText.TextColor3 = Color3.fromRGB(255, 60, 70)
+            ClockInfo.Text = string.format("⚠️ ¡FALTAN %d SEGUNDOS!\nPrepárate para la noche\nHora: %.2f", countdown, Lighting.ClockTime)
+
+            if (tick() - State.LastAlertTime) > 40 then
+                State.LastAlertTime = tick()
+                pcall(function()
+                    local sound = Instance.new("Sound")
+                    sound.SoundId = "rbxassetid://4590662766"
+                    sound.Volume = 1.0
+                    sound.Parent = workspace
+                    sound:Play()
+                    game:GetService("Debris"):AddItem(sound, 3)
+                end)
             end
-            HistoryBox.Text = table.concat(lines, "\n")
+        else
+            ClockCard.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+            ClockText.TextColor3 = Color3.fromRGB(255, 255, 255)
+            ClockInfo.Text = string.format("Fase: %s\nHora Solar: %.2f\nAlerta: Inactiva", isNight and "Noche" or "Día", Lighting.ClockTime)
         end
     end
 end)
