@@ -1,5 +1,5 @@
 -- ==============================================================================
--- CHEST & LOOT ROAMER V4 (INTERFAZ NATIVA - CERO ERRORES / 0% LAG)
+-- CHEST & LOOT ROAMER V5 (OMISIÓN DE BASE + STOP LIMPIO + FUEL CONFIGURABLE)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -11,8 +11,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local lp = Players.LocalPlayer
 
 local BaseCenter = Vector3.new(0, 0, 0)
+local BASE_SAFE_RADIUS = 145 -- Radio de la base donde NO tocará nada (cofres, ítems ni gasolinas)
 
--- Eliminar desenfoques
+-- Eliminar desenfoques previos
 pcall(function()
     for _, obj in ipairs(Lighting:GetChildren()) do
         if obj:IsA("BlurEffect") then obj:Destroy() end
@@ -61,23 +62,12 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ==============================================================================
--- 1. FÍSICAS DE VUELO 3D Y NOCLIP
+-- 1. FÍSICAS DE VUELO, NOCLIP Y LIMPIEZA TOTAL
 -- ==============================================================================
 
 local function getRootPart()
     local char = lp.Character
     return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
-end
-
-local function removePhysicsHelpers()
-    local root = getRootPart()
-    if root then
-        local bp = root:FindFirstChild("ChestRoamBP")
-        if bp then bp:Destroy() end
-        local bg = root:FindFirstChild("ChestRoamBG")
-        if bg then bg:Destroy() end
-        root.AssemblyLinearVelocity = Vector3.zero
-    end
 end
 
 local function restoreCollisions()
@@ -87,6 +77,34 @@ local function restoreCollisions()
             if p:IsA("BasePart") then p.CanCollide = true end
         end
     end
+end
+
+-- Limpieza exhaustiva de todas las modificaciones y restricciones de vuelo/altura
+local function removeAllModifications()
+    local root = getRootPart()
+    local char = lp.Character
+
+    -- 1. Destruir helpers de vuelo propios y de scripts anteriores
+    if root then
+        for _, obj in ipairs(root:GetChildren()) do
+            if obj.Name:find("BP") or obj.Name:find("BG") or obj:IsA("BodyPosition") or obj:IsA("BodyGyro") or obj:IsA("BodyVelocity") then
+                obj:Destroy()
+            end
+        end
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
+
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.PlatformStand = false
+            hum:ChangeState(Enum.HumanoidStateType.Freefall)
+        end
+    end
+
+    -- 2. Restaurar colisiones en todas las partes del personaje
+    restoreCollisions()
 end
 
 RunService.Stepped:Connect(function()
@@ -185,14 +203,25 @@ local function flyMoveTo3D(targetPos, speed, stopDistance)
 end
 
 -- ==============================================================================
--- 2. DETECCIÓN DE COFRES (OMITE COFRES ABIERTOS)
+-- 2. DETECCIÓN DE COFRES (OMITE ABIERTOS Y OMITE LA BASE)
 -- ==============================================================================
+
+local function isInsideBase(pos)
+    local horiz = Vector3.new(pos.X - BaseCenter.X, 0, pos.Z - BaseCenter.Z)
+    return horiz.Magnitude <= BASE_SAFE_RADIUS
+end
 
 local function isChestModel(obj)
     if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
     if obj == lp.Character or obj:IsDescendantOf(lp.Character) then return false end
 
-    -- Omitir si ya está abierto
+    -- 1. FILTRO: DESCARTAR COFRES DENTRO DE LA BASE
+    local part = obj:IsA("BasePart") and obj or (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart"))
+    if part and isInsideBase(part.Position) then
+        return false
+    end
+
+    -- 2. FILTRO: DESCARTAR COFRES YA ABIERTOS O SAQUEADOS
     if obj:GetAttribute("Open") == true 
        or obj:GetAttribute("Opened") == true 
        or obj:GetAttribute("Looted") == true 
@@ -219,7 +248,7 @@ local function registerChest(item)
     if not item or not item.Parent then return end
     if isChestModel(item) and not KnownChests[item] then
         local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
-        if part then
+        if part and not isInsideBase(part.Position) then
             KnownChests[item] = {
                 Instance = item,
                 Part = part,
@@ -268,12 +297,17 @@ local function scanLoadedChestsAroundPlayer()
 end
 
 -- ==============================================================================
--- 3. DETECCIÓN DE ÍTEMS Y GALONES DE GASOLINA
+-- 3. DETECCIÓN DE ÍTEMS Y GALONES (OMITE LA BASE)
 -- ==============================================================================
 
 local function isCollectableDroppedItem(item)
     if not item or not item.Parent then return false end
     if item == lp.Character or item:IsDescendantOf(lp.Character) then return false end
+
+    local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
+    if not part or isInsideBase(part.Position) then
+        return false
+    end
 
     local n = item.Name:lower()
     local itemType = tostring(item:GetAttribute("ItemType") or ""):lower()
@@ -318,7 +352,7 @@ local function getNearestLootItem(currentPos, maxDist)
         if not (PassedItemsCooldown[item] and now < PassedItemsCooldown[item]) then
             if isCollectableDroppedItem(item) then
                 local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
-                if part then
+                if part and not isInsideBase(part.Position) then
                     local d = (part.Position - currentPos).Magnitude
                     if d < shortest then
                         shortest = d
@@ -338,6 +372,7 @@ local function getNearestLootItem(currentPos, maxDist)
     return best
 end
 
+-- Selector de galones: entre el límite de la base y el radio configurado
 local function getNearestBaseFuelCan(currentPos)
     local dropped = workspace:FindFirstChild("DroppedItems")
     if not dropped then return nil end
@@ -354,7 +389,9 @@ local function getNearestBaseFuelCan(currentPos)
                 local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
                 if part then
                     local distFromBase = (Vector3.new(part.Position.X, 0, part.Position.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude
-                    if distFromBase <= State.FuelScanRadius then
+
+                    -- Excluir los que ya están dentro de la base (<= 145 studs) y respetar el límite exterior configurado
+                    if distFromBase > BASE_SAFE_RADIUS and distFromBase <= State.FuelScanRadius then
                         local d = (part.Position - currentPos).Magnitude
                         if d < shortest then
                             shortest = d
@@ -397,7 +434,7 @@ local function buildExplorationWaypoints()
     local center = (gen and gen:IsA("BasePart") and gen.Position) or BaseCenter
     local waypoints = {}
     local rOuter = maxRadius
-    local rMid = maxRadius * 0.55
+    local rMid = math.max(BASE_SAFE_RADIUS + 80, maxRadius * 0.55)
 
     for angle = 0, 315, 45 do
         local rad = math.rad(angle)
@@ -413,9 +450,21 @@ local function buildExplorationWaypoints()
 end
 
 -- ==============================================================================
--- 5. ACCIÓN: VOLVER A LA BASE Y APAGAR TODO
+-- 5. ACCIONES DE APAGADO Y RETORNO
 -- ==============================================================================
 
+-- 1. Detener en seco y dejar el personaje como nuevo
+local function executeImmediateStopAndClean()
+    State.Running = false
+    State.Paused = false
+    State.NoclipEnabled = false
+    State.ReturningToBase = false
+
+    removeAllModifications()
+    State.CurrentStatus = "Detenido. Modificaciones eliminadas (Personaje normal)."
+end
+
+-- 2. Ir a la base primero y luego apagar absolutamente todo
 local function executeReturnToBaseAndShutdown()
     if not State.Running then
         State.Running = true
@@ -426,27 +475,20 @@ local function executeReturnToBaseAndShutdown()
     State.ReturningToBase = true
     State.CurrentStatus = "🚀 Volviendo a la Base..."
 
-    flyMoveTo3D(BaseCenter + Vector3.new(0, 4.0, 0), State.FlySpeed, 4.0)
+    flyMoveTo3D(BaseCenter + Vector3.new(0, 3.5, 0), State.FlySpeed, 4.0)
 
-    -- APAGAR TOTALMENTE TODAS LAS MODIFICACIONES AL LLEGAR
-    State.Running = false
-    State.Paused = false
-    State.NoclipEnabled = false
-    State.ReturningToBase = false
-
-    removePhysicsHelpers()
-    restoreCollisions()
-
+    -- APAGAR TOTALMENTE AL LLEGAR
+    executeImmediateStopAndClean()
     State.CurrentStatus = "🟢 En Base: Todas las modificaciones apagadas."
 end
 
 -- ==============================================================================
--- 6. INTERFAZ NATIVA (ROBUSTA, SIN FLUENT, 0% ERRORES DE CORE_GUI)
+-- 6. INTERFAZ NATIVA (0% LAG - SIN DEPENDENCIAS EXTERNAS)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "ChestRoamerCleanGui"
+ScreenGui.Name = "ChestRoamerCleanGuiV5"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -465,7 +507,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-TitleBar.Text = "  📦 CHEST & LOOT ROAMER V4 (NATIVO)"
+TitleBar.Text = "  📦 CHEST & LOOT ROAMER V5 (BASE EXCLUIDA)"
 TitleBar.TextColor3 = Color3.fromRGB(255, 170, 0)
 TitleBar.TextSize = 11
 TitleBar.Font = Enum.Font.GothamBold
@@ -511,7 +553,7 @@ local function createBtn(text, color, pos, size, callback)
     return btn
 end
 
--- Botón 1: Play / Iniciar
+-- Botón 1: Iniciar
 createBtn("▶ INICIAR EXPEDICIÓN", Color3.fromRGB(30, 150, 70), UDim2.new(0, 10, 0, 134), UDim2.new(0.48, -5, 0, 38), function()
     if State.Running then return end
     State.Running = true
@@ -532,54 +574,50 @@ createBtn("▶ INICIAR EXPEDICIÓN", Color3.fromRGB(30, 150, 70), UDim2.new(0, 1
         end
         if State.Running then
             State.NoclipEnabled = true
-            State.CurrentStatus = State.FuelOnlyMode and "Modo Fuel Base activo..." or "Explorando mapa..."
+            State.CurrentStatus = State.FuelOnlyMode and "Modo Fuel Base activo..." or "Explorando mapa (Base excluida)..."
         end
     end)
 end)
 
 -- Botón 2: Volver a Base y Apagar
-createBtn("🏠 BASE Y APAGAR", Color3.fromRGB(180, 40, 50), UDim2.new(0.52, 0, 0, 134), UDim2.new(0.48, -10, 0, 38), executeReturnToBaseAndShutdown)
+createBtn("🏠 BASE Y APAGAR", Color3.fromRGB(40, 130, 80), UDim2.new(0.52, 0, 0, 134), UDim2.new(0.48, -10, 0, 38), executeReturnToBaseAndShutdown)
 
--- Botón 3: Toggle Fuel Solo en Base
+-- Botón 3: Toggle Fuel Fuera de Base
 local FuelBtn
-FuelBtn = createBtn("⛽ SOLO FUEL BASE: OFF", Color3.fromRGB(45, 50, 65), UDim2.new(0, 10, 0, 180), UDim2.new(1, -20, 0, 34), function()
+FuelBtn = createBtn("⛽ SOLO FUEL (EXTERIOR): OFF", Color3.fromRGB(45, 50, 65), UDim2.new(0, 10, 0, 180), UDim2.new(1, -20, 0, 34), function()
     State.FuelOnlyMode = not State.FuelOnlyMode
     if State.FuelOnlyMode then
         FuelBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 20)
-        FuelBtn.Text = string.format("⛽ SOLO FUEL BASE: ON (%d STUDS)", State.FuelScanRadius)
+        FuelBtn.Text = string.format("⛽ SOLO FUEL: ON (%d-%d STUDS)", BASE_SAFE_RADIUS, State.FuelScanRadius)
     else
         FuelBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 65)
-        FuelBtn.Text = "⛽ SOLO FUEL BASE: OFF"
+        FuelBtn.Text = "⛽ SOLO FUEL (EXTERIOR): OFF"
     end
 end)
 
--- Botón 4: Pausa
-createBtn("⏸ PAUSA / REANUDAR", Color3.fromRGB(60, 65, 80), UDim2.new(0, 10, 0, 222), UDim2.new(0.48, -5, 0, 32), function()
+-- Botón 4: STOP Y LIMPIAR TODO
+createBtn("⏹ STOP Y LIMPIAR TODO", Color3.fromRGB(180, 40, 50), UDim2.new(0, 10, 0, 222), UDim2.new(0.48, -5, 0, 32), executeImmediateStopAndClean)
+
+-- Botón 5: Pausa
+createBtn("⏸ PAUSA / REANUDAR", Color3.fromRGB(60, 65, 80), UDim2.new(0.52, 0, 0, 222), UDim2.new(0.48, -10, 0, 32), function()
     if State.Running then
         State.Paused = not State.Paused
         State.CurrentStatus = State.Paused and "Pausado manualmente" or "Reanudado"
     end
 end)
 
--- Botón 5: Reiniciar Lista
-createBtn("🔄 REINICIAR RUTA", Color3.fromRGB(60, 65, 80), UDim2.new(0.52, 0, 0, 222), UDim2.new(0.48, -10, 0, 32), function()
-    table.clear(VisitedChests)
-    table.clear(PassedItemsCooldown)
-    State.CurrentStatus = "Ruta reiniciada."
-end)
-
 -- Botón 6: Configurar Radio de Fuel (+/- 100)
 createBtn("➖ RADIO FUEL (-100)", Color3.fromRGB(35, 40, 50), UDim2.new(0, 10, 0, 262), UDim2.new(0.48, -5, 0, 28), function()
-    State.FuelScanRadius = math.max(100, State.FuelScanRadius - 100)
+    State.FuelScanRadius = math.max(BASE_SAFE_RADIUS + 50, State.FuelScanRadius - 100)
     if State.FuelOnlyMode then
-        FuelBtn.Text = string.format("⛽ SOLO FUEL BASE: ON (%d STUDS)", State.FuelScanRadius)
+        FuelBtn.Text = string.format("⛽ SOLO FUEL: ON (%d-%d STUDS)", BASE_SAFE_RADIUS, State.FuelScanRadius)
     end
 end)
 
 createBtn("➕ RADIO FUEL (+100)", Color3.fromRGB(35, 40, 50), UDim2.new(0.52, 0, 0, 262), UDim2.new(0.48, -10, 0, 28), function()
     State.FuelScanRadius = math.min(1500, State.FuelScanRadius + 100)
     if State.FuelOnlyMode then
-        FuelBtn.Text = string.format("⛽ SOLO FUEL BASE: ON (%d STUDS)", State.FuelScanRadius)
+        FuelBtn.Text = string.format("⛽ SOLO FUEL: ON (%d-%d STUDS)", BASE_SAFE_RADIUS, State.FuelScanRadius)
     end
 end)
 
@@ -587,7 +625,7 @@ end)
 local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(220, 140, 20)
+FloatBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 20)
 FloatBtn.Text = "📦\nROAM"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
@@ -635,7 +673,7 @@ local function getNearestUnvisitedChestNearby(currentPos, maxDist)
         if inst and inst.Parent and not VisitedChests[inst] then
             if isChestModel(inst) then
                 local part = data.Part
-                if part and part.Parent then
+                if part and part.Parent and not isInsideBase(part.Position) then
                     local d = (part.Position - currentPos).Magnitude
                     if d <= shortest then
                         shortest = d
@@ -686,7 +724,7 @@ task.spawn(function()
                     PassedItemsCooldown[fuelTarget.Instance] = tick() + 10
                     State.TotalItemsCollected = State.TotalItemsCollected + 1
                 else
-                    State.CurrentStatus = string.format("⛽ Sin galones en radio de %d studs.", State.FuelScanRadius)
+                    State.CurrentStatus = string.format("⛽ Sin galones en radio exterior (%d studs).", State.FuelScanRadius)
                     task.wait(1.0)
                 end
 
@@ -745,23 +783,25 @@ task.spawn(function()
                 end
             end
         elseif not State.Running then
-            removePhysicsHelpers()
+            removeAllModifications()
         end
     end
 end)
 
--- Monitor de texto en vivo
+-- Monitor visual de estado
 task.spawn(function()
     while true do
         task.wait(0.3)
         StatusBox.Text = string.format(
             "ESTADO: %s\n" ..
-            "Modo Fuel Base: %s (Radio: %d studs)\n" ..
-            "Cofres Cerrados Saqueados: %d\n" ..
-            "Ítems / Balas Recogidas al Vuelo: %d",
+            "Modo Fuel Exterior: %s (%d-%d studs)\n" ..
+            "Base Protegida (Omitida): %d studs del centro\n" ..
+            "Cofres Cerrados Saqueados: %d | Ítems: %d",
             State.CurrentStatus,
             State.FuelOnlyMode and "ACTIVADO" or "DESACTIVADO",
+            BASE_SAFE_RADIUS,
             State.FuelScanRadius,
+            BASE_SAFE_RADIUS,
             State.TotalChestsLooted,
             State.TotalItemsCollected
         )
