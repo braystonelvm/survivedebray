@@ -1,5 +1,5 @@
 -- ==============================================================================
--- SCRAP HIGHWAY CRUSHER, VIRTUAL WEB 1500m, DRAGDETECTOR FIX & WAKE MODES V4.2
+-- SCRAP HIGHWAY CRUSHER, VIRTUAL WEB 1500m + REGISTRADOR FORENSE TOTAL V4.3
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -59,20 +59,27 @@ local Config = {
     AutoRefuelEnabled = true,
     LowFuelThreshold = 25,
     FullFuelThreshold = 90,
-    FuelCanScanRadius = 45
+    FuelCanScanRadius = 45,
+
+    -- Registrador Forense Activo
+    ForensicLogging = true
 }
 
-local RoadNodes = {}            -- Nodos de las pistas para conducción del vehículo
-local VirtualWebGrid = {}       -- Matriz matemática de puntos en TODO el mapa (1500 studs, 0% lag)
-local ManualDeliveryPoints = {} -- Bolitas manuales agregadas por ti
-local VisualPool = {}           -- Pool ligero por si activas ver las bolitas cercanas
-local RoadScrapList = {}        -- Cúmulos y autos chatarra en pista
-local IgnoredScrapUntil = {}    -- Cooldown de cúmulos embestidos
-local RecentlyKicked = {}       -- Cooldown por ítem para evitar rebotes
+local RoadNodes = {}
+local VirtualWebGrid = {}
+local ManualDeliveryPoints = {}
+local VisualPool = {}
+local RoadScrapList = {}
+local IgnoredScrapUntil = {}
+local RecentlyKicked = {}
 
 local CachedGeneratorPos = nil
 local CurrentScrapTarget = nil
 local IsRecoveringToRoad = false
+
+-- Bitácora de Telemetría Forense
+local ScrapForensicHistory = {}
+local TotalForensicLogs = 0
 
 -- Estado de Ruta Fluida sobre Pistas
 local RoadTransit = {
@@ -112,7 +119,88 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ==============================================================================
--- 1. OBTENCIÓN DE PERSONAJE, STATS Y VEHÍCULO
+-- 1. SISTEMA FORENSE PROFUNDO DE AUDITORÍA DE OBJETOS
+-- ==============================================================================
+
+local function inspectScrapDetailed(targetEntity, mainPart, root)
+    local report = {}
+    report.Timestamp = os.date("%X")
+    report.Name = targetEntity.Name
+    report.Class = targetEntity.ClassName
+    report.Path = targetEntity:GetFullName()
+
+    local pPos = mainPart and mainPart.Position or Vector3.zero
+    local rPos = root and root.Position or Vector3.zero
+    report.DistanceToPlayer = math.floor((pPos - rPos).Magnitude * 10) / 10
+    report.WorldPos = string.format("(%.1f, %.1f, %.1f)", pPos.X, pPos.Y, pPos.Z)
+
+    -- Propiedades físicas
+    report.Anchored = mainPart and mainPart.Anchored
+    report.CanCollide = mainPart and mainPart.CanCollide
+    report.Mass = mainPart and math.floor(mainPart:GetMass() * 10) / 10 or 0
+    report.Velocity = mainPart and string.format("(%.1f, %.1f, %.1f)", mainPart.AssemblyLinearVelocity.X, mainPart.AssemblyLinearVelocity.Y, mainPart.AssemblyLinearVelocity.Z) or "N/A"
+
+    -- Detección de Network Ownership
+    local ownerSuccess, ownerName = pcall(function()
+        if mainPart and mainPart.GetNetworkOwner then
+            local o = mainPart:GetNetworkOwner()
+            return o and o.Name or "Server"
+        end
+        return "Desconocido"
+    end)
+    report.NetworkOwner = ownerSuccess and ownerName or "Error al leer"
+
+    -- Atributos del servidor
+    local attrList = {}
+    for k, v in pairs(targetEntity:GetAttributes()) do
+        table.insert(attrList, string.format("%s = %s", tostring(k), tostring(v)))
+    end
+    report.Attributes = #attrList > 0 and table.concat(attrList, ", ") or "Sin atributos"
+
+    -- Detección segura de detectores (ClickDetector / DragDetector / ProximityPrompt)
+    local detInfo = "Ninguno"
+    local detector = targetEntity:FindFirstChild("ItemDrag", true) 
+        or targetEntity:FindFirstChildWhichIsA("ClickDetector", true) 
+        or targetEntity:FindFirstChildWhichIsA("DragDetector", true) 
+        or targetEntity:FindFirstChildWhichIsA("ProximityPrompt", true)
+
+    if detector then
+        local detProps = {}
+        table.insert(detProps, detector.ClassName .. "('" .. detector.Name .. "')")
+        pcall(function()
+            if detector:IsA("ClickDetector") then
+                table.insert(detProps, "MaxDist: " .. tostring(detector.MaxActivationDistance))
+            elseif detector:IsA("DragDetector") then
+                table.insert(detProps, "DragStyle: " .. tostring(detector.DragStyle.Name))
+                table.insert(detProps, "Enabled: " .. tostring(detector.Enabled))
+            elseif detector:IsA("ProximityPrompt") then
+                table.insert(detProps, "ActionText: '" .. tostring(detector.ActionText) .. "'")
+                table.insert(detProps, "Enabled: " .. tostring(detector.Enabled))
+            end
+        end)
+        detInfo = table.concat(detProps, " | ")
+    end
+    report.Detector = detInfo
+
+    return report
+end
+
+local function recordForensicIncident(stage, entity, mainPart, root, extraDetails)
+    if not Config.ForensicLogging then return end
+    TotalForensicLogs = TotalForensicLogs + 1
+
+    local data = inspectScrapDetailed(entity, mainPart, root)
+    data.Stage = stage
+    data.Details = extraDetails or ""
+
+    table.insert(ScrapForensicHistory, 1, data)
+    if #ScrapForensicHistory > 45 then
+        table.remove(ScrapForensicHistory)
+    end
+end
+
+-- ==============================================================================
+-- 2. OBTENCIÓN DE PERSONAJE, STATS Y VEHÍCULO
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -187,7 +275,7 @@ local function applyBrake(duration)
 end
 
 -- ==============================================================================
--- 2. AUTO-COMER INTEGRADO (ZANAHORIA DORADA VIDA / NORMAL HAMBRE)
+-- 3. AUTO-COMER INTEGRADO (ZANAHORIA DORADA VIDA / NORMAL HAMBRE)
 -- ==============================================================================
 
 local function isGoldenCarrot(item)
@@ -342,7 +430,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 3. SISTEMA DE AUTO-GASOLINA DESDE EL AUTO
+-- 4. SISTEMA DE AUTO-GASOLINA DESDE EL AUTO
 -- ==============================================================================
 
 local function getTruckFuel(truck)
@@ -547,7 +635,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 4. RED VIRTUAL DE 1500 STUDS EN TODO EL MAPA (0% LAG EN RAM)
+-- 5. RED VIRTUAL DE 1500 STUDS EN TODO EL MAPA (0% LAG EN RAM)
 -- ==============================================================================
 
 local function getGeneratorPosition()
@@ -658,7 +746,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 5. MAPEO DE PISTAS (CONDUCCIÓN DEL AUTO)
+-- 6. MAPEO DE PISTAS (CONDUCCIÓN DEL AUTO)
 -- ==============================================================================
 
 local function isRoadObject(obj)
@@ -772,7 +860,7 @@ local function isStraightLineOnRoad(p1, p2)
 end
 
 -- ==============================================================================
--- 6. ESCÁNER DE CHATARRA EN PISTA
+-- 7. ESCÁNER DE CHATARRA EN PISTA
 -- ==============================================================================
 
 local function isValidScrapTarget(model)
@@ -834,7 +922,7 @@ local function scanRoadScrapTargets()
 end
 
 -- ==============================================================================
--- 7. DISCRIMINADOR SEGURO DE DETECTORES & DIFERENTES MODOS DE DESPERTAR
+-- 8. FILTROS Y SELECCIÓN DE PUNTOS DE LA RED
 -- ==============================================================================
 
 local function isMovableTargetItem(entity)
@@ -890,28 +978,34 @@ local function getTargetNodeTowardsBase(itemPos, desiredHopDist)
 end
 
 -- ==============================================================================
--- PROTOCOLO DE DESPERTAR CON 4 MODOS INDEPENDIENTES (SIN ERRORES DE DETECTOR)
+-- 9. PROTOCOLO DE DESPERTAR CON MONITOREO FORENSE
 -- ==============================================================================
+
 local function wakeUpItem(targetEntity, mainPart, root)
     if not targetEntity or not targetEntity.Parent or not mainPart or not mainPart.Parent then 
-        return false 
+        return false, "Pieza destruida o nula" 
     end
 
-    -- 1. Filtro seguro de ClickDetector / DragDetector (Previene error de indexar MaxDist)
-    local detector = targetEntity:FindFirstChild("ItemDrag", true) or targetEntity:FindFirstChildWhichIsA("ClickDetector", true) or targetEntity:FindFirstChildWhichIsA("DragDetector", true)
+    -- 1. Verificación sin errores para ClickDetector / DragDetector
+    local detector = targetEntity:FindFirstChild("ItemDrag", true) 
+        or targetEntity:FindFirstChildWhichIsA("ClickDetector", true) 
+        or targetEntity:FindFirstChildWhichIsA("DragDetector", true)
+
     if detector then
         local isGhost = false
         pcall(function()
-            if detector:IsA("ClickDetector") and detector.MaxDist < 0 then
+            if detector:IsA("ClickDetector") and detector.MaxActivationDistance < 0 then
                 isGhost = true
-            elseif detector:IsA("DragDetector") and detector:GetAttribute("Disabled") == true then
+            elseif detector:IsA("DragDetector") and detector.Enabled == false then
                 isGhost = true
             end
         end)
-        if isGhost then return false end
+        if isGhost then 
+            return false, "Detector bloqueado (Objeto Fantasma detectado)" 
+        end
     end
 
-    -- 2. Desanclar en bloque
+    -- 2. Desanclar partes
     if targetEntity:IsA("Model") then
         for _, p in ipairs(targetEntity:GetDescendants()) do
             if p:IsA("BasePart") then
@@ -925,8 +1019,9 @@ local function wakeUpItem(targetEntity, mainPart, root)
     end
 
     local mode = Config.WakeUpMode
+    local details = string.format("Modo: %s", mode)
 
-    -- MODO A: Multi-Método (Recomendado)
+    -- Ejecución según el modo elegido
     if mode == "Multi-Método (Recomendado)" then
         if detector and detector:IsA("ClickDetector") and fireclickdetector then
             pcall(function() fireclickdetector(detector, 0) end)
@@ -938,10 +1033,8 @@ local function wakeUpItem(targetEntity, mainPart, root)
                 firetouchinterest(mainPart, root, 1)
             end)
         end
-        -- Pop vertical
         mainPart.AssemblyLinearVelocity = Vector3.new(0, 5.0, 0)
 
-    -- MODO B: Físico Directo (ApplyImpulse)
     elseif mode == "Físico Directo (ApplyImpulse)" then
         pcall(function()
             mainPart:ApplyImpulse(Vector3.new(0, mainPart:GetMass() * 25, 0))
@@ -953,7 +1046,6 @@ local function wakeUpItem(targetEntity, mainPart, root)
             end)
         end
 
-    -- MODO C: Toque de Red (Touch & Pop)
     elseif mode == "Toque de Red (Touch & Pop)" then
         if root and firetouchinterest then
             pcall(function()
@@ -963,24 +1055,32 @@ local function wakeUpItem(targetEntity, mainPart, root)
         end
         mainPart.AssemblyLinearVelocity = Vector3.new(0, 6.0, 0)
 
-    -- MODO D: Desanclaje & Gravedad
     else
         mainPart.AssemblyLinearVelocity = Vector3.new(0, 2.0, 0)
     end
 
-    return true
+    return true, details
 end
 
--- Ejecución de movimiento/lanzamiento tras el despertar
 local function launchOrMoveItem(targetEntity, mainPart, itemPos, genPos, root)
-    local ok = wakeUpItem(targetEntity, mainPart, root)
-    if not ok then return end
+    -- AUDITORÍA PRE-INTERACCIÓN
+    recordForensicIncident("1. DETECCIÓN PRE-INTENTO", targetEntity, mainPart, root, "Iniciando protocolo de despertar...")
+
+    local ok, reason = wakeUpItem(targetEntity, mainPart, root)
+    if not ok then
+        recordForensicIncident("❌ FALLO AL DESPERTAR", targetEntity, mainPart, root, reason)
+        return
+    end
 
     task.wait(0.06)
-    if not targetEntity.Parent or not mainPart.Parent then return end
+    if not targetEntity.Parent or not mainPart.Parent then 
+        recordForensicIncident("❌ DESAPARECIDO TRAS DESPERTAR", targetEntity, mainPart, root, "El objeto dejó de existir en Workspace")
+        return 
+    end
 
     local mode = Config.TransportMode
-    local itemHoriz = Vector3.new(mainPart.Position.X, 0, mainPart.Position.Z)
+    local posBeforeKick = mainPart.Position
+    local itemHoriz = Vector3.new(posBeforeKick.X, 0, posBeforeKick.Z)
     local genHoriz = Vector3.new(genPos.X, 0, genPos.Z)
     local dirToBase = (genHoriz - itemHoriz).Unit
 
@@ -995,7 +1095,10 @@ local function launchOrMoveItem(targetEntity, mainPart, itemPos, genPos, root)
     local distToSafeEdge = math.max(12, (itemHoriz - genHoriz).Magnitude - (Config.GeneratorSafeRadius - 12))
     local targetThrowDist = math.min(Config.KickDistance, distToSafeEdge)
 
+    local appliedVector = Vector3.zero
+
     local function applyVelocityToAll(vel, angVel)
+        appliedVector = vel
         if targetEntity:IsA("Model") then
             for _, p in ipairs(targetEntity:GetDescendants()) do
                 if p:IsA("BasePart") then
@@ -1014,7 +1117,6 @@ local function launchOrMoveItem(targetEntity, mainPart, itemPos, genPos, root)
         local verticalBoost = Config.KickArcHeight
         local kickVel = (spreadDir * horizSpeed) + Vector3.new(0, verticalBoost, 0)
         local spin = Vector3.new(math.random(-5, 5), math.random(-5, 5), math.random(-5, 5))
-
         applyVelocityToAll(kickVel, spin)
 
     elseif mode == "Arrastre + Impulso (Drag)" then
@@ -1026,7 +1128,7 @@ local function launchOrMoveItem(targetEntity, mainPart, itemPos, genPos, root)
         local slideDir = (Vector3.new(nextNode.X, 0, nextNode.Z) - itemHoriz).Unit
         applyVelocityToAll((slideDir * 60) + Vector3.new(0, 3, 0), Vector3.zero)
 
-    else -- "Teletransporte Telaraña"
+    else
         local nextNode = getTargetNodeTowardsBase(mainPart.Position, Config.WebStepDistance)
         local rDist = math.random() * Config.SpreadRadius
         local rAng = math.random() * math.pi * 2
@@ -1043,9 +1145,28 @@ local function launchOrMoveItem(targetEntity, mainPart, itemPos, genPos, root)
         end
         applyVelocityToAll(Vector3.new(0, -2.5, 0), Vector3.zero)
     end
+
+    recordForensicIncident("2. IMPULSO APLICADO", targetEntity, mainPart, root, string.format("Modo: %s | Vector Impulso: (%.1f, %.1f, %.1f)", mode, appliedVector.X, appliedVector.Y, appliedVector.Z))
+
+    -- AUDITORÍA POST-LANZAMIENTO: Comprobar 0.35s después si realmente se movió o si el servidor lo frenó
+    task.spawn(function()
+        task.wait(0.35)
+        if targetEntity and targetEntity.Parent and mainPart and mainPart.Parent then
+            local posAfter = mainPart.Position
+            local deltaDist = math.floor((posAfter - posBeforeKick).Magnitude * 10) / 10
+            local velNow = mainPart.AssemblyLinearVelocity
+
+            local verdict = deltaDist > 6 and "✅ DESPLAZAMIENTO EXITOSO" or "⚠️ INMÓVIL / RESISTENCIA DEL SERVIDOR"
+            local extra = string.format("Delta Movido: %.1f studs | Vel Residual: (%.1f, %.1f, %.1f) | Veredicto: %s", deltaDist, velNow.X, velNow.Y, velNow.Z, verdict)
+
+            recordForensicIncident("3. VERIFICACIÓN POST-IMPACTO", targetEntity, mainPart, root, extra)
+        else
+            recordForensicIncident("3. VERIFICACIÓN POST-IMPACTO", targetEntity, mainPart, root, "El objeto desapareció o fue recogido por el juego.")
+        end
+    end)
 end
 
--- Bucle principal de detección y pateo
+-- Bucle de detección y despacho
 task.spawn(function()
     while true do
         task.wait(Config.TeleportInterval)
@@ -1071,25 +1192,12 @@ task.spawn(function()
                                     local insideBase = Config.BasePrevent and (distToGen <= Config.GeneratorSafeRadius)
 
                                     if not insideBase and distToGen <= Config.MaxMapRadius then
-                                        -- Comprobación segura sin arrojar error si es DragDetector
-                                        local isGhost = false
-                                        local det = item:FindFirstChild("ItemDrag", true) or item:FindFirstChildWhichIsA("ClickDetector", true) or item:FindFirstChildWhichIsA("DragDetector", true)
-                                        if det then
-                                            pcall(function()
-                                                if det:IsA("ClickDetector") and det.MaxDist < 0 then
-                                                    isGhost = true
-                                                end
-                                            end)
-                                        end
-
-                                        if not isGhost then
-                                            table.insert(candidates, {
-                                                Entity = item,
-                                                Part = mainPart,
-                                                Pos = iPos,
-                                                Dist = distToMe
-                                            })
-                                        end
+                                        table.insert(candidates, {
+                                            Entity = item,
+                                            Part = mainPart,
+                                            Pos = iPos,
+                                            Dist = distToMe
+                                        })
                                     end
                                 end
                             end
@@ -1115,7 +1223,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 8. MOTOR DE CONDUCCIÓN EN PISTA + RETORNO A BASE POR GASOLINA
+-- 10. MOTOR DE CONDUCCIÓN EN PISTA + RETORNO A BASE POR GASOLINA
 -- ==============================================================================
 
 local function buildForwardRoadChain(startPos, currentDir, returnToBase)
@@ -1335,26 +1443,98 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 9. INTERFAZ FLUENT COMPLETA
+-- 11. INTERFAZ FLUENT CON PESTAÑA FORENSE INTEGRADA
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "SCRAP CRUSHER & KICKER V4.2",
-    SubTitle = "DragDetector Fix + Modos de Despertar + Red 1500m",
+    Title = "SCRAP CRUSHER & FORENSIC V4.3",
+    SubTitle = "Auditoría en Tiempo Real + Red 1500m",
     TabWidth = 155,
-    Size = UDim2.fromOffset(610, 530),
+    Size = UDim2.fromOffset(630, 540),
     Acrylic = false,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
 })
 
 local Tabs = {
-    Items    = Window:AddTab({ Title = "Patear / Telaraña", Icon = "share-2" }),
-    RoadFarm = Window:AddTab({ Title = "Auto-Pistas", Icon = "truck" }),
-    AutoEat  = Window:AddTab({ Title = "Auto-Comer", Icon = "utensils" }),
-    Fuel     = Window:AddTab({ Title = "Auto-Gasolina", Icon = "fuel" })
+    Forensics = Window:AddTab({ Title = "Bitácora Forense", Icon = "file-text" }),
+    Items     = Window:AddTab({ Title = "Patear / Telaraña", Icon = "share-2" }),
+    RoadFarm  = Window:AddTab({ Title = "Auto-Pistas", Icon = "truck" }),
+    AutoEat   = Window:AddTab({ Title = "Auto-Comer", Icon = "utensils" }),
+    Fuel      = Window:AddTab({ Title = "Auto-Gasolina", Icon = "fuel" })
 }
 
+-- PESTAÑA FORENSE
+Tabs.Forensics:AddSection("Auditoría en Vivo de Scrap & Interacciones Físicas")
+
+local ForensicSummaryParagraph = Tabs.Forensics:AddParagraph({
+    Title = "Resumen de Registro",
+    Content = "Sin registros capturados aún..."
+})
+
+local function compileFullForensicReport()
+    local lines = {
+        "==================================================================",
+        "          REPORTE FORENSE DE CHATARRA & FÍSICAS (SCRAP LOG)       ",
+        "==================================================================",
+        string.format("Fecha de Extracción: %s", os.date("%Y-%m-%d %X")),
+        string.format("Eventos Registrados: %d", #ScrapForensicHistory),
+        string.format("Modo de Lanzamiento: %s | Modo Despertar: %s", Config.TransportMode, Config.WakeUpMode),
+        "\n[HISTORIAL DE INTERACCIONES CON CHATARRA (MÁS RECIENTES PRIMERO)]:\n"
+    }
+
+    if #ScrapForensicHistory == 0 then
+        table.insert(lines, "  (No se han registrado interacciones con chatarra en esta sesión)")
+    else
+        for i = 1, #ScrapForensicHistory do
+            local e = ScrapForensicHistory[i]
+            table.insert(lines, string.format("------------------------------------------------------------------"))
+            table.insert(lines, string.format("[%s] ETAPA: %s | Objeto: '%s' (%s)", e.Timestamp, e.Stage, e.Name, e.Class))
+            table.insert(lines, string.format("  • Distancia: %.1f studs | Pos: %s", e.DistanceToPlayer, e.WorldPos))
+            table.insert(lines, string.format("  • Anchored: %s | CanCollide: %s | Masa: %.1f | Vel: %s", tostring(e.Anchored), tostring(e.CanCollide), e.Mass, e.Velocity))
+            table.insert(lines, string.format("  • Network Owner: %s", tostring(e.NetworkOwner)))
+            table.insert(lines, string.format("  • Detector: %s", e.Detector))
+            table.insert(lines, string.format("  • Atributos Servidor: %s", e.Attributes))
+            if e.Details and e.Details ~= "" then
+                table.insert(lines, string.format("  🔍 DETALLES DE IMPACTO: %s", e.Details))
+            end
+        end
+    end
+
+    lines[#lines + 1] = "=================================================================="
+    return table.concat(lines, "\n")
+end
+
+Tabs.Forensics:AddButton({
+    Title = "📋 COPIAR BITÁCORA FORENSE COMPLETA",
+    Description = "Copia al portapapeles todos los datos y sucesos registrados de los scrap",
+    Callback = function()
+        local report = compileFullForensicReport()
+        if setclipboard then
+            setclipboard(report)
+        elseif toclipboard then
+            toclipboard(report)
+        end
+        Fluent:Notify({ Title = "Bitácora Copiada", Content = "Pega los datos para diagnosticar la falla.", Duration = 3 })
+    end
+})
+
+Tabs.Forensics:AddButton({
+    Title = "🗑️ Limpiar Bitácora Forense",
+    Callback = function()
+        table.clear(ScrapForensicHistory)
+        TotalForensicLogs = 0
+        Fluent:Notify({ Title = "Limpio", Content = "Historial forense reiniciado.", Duration = 2 })
+    end
+})
+
+Tabs.Forensics:AddToggle("ForensicToggle", {
+    Title = "Activar Registro de Sucesos",
+    Default = true,
+    Callback = function(v) Config.ForensicLogging = v end
+})
+
+-- PESTAÑA ITEMS
 Tabs.Items:AddSection("Modos de Lanzamiento hacia la Base")
 
 local KickSendToggle = Tabs.Items:AddToggle("AutoSendToggle", {
@@ -1389,7 +1569,6 @@ Tabs.Items:AddDropdown("TransportModeDropdown", {
 
 Tabs.Items:AddSlider("PresenceSlider", {
     Title = "Distancia para Despertar / Patear (Studs)",
-    Description = "Límite cercano (10m) dentro del alcance de ItemDrag",
     Default = 10,
     Min = 5,
     Max = 25,
@@ -1507,7 +1686,7 @@ Tabs.Items:AddSlider("BaseRadiusSlider", {
     end
 })
 
--- PESTAÑA 2: AUTO-PISTAS
+-- PESTAÑA AUTO-PISTAS
 Tabs.RoadFarm:AddSection("Atropello en Pistas")
 
 local AutoFarmToggle = Tabs.RoadFarm:AddToggle("AutoFarmToggle", {
@@ -1556,7 +1735,7 @@ Tabs.RoadFarm:AddSlider("RoadWidthSlider", {
     Callback = function(v) Config.RoadMaxHalfWidth = v end
 })
 
--- PESTAÑA 3: AUTO-EAT
+-- PESTAÑA AUTO-EAT
 Tabs.AutoEat:AddSection("Consumo Inteligente de Zanahorias")
 
 local AutoEatToggleInstance = Tabs.AutoEat:AddToggle("AutoEatToggle", {
@@ -1607,7 +1786,7 @@ Tabs.AutoEat:AddButton({
     Callback = function() eatGroundFood(false) end
 })
 
--- PESTAÑA 4: AUTO-GASOLINA
+-- PESTAÑA AUTO-GASOLINA
 Tabs.Fuel:AddSection("Recarga en Tanque")
 
 Tabs.Fuel:AddToggle("AutoRefuelToggle", {
@@ -1652,12 +1831,12 @@ Tabs.Fuel:AddButton({
 })
 
 -- ==============================================================================
--- 10. WIDGETS FLOTANTES
+-- 12. WIDGETS FLOTANTES
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local FloatGui = Instance.new("ScreenGui")
-FloatGui.Name = "ScrapWebMasterFloatGuiV42"
+FloatGui.Name = "ScrapForensicFloatGuiV43"
 FloatGui.ResetOnSpawn = false
 FloatGui.Parent = GuiParent
 
@@ -1805,6 +1984,19 @@ task.spawn(function()
             Config.LowFuelThreshold,
             FuelState.Status
         ))
+
+        -- Actualizar Resumen Forense
+        if #ScrapForensicHistory > 0 then
+            local latest = ScrapForensicHistory[1]
+            ForensicSummaryParagraph:SetDesc(string.format(
+                "Eventos Registrados: %d\nÚltimo Suceso: [%s] %s sobre '%s'\nDetalle: %s",
+                #ScrapForensicHistory,
+                latest.Timestamp,
+                latest.Stage,
+                latest.Name,
+                latest.Details
+            ))
+        end
     end
 end)
 
