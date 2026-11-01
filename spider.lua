@@ -1,5 +1,5 @@
 -- ==============================================================================
--- SCRAP HIGHWAY CRUSHER, VIRTUAL WEB 1500m, WAKE-UP KICK & AUTO-FUEL V4.1
+-- SCRAP HIGHWAY CRUSHER, VIRTUAL WEB 1500m, DRAGDETECTOR FIX & WAKE MODES V4.2
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -27,10 +27,11 @@ local Config = {
     -- Sistema de Pateo / Lanzamiento / Telaraña Global (A pie y en Auto)
     AutoSendItems = true,
     TransportMode = "Patada Física (Lanzar)", -- 4 Modos disponibles
+    WakeUpMode = "Multi-Método (Recomendado)",-- Modos para despertar objetos dormidos
     ItemsPerTick = 2,           -- Agarra/Patea 2 objetos a la vez
-    CollectRadius = 10,         -- Estar cerca (10 studs, dentro del MaxDist: 12 de ItemDrag)
-    KickDistance = 100,         -- Distancia objetivo del lanzamiento/patada (~100 studs hacia la base)
-    KickArcHeight = 28,         -- Impulso vertical para que vuele en arco y no se trabe en el piso
+    CollectRadius = 10,         -- Estar cerca (10 studs)
+    KickDistance = 100,         -- Distancia objetivo del lanzamiento (~100 studs hacia la base)
+    KickArcHeight = 28,         -- Impulso vertical para arco
     TeleportInterval = 0.16,    -- Intervalo de escaneo y despacho
 
     -- Filtros de Objetos (Incluye Scrap, Refined Metal, Fuel y Refined Fuel)
@@ -67,7 +68,7 @@ local ManualDeliveryPoints = {} -- Bolitas manuales agregadas por ti
 local VisualPool = {}           -- Pool ligero por si activas ver las bolitas cercanas
 local RoadScrapList = {}        -- Cúmulos y autos chatarra en pista
 local IgnoredScrapUntil = {}    -- Cooldown de cúmulos embestidos
-local RecentlyKicked = {}       -- Cooldown por ítem para evitar rebotes o dobles disparos
+local RecentlyKicked = {}       -- Cooldown por ítem para evitar rebotes
 
 local CachedGeneratorPos = nil
 local CurrentScrapTarget = nil
@@ -458,8 +459,8 @@ local function refuelTruckFromNearbyCan()
     end
 
     if bestCan and bestPart then
-        local cd = bestCan:FindFirstChildOfClass("ClickDetector") or bestCan:FindFirstChildWhichIsA("ClickDetector", true)
-        if cd and cd.MaxDist > 0 and fireclickdetector then
+        local cd = bestCan:FindFirstChild("ItemDrag", true) or bestCan:FindFirstChildWhichIsA("ClickDetector", true)
+        if cd and cd:IsA("ClickDetector") and fireclickdetector then
             pcall(function() fireclickdetector(cd, 0) end)
             pcall(function() fireclickdetector(cd) end)
         end
@@ -833,7 +834,7 @@ local function scanRoadScrapTargets()
 end
 
 -- ==============================================================================
--- 7. DESPERTADOR DE OBJETOS + MOTOR DE PATEO Y TRASLADO
+-- 7. DISCRIMINADOR SEGURO DE DETECTORES & DIFERENTES MODOS DE DESPERTAR
 -- ==============================================================================
 
 local function isMovableTargetItem(entity)
@@ -889,56 +890,92 @@ local function getTargetNodeTowardsBase(itemPos, desiredHopDist)
 end
 
 -- ==============================================================================
--- PROTOCOLO DE DESPERTAR COMPLETO (DESPIERTA FÍSICAS + CLICKDETECTOR + OWNERSHIP)
+-- PROTOCOLO DE DESPERTAR CON 4 MODOS INDEPENDIENTES (SIN ERRORES DE DETECTOR)
 -- ==============================================================================
 local function wakeUpItem(targetEntity, mainPart, root)
     if not targetEntity or not targetEntity.Parent or not mainPart or not mainPart.Parent then 
         return false 
     end
 
-    -- 1. Descarta de inmediato objetos ya bloqueados/fantasmas (MaxDist negativo)
-    local dragDetector = targetEntity:FindFirstChild("ItemDrag", true) or targetEntity:FindFirstChildWhichIsA("ClickDetector", true)
-    if dragDetector and dragDetector.MaxDist < 0 then
-        return false
+    -- 1. Filtro seguro de ClickDetector / DragDetector (Previene error de indexar MaxDist)
+    local detector = targetEntity:FindFirstChild("ItemDrag", true) or targetEntity:FindFirstChildWhichIsA("ClickDetector", true) or targetEntity:FindFirstChildWhichIsA("DragDetector", true)
+    if detector then
+        local isGhost = false
+        pcall(function()
+            if detector:IsA("ClickDetector") and detector.MaxDist < 0 then
+                isGhost = true
+            elseif detector:IsA("DragDetector") and detector:GetAttribute("Disabled") == true then
+                isGhost = true
+            end
+        end)
+        if isGhost then return false end
     end
 
-    -- 2. Desanclar partes físicas
+    -- 2. Desanclar en bloque
     if targetEntity:IsA("Model") then
         for _, p in ipairs(targetEntity:GetDescendants()) do
             if p:IsA("BasePart") then
                 p.Anchored = false
+                p.CanCollide = true
             end
         end
     elseif targetEntity:IsA("BasePart") then
         targetEntity.Anchored = false
+        targetEntity.CanCollide = true
     end
 
-    -- 3. Activar ClickDetector (ItemDrag) de forma legítima
-    if dragDetector and fireclickdetector then
-        pcall(function() fireclickdetector(dragDetector, 0) end)
-        pcall(function() fireclickdetector(dragDetector) end)
-    end
+    local mode = Config.WakeUpMode
 
-    -- 4. Reclamar Network Ownership y despertar simulación del motor físico
-    if root and firetouchinterest then
+    -- MODO A: Multi-Método (Recomendado)
+    if mode == "Multi-Método (Recomendado)" then
+        if detector and detector:IsA("ClickDetector") and fireclickdetector then
+            pcall(function() fireclickdetector(detector, 0) end)
+            pcall(function() fireclickdetector(detector) end)
+        end
+        if root and firetouchinterest then
+            pcall(function()
+                firetouchinterest(mainPart, root, 0)
+                firetouchinterest(mainPart, root, 1)
+            end)
+        end
+        -- Pop vertical
+        mainPart.AssemblyLinearVelocity = Vector3.new(0, 5.0, 0)
+
+    -- MODO B: Físico Directo (ApplyImpulse)
+    elseif mode == "Físico Directo (ApplyImpulse)" then
         pcall(function()
-            firetouchinterest(mainPart, root, 0)
-            firetouchinterest(mainPart, root, 1)
+            mainPart:ApplyImpulse(Vector3.new(0, mainPart:GetMass() * 25, 0))
         end)
+        if root and firetouchinterest then
+            pcall(function()
+                firetouchinterest(mainPart, root, 0)
+                firetouchinterest(mainPart, root, 1)
+            end)
+        end
+
+    -- MODO C: Toque de Red (Touch & Pop)
+    elseif mode == "Toque de Red (Touch & Pop)" then
+        if root and firetouchinterest then
+            pcall(function()
+                firetouchinterest(mainPart, root, 0)
+                firetouchinterest(mainPart, root, 1)
+            end)
+        end
+        mainPart.AssemblyLinearVelocity = Vector3.new(0, 6.0, 0)
+
+    -- MODO D: Desanclaje & Gravedad
+    else
+        mainPart.AssemblyLinearVelocity = Vector3.new(0, 2.0, 0)
     end
 
-    -- 5. Micro-impulso vertical para despegarlo del terreno y romper el "Physics Sleep"
-    mainPart.AssemblyLinearVelocity = Vector3.new(0, 4.0, 0)
     return true
 end
 
 -- Ejecución de movimiento/lanzamiento tras el despertar
 local function launchOrMoveItem(targetEntity, mainPart, itemPos, genPos, root)
-    -- Paso 1: Despertar el objeto y transferir propiedad
     local ok = wakeUpItem(targetEntity, mainPart, root)
     if not ok then return end
 
-    -- Pausa de sincronización: Da tiempo al servidor y al motor de física de reconocer que el objeto está activo
     task.wait(0.06)
     if not targetEntity.Parent or not mainPart.Parent then return end
 
@@ -973,7 +1010,6 @@ local function launchOrMoveItem(targetEntity, mainPart, itemPos, genPos, root)
     end
 
     if mode == "Patada Física (Lanzar)" then
-        -- FÍSICA PURA: No se usa PivotTo ni CFrame para evitar que el servidor lo considere teletransporte ilegal
         local horizSpeed = math.clamp(targetThrowDist * 1.15, 30, 165)
         local verticalBoost = Config.KickArcHeight
         local kickVel = (spreadDir * horizSpeed) + Vector3.new(0, verticalBoost, 0)
@@ -1035,9 +1071,18 @@ task.spawn(function()
                                     local insideBase = Config.BasePrevent and (distToGen <= Config.GeneratorSafeRadius)
 
                                     if not insideBase and distToGen <= Config.MaxMapRadius then
-                                        -- Filtro inmediato: Si ya es fantasma con MaxDist negativo, se salta
-                                        local cd = item:FindFirstChild("ItemDrag", true) or item:FindFirstChildWhichIsA("ClickDetector", true)
-                                        if not (cd and cd.MaxDist < 0) then
+                                        -- Comprobación segura sin arrojar error si es DragDetector
+                                        local isGhost = false
+                                        local det = item:FindFirstChild("ItemDrag", true) or item:FindFirstChildWhichIsA("ClickDetector", true) or item:FindFirstChildWhichIsA("DragDetector", true)
+                                        if det then
+                                            pcall(function()
+                                                if det:IsA("ClickDetector") and det.MaxDist < 0 then
+                                                    isGhost = true
+                                                end
+                                            end)
+                                        end
+
+                                        if not isGhost then
                                             table.insert(candidates, {
                                                 Entity = item,
                                                 Part = mainPart,
@@ -1290,12 +1335,12 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 9. INTERFAZ FLUENT
+-- 9. INTERFAZ FLUENT COMPLETA
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "SCRAP CRUSHER & KICKER V4.1",
-    SubTitle = "Wake-Up Protocol + Red 1500m + Fuel & Metal",
+    Title = "SCRAP CRUSHER & KICKER V4.2",
+    SubTitle = "DragDetector Fix + Modos de Despertar + Red 1500m",
     TabWidth = 155,
     Size = UDim2.fromOffset(610, 530),
     Acrylic = false,
@@ -1318,8 +1363,20 @@ local KickSendToggle = Tabs.Items:AddToggle("AutoSendToggle", {
     Callback = function(v) Config.AutoSendItems = v end
 })
 
+Tabs.Items:AddDropdown("WakeUpModeDropdown", {
+    Title = "Modo para Despertar el Objeto",
+    Values = {
+        "Multi-Método (Recomendado)",
+        "Físico Directo (ApplyImpulse)",
+        "Toque de Red (Touch & Pop)",
+        "Desanclaje & Gravedad"
+    },
+    Default = "Multi-Método (Recomendado)",
+    Callback = function(v) Config.WakeUpMode = v end
+})
+
 Tabs.Items:AddDropdown("TransportModeDropdown", {
-    Title = "Modo de Movimiento",
+    Title = "Modo de Movimiento / Patada",
     Values = {
         "Patada Física (Lanzar)",
         "Arrastre + Impulso (Drag)",
@@ -1332,7 +1389,7 @@ Tabs.Items:AddDropdown("TransportModeDropdown", {
 
 Tabs.Items:AddSlider("PresenceSlider", {
     Title = "Distancia para Despertar / Patear (Studs)",
-    Description = "Límite cercano (10m) dentro del MaxDist: 12 de ItemDrag",
+    Description = "Límite cercano (10m) dentro del alcance de ItemDrag",
     Default = 10,
     Min = 5,
     Max = 25,
@@ -1600,7 +1657,7 @@ Tabs.Fuel:AddButton({
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local FloatGui = Instance.new("ScreenGui")
-FloatGui.Name = "ScrapWebMasterFloatGuiV41"
+FloatGui.Name = "ScrapWebMasterFloatGuiV42"
 FloatGui.ResetOnSpawn = false
 FloatGui.Parent = GuiParent
 
@@ -1721,9 +1778,10 @@ task.spawn(function()
         end
 
         StatusParagraph:SetDesc(string.format(
-            "Rango: %d studs | Red RAM: %d nodos\nModo: %s (%d objetos a %dm)\nPistas: %d | Cúmulos: %d | Gasolina: %d%%\nEstado: %s",
+            "Rango: %d studs | Red RAM: %d nodos\nDespertar: %s\nModo: %s (%d obj a %dm)\nPistas: %d | Cúmulos: %d | Gasolina: %d%%\nEstado: %s",
             Config.MaxMapRadius,
             #VirtualWebGrid,
+            Config.WakeUpMode,
             Config.TransportMode,
             Config.ItemsPerTick,
             Config.CollectRadius,
