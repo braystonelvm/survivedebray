@@ -1,5 +1,5 @@
 -- ==============================================================================
--- SCRAP HIGHWAY CRUSHER V5.0: MOTOR ZHUB NATIVO (CFRAME PURO A BASE - 0% FANTASMAS)
+-- SCRAP HIGHWAY CRUSHER V5.1: ZHUB ENGINE (ALCANCE CERCANO 8-12 STUDS -> BASE)
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -16,9 +16,8 @@ local BaseCenter = Vector3.new(0, 0, 0)
 local ZHUB_DELIVERY_POINT = Vector3.new(8.0, 2.6, 29.4)
 
 local Config = {
-    -- Rango de acción global (desde 50 hasta 1500 studs)
-    MaxMapRadius = 1500,
-    ItemSearchRadius = 500,     -- Radio alrededor de ti para atraer objetos (configurable hasta 1500)
+    -- Rango de alcance directo del personaje (8-12 studs)
+    MaxReachDistance = 12,       -- Por defecto 12 studs (solo lo que esté a tu alcance inmediato)
     ItemsPerPulse = 4,          -- Cantidad de objetos teletransportados por pulso
 
     -- Auto-Conducción por Pistas
@@ -28,9 +27,9 @@ local Config = {
     ScrapSearchRadius = 450,
     CrushOvershoot = 16,
 
-    -- Teletransporte ZHUB Puro (Sin animación a los pies, velocidad 0)
+    -- Teletransporte ZHUB Puro (CFrame instantáneo directo a base)
     AutoSendItems = true,
-    PulseInterval = 0.12,       -- Frecuencia de los pulsos de CFrame
+    PulseInterval = 0.12,
 
     -- Filtros de Objetos
     MoveScrapAndMetal = true,
@@ -38,7 +37,7 @@ local Config = {
     MoveAllResources = true,
 
     -- Protección de Base
-    GeneratorSafeRadius = 45,   -- Cuando llega a menos de 45 studs del punto ZHUB, se suelta para que la base lo coma
+    GeneratorSafeRadius = 45,   -- Se sueltan al llegar para que la base los reciba
 
     -- Auto-Eat Integrado
     AutoEatEnabled = true,
@@ -391,7 +390,7 @@ local function isMovableResource(entity)
 end
 
 -- ==============================================================================
--- 5. MOTOR DE TELETRANSPORTE NATIVO ZHUB (CFRAME PURO A BASE - VELOCIDAD 0)
+-- 5. MOTOR DE TELETRANSPORTE NATIVO ZHUB (SOLO COSAS A TU ALCANCE 8-12 STUDS)
 -- ==============================================================================
 
 local function pulseItemDirectlyToZHUBBase(targetEntity, mainPart)
@@ -406,12 +405,12 @@ local function pulseItemDirectlyToZHUBBase(targetEntity, mainPart)
         targetEntity.Anchored = false
     end
 
-    -- 2. Dispersión ligera en el punto de entrega de ZHUB para que no se apilen en un solo pixel
+    -- 2. Dispersión ligera en el punto de entrega de ZHUB
     local spreadX = (math.random() - 0.5) * 4.0
     local spreadZ = (math.random() - 0.5) * 4.0
     local targetDest = ZHUB_DELIVERY_POINT + Vector3.new(spreadX, 0, spreadZ)
 
-    -- 3. CFrame directo sin tocar los pies del jugador
+    -- 3. CFrame directo al punto de la base (sin tocar tus pies ni usar animaciones)
     local targetCF = CFrame.new(targetDest)
 
     if targetEntity:IsA("Model") then
@@ -420,25 +419,24 @@ local function pulseItemDirectlyToZHUBBase(targetEntity, mainPart)
         mainPart.CFrame = targetCF
     end
 
-    -- 4. REGLA CLAVE DE ZHUB: Velocidad estrictamente CERO para no violar límites del servidor
+    -- 4. Velocidad estrictamente CERO para mantener la integridad en el servidor
     mainPart.AssemblyLinearVelocity = Vector3.zero
     mainPart.AssemblyAngularVelocity = Vector3.zero
 end
 
--- Bucle de envío continuo
+-- Bucle de envío continuo (Filtrado estricto a tu alcance de 8-12 studs)
 task.spawn(function()
     while true do
         task.wait(Config.PulseInterval)
         if Config.AutoSendItems then
             local _, root = getCharacterParts()
             local droppedFolder = workspace:FindFirstChild("DroppedItems")
-            if droppedFolder then
-                local myPos = root and root.Position or ZHUB_DELIVERY_POINT
+            if droppedFolder and root then
+                local myPos = root.Position
                 local candidates = {}
-                local now = tick()
 
                 for _, item in ipairs(droppedFolder:GetChildren()) do
-                    if not (RecentlyTeleported[item] and now < RecentlyTeleported[item]) then
+                    if not (RecentlyTeleported[item] and tick() < RecentlyTeleported[item]) then
                         if isMovableResource(item) then
                             local mainPart = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
                             if mainPart then
@@ -446,8 +444,9 @@ task.spawn(function()
                                 local distToMe = (iPos - myPos).Magnitude
                                 local distToDelivery = (Vector3.new(iPos.X, 0, iPos.Z) - Vector3.new(ZHUB_DELIVERY_POINT.X, 0, ZHUB_DELIVERY_POINT.Z)).Magnitude
 
-                                -- Solo si está fuera de la base y dentro del radio de búsqueda
-                                if distToDelivery > Config.GeneratorSafeRadius and distToMe <= Config.ItemSearchRadius then
+                                -- FILTRO EXACTO: Solo objetos a tu alcance inmediato (<= MaxReachDistance studs)
+                                -- y que no estén ya entregados en la base
+                                if distToDelivery > Config.GeneratorSafeRadius and distToMe <= Config.MaxReachDistance then
                                     table.insert(candidates, {
                                         Entity = item,
                                         Part = mainPart,
@@ -459,7 +458,7 @@ task.spawn(function()
                     end
                 end
 
-                -- Priorizar los más cercanos al jugador primero
+                -- Priorizar los más cercanos a ti primero
                 table.sort(candidates, function(a, b) return a.Dist < b.Dist end)
 
                 local countToProcess = math.min(#candidates, Config.ItemsPerPulse)
@@ -660,8 +659,8 @@ end)
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "SCRAP CRUSHER V5.0 | ZHUB ENGINE",
-    SubTitle = "Teletransporte CFrame Directo a Base",
+    Title = "SCRAP CRUSHER V5.1 | ZHUB ENGINE",
+    SubTitle = "Teletransporte CFrame Directo (Alcance 8-12m)",
     TabWidth = 155,
     Size = UDim2.fromOffset(610, 520),
     Acrylic = false,
@@ -677,23 +676,23 @@ local Tabs = {
 }
 
 -- PESTAÑA TRANSPORTE
-Tabs.Transport:AddSection("Motor ZHUB: CFrame Directo a Base (Velocidad Cero)")
+Tabs.Transport:AddSection("Teletransporte ZHUB (Solo a tu Alcance)")
 
 Tabs.Transport:AddToggle("AutoSendToggle", {
-    Title = "⚡ Activar Teletransporte ZHUB hacia Base",
-    Description = "Teletransporta chatarra y combustible a la base sin tocar tus pies y sin desync",
+    Title = "⚡ Activar Teletransporte ZHUB a Base",
+    Description = "Teletransporta chatarra y galones a tu alcance directo a la base",
     Default = true,
     Callback = function(v) Config.AutoSendItems = v end
 })
 
-Tabs.Transport:AddSlider("ItemSearchRadiusSlider", {
-    Title = "Radio de Búsqueda de Objetos (Studs)",
-    Description = "Distancia a tu alrededor para atraer chatarra y galones",
-    Default = 500,
-    Min = 50,
-    Max = 1500,
+Tabs.Transport:AddSlider("ReachRadiusSlider", {
+    Title = "Distancia de Alcance (Studs)",
+    Description = "Solo teletransporta objetos dentro de este rango a tu alrededor (8-12 studs)",
+    Default = 12,
+    Min = 6,
+    Max = 20,
     Rounding = 0,
-    Callback = function(v) Config.ItemSearchRadius = v end
+    Callback = function(v) Config.MaxReachDistance = v end
 })
 
 Tabs.Transport:AddSlider("ItemsPerPulseSlider", {
@@ -707,7 +706,7 @@ Tabs.Transport:AddSlider("ItemsPerPulseSlider", {
 
 Tabs.Transport:AddSlider("SafeRadiusSlider", {
     Title = "Radio Seguro en Base (Studs)",
-    Description = "Cuando los objetos llegan aquí, se sueltan para el generador",
+    Description = "Distancia en la base donde se dejan libres para que se procesen",
     Default = 45,
     Min = 20,
     Max = 100,
@@ -782,7 +781,7 @@ Tabs.Fuel:AddButton({
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local FloatGui = Instance.new("ScreenGui")
-FloatGui.Name = "ScrapZhubMasterFloatGuiV50"
+FloatGui.Name = "ScrapZhubMasterFloatGuiV51"
 FloatGui.ResetOnSpawn = false
 FloatGui.Parent = GuiParent
 
