@@ -1,5 +1,5 @@
 -- ==============================================================================
--- SCRAP HIGHWAY CRUSHER, VIRTUAL WEB 1500m + REGISTRADOR FORENSE TOTAL V4.3
+-- SCRAP HIGHWAY CRUSHER, VIRTUAL WEB 1500m & GHOST-PROOF TRANSPORT V4.4
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -14,54 +14,52 @@ local lp = Players.LocalPlayer
 local BaseCenter = Vector3.new(0, 0, 0)
 
 local Config = {
-    -- Rango expandido a 1500 studs en TODO el mapa (Pistas + Terreno libre)
     MaxMapRadius = 1500,
 
     -- Auto-Conducción por Pistas (Velocidad 115)
     AutoFarmRoads = false,
     VehicleSpeed = 115,
-    RoadMaxHalfWidth = 12,      -- Límite lateral estricto dentro del asfalto para el auto
-    ScrapSearchRadius = 450,    -- Radio de detección de cúmulos
-    CrushOvershoot = 16,        -- Rebasa el cúmulo sobre el mismo carril sin vibrar
+    RoadMaxHalfWidth = 12,
+    ScrapSearchRadius = 450,
+    CrushOvershoot = 16,
 
-    -- Sistema de Pateo / Lanzamiento / Telaraña Global (A pie y en Auto)
+    -- Sistema de Transporte Seguro Anti-Fantasmas
     AutoSendItems = true,
-    TransportMode = "Patada Física (Lanzar)", -- 4 Modos disponibles
-    WakeUpMode = "Multi-Método (Recomendado)",-- Modos para despertar objetos dormidos
-    ItemsPerTick = 2,           -- Agarra/Patea 2 objetos a la vez
-    CollectRadius = 10,         -- Estar cerca (10 studs)
-    KickDistance = 100,         -- Distancia objetivo del lanzamiento (~100 studs hacia la base)
-    KickArcHeight = 28,         -- Impulso vertical para arco
-    TeleportInterval = 0.16,    -- Intervalo de escaneo y despacho
+    TransportMode = "Impulso Seguro (Anti-Fantasma)", -- Nuevo modo por defecto
+    ItemsPerTick = 2,
+    CollectRadius = 10,
+    KickDistance = 85,
+    KickArcHeight = 12,          -- Altura controlada para no violar límites
+    TeleportInterval = 0.22,
 
-    -- Filtros de Objetos (Incluye Scrap, Refined Metal, Fuel y Refined Fuel)
-    MoveScrapAndMetal = true,   -- Scrap, Chatarra, Metal, Refined Metal, Barrel, Sheet
-    MoveFuelCans = true,        -- Fuel y Refined Fuel
-    MoveAllResources = true,    -- Cualquier objeto con ItemType = Resource
+    -- Filtros de Objetos
+    MoveScrapAndMetal = true,
+    MoveFuelCans = true,
+    MoveAllResources = true,
 
-    -- Red Virtual de 1500m (Cero Lag) + Puntos Manuales
+    -- Red Virtual de 1500m + Puntos Manuales
     ChainTeleport = true,
     BasePrevent = true,
-    GeneratorSafeRadius = 145,  -- Radio donde ya deja los materiales en la base
-    WebStepDistance = 35,       -- Espaciado de la cuadrícula en todo el mapa
-    WebGroundHeight = 0.6,      -- Altura fija pegada al suelo
-    SpreadRadius = 1.8,         -- Dispersión
-    ShowWebVisuals = false,     -- Muestra solo los nodos cercanos para 0% lag
+    GeneratorSafeRadius = 145,
+    WebStepDistance = 35,
+    WebGroundHeight = 0.6,
+    SpreadRadius = 1.8,
+    ShowWebVisuals = false,
 
-    -- Auto-Eat Integrado (Activado por defecto)
+    -- Auto-Eat Integrado
     AutoEatEnabled = true,
     EatHealthThreshold = 60,
     EatHungerThreshold = 50,
     EatScanRadius = 24,
     EatCooldown = 0.9,
 
-    -- Auto-Gasolina desde el Auto
+    -- Auto-Gasolina
     AutoRefuelEnabled = true,
     LowFuelThreshold = 25,
     FullFuelThreshold = 90,
     FuelCanScanRadius = 45,
 
-    -- Registrador Forense Activo
+    -- Auditoría Forense
     ForensicLogging = true
 }
 
@@ -77,25 +75,21 @@ local CachedGeneratorPos = nil
 local CurrentScrapTarget = nil
 local IsRecoveringToRoad = false
 
--- Bitácora de Telemetría Forense
 local ScrapForensicHistory = {}
 local TotalForensicLogs = 0
 
--- Estado de Ruta Fluida sobre Pistas
 local RoadTransit = {
     Waypoints = {},
     Index = 1,
     CurrentDirection = Vector3.new(0, 0, 1)
 }
 
--- Estado de Auto-Comer
 local AutoEatState = {
     IsEating = false,
     LastEatTick = 0,
     Status = "Monitoreando..."
 }
 
--- Estado de Gasolina del Vehículo
 local FuelState = {
     IsRefueling = false,
     CurrentFuel = 100,
@@ -113,13 +107,14 @@ task.spawn(function()
     end
 end)
 
--- Mantener cursor visible
 RunService.RenderStepped:Connect(function()
-    UserInputService.MouseIconEnabled = true
+    pcall(function()
+        UserInputService.MouseIconEnabled = true
+    end)
 end)
 
 -- ==============================================================================
--- 1. SISTEMA FORENSE PROFUNDO DE AUDITORÍA DE OBJETOS
+-- 1. MONITOR FORENSE
 -- ==============================================================================
 
 local function inspectScrapDetailed(targetEntity, mainPart, root)
@@ -127,60 +122,26 @@ local function inspectScrapDetailed(targetEntity, mainPart, root)
     report.Timestamp = os.date("%X")
     report.Name = targetEntity.Name
     report.Class = targetEntity.ClassName
-    report.Path = targetEntity:GetFullName()
 
     local pPos = mainPart and mainPart.Position or Vector3.zero
     local rPos = root and root.Position or Vector3.zero
     report.DistanceToPlayer = math.floor((pPos - rPos).Magnitude * 10) / 10
     report.WorldPos = string.format("(%.1f, %.1f, %.1f)", pPos.X, pPos.Y, pPos.Z)
 
-    -- Propiedades físicas
     report.Anchored = mainPart and mainPart.Anchored
     report.CanCollide = mainPart and mainPart.CanCollide
     report.Mass = mainPart and math.floor(mainPart:GetMass() * 10) / 10 or 0
     report.Velocity = mainPart and string.format("(%.1f, %.1f, %.1f)", mainPart.AssemblyLinearVelocity.X, mainPart.AssemblyLinearVelocity.Y, mainPart.AssemblyLinearVelocity.Z) or "N/A"
 
-    -- Detección de Network Ownership
-    local ownerSuccess, ownerName = pcall(function()
-        if mainPart and mainPart.GetNetworkOwner then
-            local o = mainPart:GetNetworkOwner()
-            return o and o.Name or "Server"
-        end
-        return "Desconocido"
-    end)
-    report.NetworkOwner = ownerSuccess and ownerName or "Error al leer"
-
-    -- Atributos del servidor
-    local attrList = {}
-    for k, v in pairs(targetEntity:GetAttributes()) do
-        table.insert(attrList, string.format("%s = %s", tostring(k), tostring(v)))
+    local det = targetEntity:FindFirstChild("ItemDrag", true) 
+        or targetEntity:FindFirstChildWhichIsA("DragDetector", true)
+        or targetEntity:FindFirstChildWhichIsA("ClickDetector", true)
+    
+    if det then
+        report.Detector = det.ClassName .. "('" .. det.Name .. "')"
+    else
+        report.Detector = "❌ ELIMINADO POR SERVIDOR (FANTASMA)"
     end
-    report.Attributes = #attrList > 0 and table.concat(attrList, ", ") or "Sin atributos"
-
-    -- Detección segura de detectores (ClickDetector / DragDetector / ProximityPrompt)
-    local detInfo = "Ninguno"
-    local detector = targetEntity:FindFirstChild("ItemDrag", true) 
-        or targetEntity:FindFirstChildWhichIsA("ClickDetector", true) 
-        or targetEntity:FindFirstChildWhichIsA("DragDetector", true) 
-        or targetEntity:FindFirstChildWhichIsA("ProximityPrompt", true)
-
-    if detector then
-        local detProps = {}
-        table.insert(detProps, detector.ClassName .. "('" .. detector.Name .. "')")
-        pcall(function()
-            if detector:IsA("ClickDetector") then
-                table.insert(detProps, "MaxDist: " .. tostring(detector.MaxActivationDistance))
-            elseif detector:IsA("DragDetector") then
-                table.insert(detProps, "DragStyle: " .. tostring(detector.DragStyle.Name))
-                table.insert(detProps, "Enabled: " .. tostring(detector.Enabled))
-            elseif detector:IsA("ProximityPrompt") then
-                table.insert(detProps, "ActionText: '" .. tostring(detector.ActionText) .. "'")
-                table.insert(detProps, "Enabled: " .. tostring(detector.Enabled))
-            end
-        end)
-        detInfo = table.concat(detProps, " | ")
-    end
-    report.Detector = detInfo
 
     return report
 end
@@ -200,7 +161,7 @@ local function recordForensicIncident(stage, entity, mainPart, root, extraDetail
 end
 
 -- ==============================================================================
--- 2. OBTENCIÓN DE PERSONAJE, STATS Y VEHÍCULO
+-- 2. PERSONAJE, STATS Y VEHÍCULO
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -215,19 +176,9 @@ local function getPlayerStats()
     if not hum then return 100, 100 end
 
     local hpPct = math.floor((hum.Health / math.max(hum.MaxHealth, 1)) * 100)
-
-    local hunger = char:GetAttribute("Hunger") or lp:GetAttribute("Hunger")
+    local hunger = char:GetAttribute("Hunger") or lp:GetAttribute("Hunger") or 100
     local maxHunger = char:GetAttribute("MaxHunger") or lp:GetAttribute("MaxHunger") or 100
-
-    local hungerPct = 100
-    if type(hunger) == "number" then
-        hungerPct = math.floor((hunger / maxHunger) * 100)
-    else
-        local hVal = char:FindFirstChild("Hunger") or lp:FindFirstChild("Hunger")
-        if hVal and (hVal:IsA("NumberValue") or hVal:IsA("IntValue")) then
-            hungerPct = math.floor((hVal.Value / 100) * 100)
-        end
-    end
+    local hungerPct = math.floor((hunger / maxHunger) * 100)
 
     return hpPct, hungerPct
 end
@@ -275,44 +226,33 @@ local function applyBrake(duration)
 end
 
 -- ==============================================================================
--- 3. AUTO-COMER INTEGRADO (ZANAHORIA DORADA VIDA / NORMAL HAMBRE)
+-- 3. AUTO-COMER
 -- ==============================================================================
 
 local function isGoldenCarrot(item)
     if item:GetAttribute("Golden") == true or item:GetAttribute("Rarity") == "Golden" then
         return true
     end
-
     local mainPart = item:FindFirstChild("MainPart") or item:FindFirstChildWhichIsA("BasePart")
-    if mainPart then
-        if mainPart.Material == Enum.Material.Metal then
-            return true
-        end
-        if mainPart.Color.R > 0.9 then
-            return true
-        end
+    if mainPart and (mainPart.Material == Enum.Material.Metal or mainPart.Color.R > 0.9) then
+        return true
     end
-
     return false
 end
 
 local function findBestGroundFood(onlyGolden)
     local _, root = getCharacterParts()
     if not root then return nil end
-
     local dropped = workspace:FindFirstChild("DroppedItems")
     if not dropped then return nil end
 
     local myPos = root.Position
     local bestItem = nil
-
     local maxRadius = Config.EatScanRadius
     local shortestDistSq = maxRadius * maxRadius
 
     for _, item in ipairs(dropped:GetChildren()) do
-        local isFood = (item:GetAttribute("ItemType") == "Food")
-            or item.Name:lower():find("carrot")
-
+        local isFood = (item:GetAttribute("ItemType") == "Food") or item.Name:lower():find("carrot")
         if isFood and item:GetAttribute("CanPickUp") ~= false then
             local isGold = isGoldenCarrot(item)
             if not onlyGolden or isGold then
@@ -321,11 +261,9 @@ local function findBestGroundFood(onlyGolden)
                     local pPos = part.Position
                     local dx = pPos.X - myPos.X
                     local dz = pPos.Z - myPos.Z
-
                     if math.abs(dx) <= maxRadius and math.abs(dz) <= maxRadius then
                         local dy = pPos.Y - myPos.Y
                         local distSq = (dx * dx) + (dy * dy) + (dz * dz)
-
                         if distSq <= shortestDistSq then
                             shortestDistSq = distSq
                             bestItem = item
@@ -335,7 +273,6 @@ local function findBestGroundFood(onlyGolden)
             end
         end
     end
-
     return bestItem
 end
 
@@ -347,26 +284,10 @@ local function eatGroundFood(onlyGolden)
     if not hum or hum.Health <= 0 then return end
 
     local targetFood = findBestGroundFood(onlyGolden)
-    if not targetFood then
-        AutoEatState.Status = onlyGolden and "⚠️ Buscando Zanahoria Dorada..." or "⚠️ Sin comida en el suelo"
-        return
-    end
+    if not targetFood then return end
 
     AutoEatState.IsEating = true
-    local isGold = isGoldenCarrot(targetFood)
-    AutoEatState.Status = isGold and "✨ Comiendo DORADA..." or "🥕 Comiendo Normal..."
-
-    local previousTool = nil
-    for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") then
-            previousTool = item
-            break
-        end
-    end
-
-    pcall(function()
-        PickUpRemote:FireServer(targetFood)
-    end)
+    pcall(function() PickUpRemote:FireServer(targetFood) end)
 
     local foodTool = nil
     local startWait = tick()
@@ -387,23 +308,11 @@ local function eatGroundFood(onlyGolden)
     end
 
     if foodTool then
-        if foodTool.Parent ~= char then
-            hum:EquipTool(foodTool)
-            task.wait(0.05)
-        end
-
+        if foodTool.Parent ~= char then hum:EquipTool(foodTool); task.wait(0.05) end
         pcall(function() foodTool:Activate() end)
-
         local useRemote = foodTool:FindFirstChild("Use") or foodTool:FindFirstChild("Consume")
-        if useRemote and useRemote:IsA("RemoteEvent") then
-            pcall(function() useRemote:FireServer() end)
-        end
-
+        if useRemote and useRemote:IsA("RemoteEvent") then pcall(function() useRemote:FireServer() end) end
         task.wait(0.20)
-    end
-
-    if previousTool and previousTool.Parent then
-        hum:EquipTool(previousTool)
     end
 
     AutoEatState.LastEatTick = tick()
@@ -415,7 +324,6 @@ task.spawn(function()
         task.wait(0.35)
         if Config.AutoEatEnabled then
             local hpPct, hungerPct = getPlayerStats()
-
             if hpPct <= Config.EatHealthThreshold then
                 eatGroundFood(true)
             elseif hungerPct <= Config.EatHungerThreshold then
@@ -423,90 +331,44 @@ task.spawn(function()
             else
                 AutoEatState.Status = string.format("🟢 OK (Vida: %d%% | Comida: %d%%)", hpPct, hungerPct)
             end
-        else
-            AutoEatState.Status = "🔴 OFF"
         end
     end
 end)
 
 -- ==============================================================================
--- 4. SISTEMA DE AUTO-GASOLINA DESDE EL AUTO
+-- 4. AUTO-GASOLINA
 -- ==============================================================================
 
 local function getTruckFuel(truck)
     if not truck then return 100, 100, 100 end
     local foundFuel, foundMax = nil, nil
-
     local config = truck:FindFirstChild("Configuration", true) or truck:FindFirstChild("Config", true)
     if config then
-        for _, attr in ipairs({"Fuel", "Gas", "Gasoline", "Petrol", "Combustible"}) do
+        for _, attr in ipairs({"Fuel", "Gas", "Gasoline", "Petrol"}) do
             local val = config:GetAttribute(attr)
             if val and type(val) == "number" then
                 foundFuel = val
-                foundMax = config:GetAttribute("Max" .. attr) or config:GetAttribute("MaxFuel")
+                foundMax = config:GetAttribute("Max" .. attr) or 100
                 break
             end
         end
-        if not foundFuel then
-            for _, child in ipairs(config:GetChildren()) do
-                if child:IsA("ValueBase") then
-                    local n = child.Name:lower()
-                    if n:find("fuel") or n:find("gas") then
-                        foundFuel = tonumber(child.Value)
-                    elseif n:find("maxfuel") or n:find("maxgas") then
-                        foundMax = tonumber(child.Value)
-                    end
-                end
-            end
-        end
     end
-
-    if not foundFuel then
-        for _, obj in ipairs({truck, truck.PrimaryPart, truck:FindFirstChild("DriveSeat")}) do
-            if obj then
-                for _, attr in ipairs({"Fuel", "Gas", "Gasoline", "Petrol"}) do
-                    local val = obj:GetAttribute(attr)
-                    if val and type(val) == "number" then
-                        foundFuel = val
-                        foundMax = obj:GetAttribute("Max" .. attr) or obj:GetAttribute("MaxFuel")
-                        break
-                    end
-                end
-            end
-            if foundFuel then break end
-        end
-    end
-
-    if not foundFuel then
-        for _, desc in ipairs(truck:GetDescendants()) do
-            if desc:IsA("NumberValue") or desc:IsA("IntValue") then
-                local n = desc.Name:lower()
-                if n == "fuel" or n == "gas" or n == "gasoline" then
-                    foundFuel = desc.Value
-                    break
-                end
-            end
-        end
-    end
-
     foundFuel = foundFuel or 100
-    foundMax = foundMax or (foundFuel > 100 and foundFuel or 100)
-    local pct = math.clamp(math.floor((foundFuel / math.max(foundMax, 1)) * 100), 0, 100)
-    return foundFuel, foundMax, pct
+    foundMax = foundMax or 100
+    return foundFuel, foundMax, math.clamp(math.floor((foundFuel / foundMax) * 100), 0, 100)
 end
 
 local function getTruckFuelReceptor(truck, seat)
     for _, desc in ipairs(truck:GetDescendants()) do
         if desc:IsA("BasePart") then
             local n = desc.Name:lower()
-            if n:find("fuel") or n:find("tank") or n:find("gas") or n:find("cap") or n:find("fill") then
+            if n:find("fuel") or n:find("tank") or n:find("gas") or n:find("cap") then
                 return desc, desc.Position
             end
         end
     end
     local refCF = (seat and seat.CFrame) or (truck.PrimaryPart and truck.PrimaryPart.CFrame) or CFrame.new()
-    local rearLeftPos = (refCF * CFrame.new(-3.4, 0.8, 5.2)).Position
-    return truck.PrimaryPart or seat, rearLeftPos
+    return truck.PrimaryPart or seat, (refCF * CFrame.new(-3.4, 0.8, 5.2)).Position
 end
 
 local function refuelTruckFromNearbyCan()
@@ -517,8 +379,7 @@ local function refuelTruckFromNearbyCan()
     local myPos = root and root.Position or seat.Position
     local receptorPart, tankWorldPos = getTruckFuelReceptor(truck, seat)
 
-    local bestCan = nil
-    local bestPart = nil
+    local bestCan, bestPart = nil, nil
     local shortest = Config.FuelCanScanRadius
 
     for _, folder in ipairs({workspace:FindFirstChild("DroppedItems"), workspace:FindFirstChild("Structures"), workspace}) do
@@ -526,10 +387,7 @@ local function refuelTruckFromNearbyCan()
             for _, item in ipairs(folder:GetChildren()) do
                 if (item:IsA("Model") or item:IsA("BasePart")) and item ~= truck and item ~= lp.Character then
                     local n = item.Name:lower()
-                    local itemType = tostring(item:GetAttribute("ItemType") or ""):lower()
-                    local isGasCan = n == "fuel" or n == "refined fuel" or n:find("gas") or n:find("fuel") or n:find("jerry") or n:find("canister") or itemType:find("fuel")
-
-                    if isGasCan then
+                    if n == "fuel" or n == "refined fuel" or n:find("fuel") or n:find("gas") then
                         local p = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
                         if p then
                             local d = (p.Position - myPos).Magnitude
@@ -547,95 +405,27 @@ local function refuelTruckFromNearbyCan()
     end
 
     if bestCan and bestPart then
-        local cd = bestCan:FindFirstChild("ItemDrag", true) or bestCan:FindFirstChildWhichIsA("ClickDetector", true)
-        if cd and cd:IsA("ClickDetector") and fireclickdetector then
-            pcall(function() fireclickdetector(cd, 0) end)
-            pcall(function() fireclickdetector(cd) end)
-        end
-
         local targetCF = CFrame.new(tankWorldPos)
         if bestCan:IsA("Model") then
-            for _, p in ipairs(bestCan:GetDescendants()) do
-                if p:IsA("BasePart") then p.Anchored = false end
-            end
+            for _, p in ipairs(bestCan:GetDescendants()) do if p:IsA("BasePart") then p.Anchored = false end end
             bestCan:PivotTo(targetCF)
-            for _, p in ipairs(bestCan:GetDescendants()) do
-                if p:IsA("BasePart") then
-                    p.AssemblyLinearVelocity = Vector3.new(0, -1, 0)
-                    p.AssemblyAngularVelocity = Vector3.zero
-                    if firetouchinterest and receptorPart then
-                        pcall(function()
-                            firetouchinterest(p, receptorPart, 0)
-                            firetouchinterest(p, receptorPart, 1)
-                        end)
-                    end
-                end
-            end
         else
             bestPart.Anchored = false
             bestPart.CFrame = targetCF
-            bestPart.AssemblyLinearVelocity = Vector3.new(0, -1, 0)
-            bestPart.AssemblyAngularVelocity = Vector3.zero
-            if firetouchinterest and receptorPart then
-                pcall(function()
-                    firetouchinterest(bestPart, receptorPart, 0)
-                    firetouchinterest(bestPart, receptorPart, 1)
-                end)
-            end
+        end
+        if firetouchinterest and receptorPart then
+            pcall(function()
+                firetouchinterest(bestPart, receptorPart, 0)
+                firetouchinterest(bestPart, receptorPart, 1)
+            end)
         end
         return true
     end
-
     return false
 end
 
-task.spawn(function()
-    while true do
-        task.wait(0.4)
-        local truck = getCurrentVehicle()
-        if truck then
-            local f, maxF, pct = getTruckFuel(truck)
-            FuelState.CurrentFuel = f
-            FuelState.MaxFuel = maxF
-            FuelState.FuelPct = pct
-
-            if Config.AutoRefuelEnabled then
-                if not FuelState.IsRefueling and pct <= Config.LowFuelThreshold then
-                    FuelState.IsRefueling = true
-                    FuelState.Status = "⛽ Bajo (" .. pct .. "%): Volviendo a Base..."
-                    Fluent:Notify({
-                        Title = "⛽ GASOLINA BAJA (" .. pct .. "%)",
-                        Content = "Regresando por las pistas hacia la base para recargar gasolina.",
-                        Duration = 3
-                    })
-                elseif FuelState.IsRefueling and pct >= Config.FullFuelThreshold then
-                    FuelState.IsRefueling = false
-                    FuelState.Status = "🟢 Tanque Lleno (" .. pct .. "%)"
-                end
-
-                if FuelState.IsRefueling then
-                    local usedCan = refuelTruckFromNearbyCan()
-                    if usedCan then
-                        FuelState.Status = "⛽ Echando gasolina al tanque (" .. pct .. "%)..."
-                    else
-                        FuelState.Status = "⛽ En ruta a la Base para buscar galón (" .. pct .. "%)..."
-                    end
-                else
-                    FuelState.Status = string.format("🟢 Gasolina OK (%d%%)", pct)
-                end
-            else
-                FuelState.IsRefueling = false
-                FuelState.Status = string.format("Gasolina: %d%% (Auto-Refuel OFF)", pct)
-            end
-        else
-            FuelState.IsRefueling = false
-            FuelState.Status = "Sin vehículo"
-        end
-    end
-end)
-
 -- ==============================================================================
--- 5. RED VIRTUAL DE 1500 STUDS EN TODO EL MAPA (0% LAG EN RAM)
+-- 5. RED VIRTUAL 1500m
 -- ==============================================================================
 
 local function getGeneratorPosition()
@@ -651,27 +441,8 @@ local function getGeneratorPosition()
     return BaseCenter
 end
 
-local function createManualWebMarker(pos)
-    local marker = Instance.new("Part")
-    marker.Name = "CustomDropPoint"
-    marker.Shape = Enum.PartType.Ball
-    marker.Size = Vector3.new(2.0, 2.0, 2.0)
-    marker.Material = Enum.Material.Neon
-    marker.Color = Color3.fromRGB(0, 255, 170)
-    marker.Anchored = true
-    marker.CanCollide = false
-    marker.Transparency = Config.ShowWebVisuals and 0.2 or 1
-    marker.Position = Vector3.new(pos.X, Config.WebGroundHeight, pos.Z)
-    marker.Parent = workspace
-
-    table.insert(ManualDeliveryPoints, marker)
-    table.insert(VirtualWebGrid, marker.Position)
-    return marker
-end
-
 local function rebuildSpiderwebNetwork()
     table.clear(VirtualWebGrid)
-
     local genPos = getGeneratorPosition()
     local step = math.max(15, Config.WebStepDistance)
     local maxR = Config.MaxMapRadius
@@ -689,127 +460,50 @@ local function rebuildSpiderwebNetwork()
     end
 
     for _, m in ipairs(ManualDeliveryPoints) do
-        if m and m.Parent then
-            table.insert(VirtualWebGrid, m.Position)
-        end
+        if m and m.Parent then table.insert(VirtualWebGrid, m.Position) end
     end
 end
 
 rebuildSpiderwebNetwork()
 
-task.spawn(function()
-    while true do
-        task.wait(0.8)
-        if Config.ShowWebVisuals then
-            local _, root = getCharacterParts()
-            if root then
-                local myPos = root.Position
-                local nearbyPositions = {}
-
-                for _, vPos in ipairs(VirtualWebGrid) do
-                    if (Vector3.new(vPos.X, 0, vPos.Z) - Vector3.new(myPos.X, 0, myPos.Z)).Magnitude <= 140 then
-                        table.insert(nearbyPositions, vPos)
-                        if #nearbyPositions >= 60 then break end
-                    end
-                end
-
-                for i = 1, 60 do
-                    local targetPos = nearbyPositions[i]
-                    local ball = VisualPool[i]
-                    if targetPos then
-                        if not ball or not ball.Parent then
-                            ball = Instance.new("Part")
-                            ball.Name = "VirtualWebPreview"
-                            ball.Shape = Enum.PartType.Ball
-                            ball.Size = Vector3.new(1.6, 1.6, 1.6)
-                            ball.Material = Enum.Material.Neon
-                            ball.Color = Color3.fromRGB(0, 180, 255)
-                            ball.Anchored = true
-                            ball.CanCollide = false
-                            ball.Transparency = 0.25
-                            ball.Parent = workspace
-                            VisualPool[i] = ball
-                        end
-                        ball.Position = targetPos
-                    elseif ball and ball.Parent then
-                        ball.Parent = nil
-                    end
-                end
-            end
-        else
-            for _, ball in pairs(VisualPool) do
-                if ball and ball.Parent then ball:Destroy() end
-            end
-            table.clear(VisualPool)
-        end
-    end
-end)
-
 -- ==============================================================================
--- 6. MAPEO DE PISTAS (CONDUCCIÓN DEL AUTO)
+-- 6. MAPEO DE PISTAS Y CHATARRA EN PISTA
 -- ==============================================================================
 
 local function isRoadObject(obj)
     if not (obj:IsA("BasePart") or obj:IsA("Model")) then return false end
     local n = obj.Name:lower()
-    if n:find("straight") or n:find("road") or n:find("pista") or n:find("corner") or n:find("tsection") then
-        if not n:find("sign") and not n:find("light") and not n:find("lamp") and not n:find("railing") and not n:find("sidewalk") then
-            return true
-        end
-    end
-    return false
+    return (n:find("straight") or n:find("road") or n:find("pista") or n:find("corner") or n:find("tsection"))
+        and not (n:find("sign") or n:find("light") or n:find("lamp") or n:find("railing"))
 end
 
 local function registerRoadPiece(obj)
-    local pos, size
-    if obj:IsA("Model") then
-        local cf, sz = obj:GetBoundingBox()
-        pos = cf.Position
-        size = sz
-    else
-        pos = obj.Position
-        size = obj.Size
-    end
-
+    local pos = obj:IsA("Model") and select(1, obj:GetBoundingBox()).Position or obj.Position
+    local size = obj:IsA("Model") and select(2, obj:GetBoundingBox()) or obj.Size
     local distFromCenter = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude
     if distFromCenter > 1550 or distFromCenter < 92 then return end
 
     for _, node in ipairs(RoadNodes) do
-        if (Vector3.new(node.Pos.X, 0, node.Pos.Z) - Vector3.new(pos.X, 0, pos.Z)).Magnitude < 20 then
-            return
-        end
+        if (Vector3.new(node.Pos.X, 0, node.Pos.Z) - Vector3.new(pos.X, 0, pos.Z)).Magnitude < 20 then return end
     end
 
-    local newNode = {
+    table.insert(RoadNodes, {
         Pos = Vector3.new(pos.X, Config.WebGroundHeight, pos.Z),
         Size = size,
         Instance = obj,
         LastVisited = 0
-    }
-    table.insert(RoadNodes, newNode)
+    })
 end
 
 task.spawn(function()
     local mapFolder = workspace:FindFirstChild("Map") or workspace:FindFirstChild("Tiles") or workspace
-    local descendants = mapFolder:GetDescendants()
-    for i, desc in ipairs(descendants) do
-        if isRoadObject(desc) then
-            registerRoadPiece(desc)
-        end
-        if i % 250 == 0 then task.wait() end
-    end
-end)
-
-workspace.DescendantAdded:Connect(function(desc)
-    if isRoadObject(desc) then
-        task.wait(0.15)
-        registerRoadPiece(desc)
+    for _, desc in ipairs(mapFolder:GetDescendants()) do
+        if isRoadObject(desc) then registerRoadPiece(desc) end
     end
 end)
 
 local function getRoadInfoAtPosition(pos, respectMaxRadius)
     local bestNode = nil
-    local minCenterDist = math.huge
     local minEdgeDist = math.huge
     local closestSurfacePoint = pos
 
@@ -818,111 +512,37 @@ local function getRoadInfoAtPosition(pos, respectMaxRadius)
         if not respectMaxRadius or distBase <= Config.MaxMapRadius then
             local dx = math.abs(pos.X - node.Pos.X)
             local dz = math.abs(pos.Z - node.Pos.Z)
-            local centerDist = math.sqrt(dx * dx + dz * dz)
-
             local halfX = math.max((node.Size.X * 0.48), 13)
             local halfZ = math.max((node.Size.Z * 0.48), 13)
-
             local overX = math.max(0, dx - halfX)
             local overZ = math.max(0, dz - halfZ)
             local edgeDist = math.sqrt(overX * overX + overZ * overZ)
 
-            if edgeDist < minEdgeDist or (math.abs(edgeDist - minEdgeDist) < 0.5 and centerDist < minCenterDist) then
+            if edgeDist < minEdgeDist then
                 minEdgeDist = edgeDist
-                minCenterDist = centerDist
                 bestNode = node
-
                 local clampedX = math.clamp(pos.X - node.Pos.X, -halfX + 4, halfX - 4)
                 local clampedZ = math.clamp(pos.Z - node.Pos.Z, -halfZ + 4, halfZ - 4)
                 closestSurfacePoint = Vector3.new(node.Pos.X + clampedX, node.Pos.Y, node.Pos.Z + clampedZ)
             end
         end
     end
-
     return bestNode, minEdgeDist, closestSurfacePoint
 end
 
 local function isStraightLineOnRoad(p1, p2)
-    local diff = Vector3.new(p2.X - p1.X, 0, p2.Z - p1.Z)
-    local dist = diff.Magnitude
+    local dist = (Vector3.new(p2.X - p1.X, 0, p2.Z - p1.Z)).Magnitude
     if dist <= 6 then return true end
-
-    local steps = math.clamp(math.ceil(dist / 12), 2, 12)
+    local steps = math.clamp(math.ceil(dist / 12), 2, 10)
     for i = 1, steps do
-        local alpha = i / steps
-        local samplePos = p1:Lerp(p2, alpha)
-        local _, edgeDist = getRoadInfoAtPosition(samplePos, false)
-        if edgeDist > 3.5 then
-            return false
-        end
+        local _, edgeDist = getRoadInfoAtPosition(p1:Lerp(p2, i / steps), false)
+        if edgeDist > 3.5 then return false end
     end
     return true
 end
 
 -- ==============================================================================
--- 7. ESCÁNER DE CHATARRA EN PISTA
--- ==============================================================================
-
-local function isValidScrapTarget(model)
-    if not model or not model.Parent or not model:IsA("Model") then return false end
-    if model:GetAttribute("Dead") == true then return false end
-    if IgnoredScrapUntil[model] and tick() < IgnoredScrapUntil[model] then return false end
-
-    local n = model.Name:lower()
-    if n:find("scrap pile") or n:find("crashed car") then
-        return true
-    end
-    return false
-end
-
-local function scanRoadScrapTargets()
-    local _, root = getCharacterParts()
-    if not root then return end
-
-    local myPos = root.Position
-    local structFolder = workspace:FindFirstChild("Structures") or workspace
-    local validTargets = {}
-
-    for _, item in ipairs(structFolder:GetChildren()) do
-        if isValidScrapTarget(item) then
-            local part = item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart")
-            if part then
-                local sPos = part.Position
-                local distToBase = (Vector3.new(sPos.X, 0, sPos.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude
-
-                if distToBase <= Config.MaxMapRadius and distToBase >= 95 then
-                    local distToMe = (Vector3.new(sPos.X, 0, sPos.Z) - Vector3.new(myPos.X, 0, myPos.Z)).Magnitude
-                    if distToMe <= Config.ScrapSearchRadius then
-                        local roadNode, edgeDist = getRoadInfoAtPosition(sPos, true)
-                        if roadNode and edgeDist <= 3.0 then
-                            local toTarget = Vector3.new(sPos.X - myPos.X, 0, sPos.Z - myPos.Z)
-                            local forwardDot = (toTarget.Magnitude > 0) and toTarget.Unit:Dot(RoadTransit.CurrentDirection) or 1
-                            local priorityScore = distToMe - (forwardDot * 35)
-
-                            table.insert(validTargets, {
-                                Model = item,
-                                Part = part,
-                                Pos = sPos,
-                                RoadNode = roadNode,
-                                Dist = distToMe,
-                                Score = priorityScore
-                            })
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    table.sort(validTargets, function(a, b)
-        return a.Score < b.Score
-    end)
-
-    RoadScrapList = validTargets
-end
-
--- ==============================================================================
--- 8. FILTROS Y SELECCIÓN DE PUNTOS DE LA RED
+-- 7. DISCRIMINADOR ESTRICTO ANTI-FANTASMAS (SOLO OBJETOS CON ITEMDRAG VIVO)
 -- ==============================================================================
 
 local function isMovableTargetItem(entity)
@@ -930,12 +550,16 @@ local function isMovableTargetItem(entity)
     local n = entity.Name:lower()
     local itemType = tostring(entity:GetAttribute("ItemType") or ""):lower()
 
-    if itemType == "food" or n:find("carrot") then
-        return false
+    if itemType == "food" or n:find("carrot") then return false end
+
+    -- REGLA DE ORO ANTI-FANTASMA: El objeto DEBE tener su ItemDrag activo
+    local dragDetector = entity:FindFirstChild("ItemDrag", true) or entity:FindFirstChildWhichIsA("DragDetector", true)
+    if not dragDetector then
+        return false -- Descartar si el servidor ya le quitó el detector (fantasma)
     end
 
-    local isFuel = (n == "fuel" or n == "refined fuel" or n:find("fuel") or n:find("gas") or n:find("jerry") or n:find("canister")) and not n:find("mask")
-    local isMetalOrScrap = n:find("scrap") or n:find("refined metal") or n:find("metal") or n:find("chatarra") or n:find("barrel") or n:find("sheet") or n:find("iron")
+    local isFuel = (n == "fuel" or n == "refined fuel" or n:find("fuel") or n:find("gas")) and not n:find("mask")
+    local isMetalOrScrap = n:find("scrap") or n:find("refined metal") or n:find("metal") or n:find("chatarra") or n:find("barrel") or n:find("sheet")
     local isResource = (itemType == "resource")
 
     if Config.MoveFuelCans and isFuel then return true end
@@ -951,10 +575,7 @@ local function getTargetNodeTowardsBase(itemPos, desiredHopDist)
     local genHoriz = Vector3.new(genPos.X, 0, genPos.Z)
     local currentDistToGen = (itemHoriz - genHoriz).Magnitude
 
-    local toBaseDir = (genHoriz - itemHoriz)
-    if toBaseDir.Magnitude < 1 then return genPos end
-    toBaseDir = toBaseDir.Unit
-
+    local toBaseDir = (genHoriz - itemHoriz).Unit
     local distToSafeBorder = math.max(10, currentDistToGen - (Config.GeneratorSafeRadius - 10))
     local actualHop = math.min(desiredHopDist, distToSafeBorder)
     local idealPoint = itemPos + (toBaseDir * actualHop)
@@ -964,8 +585,7 @@ local function getTargetNodeTowardsBase(itemPos, desiredHopDist)
 
     for _, vPos in ipairs(VirtualWebGrid) do
         local vHoriz = Vector3.new(vPos.X, 0, vPos.Z)
-        local vDistToGen = (vHoriz - genHoriz).Magnitude
-        if vDistToGen < (currentDistToGen - 3) then
+        if (vHoriz - genHoriz).Magnitude < (currentDistToGen - 3) then
             local d = (vHoriz - Vector3.new(idealPoint.X, 0, idealPoint.Z)).Magnitude
             if d < shortestDiff then
                 shortestDiff = d
@@ -973,200 +593,73 @@ local function getTargetNodeTowardsBase(itemPos, desiredHopDist)
             end
         end
     end
-
     return bestNodePos
 end
 
 -- ==============================================================================
--- 9. PROTOCOLO DE DESPERTAR CON MONITOREO FORENSE
+-- 8. MOTOR DE TRANSPORTE ANTI-FANTASMAS (CINÉTICA CONTROLADA)
 -- ==============================================================================
 
-local function wakeUpItem(targetEntity, mainPart, root)
-    if not targetEntity or not targetEntity.Parent or not mainPart or not mainPart.Parent then 
-        return false, "Pieza destruida o nula" 
-    end
-
-    -- 1. Verificación sin errores para ClickDetector / DragDetector
-    local detector = targetEntity:FindFirstChild("ItemDrag", true) 
-        or targetEntity:FindFirstChildWhichIsA("ClickDetector", true) 
-        or targetEntity:FindFirstChildWhichIsA("DragDetector", true)
-
-    if detector then
-        local isGhost = false
-        pcall(function()
-            if detector:IsA("ClickDetector") and detector.MaxActivationDistance < 0 then
-                isGhost = true
-            elseif detector:IsA("DragDetector") and detector.Enabled == false then
-                isGhost = true
-            end
-        end)
-        if isGhost then 
-            return false, "Detector bloqueado (Objeto Fantasma detectado)" 
-        end
-    end
-
-    -- 2. Desanclar partes
-    if targetEntity:IsA("Model") then
-        for _, p in ipairs(targetEntity:GetDescendants()) do
-            if p:IsA("BasePart") then
-                p.Anchored = false
-                p.CanCollide = true
-            end
-        end
-    elseif targetEntity:IsA("BasePart") then
-        targetEntity.Anchored = false
-        targetEntity.CanCollide = true
-    end
-
-    local mode = Config.WakeUpMode
-    local details = string.format("Modo: %s", mode)
-
-    -- Ejecución según el modo elegido
-    if mode == "Multi-Método (Recomendado)" then
-        if detector and detector:IsA("ClickDetector") and fireclickdetector then
-            pcall(function() fireclickdetector(detector, 0) end)
-            pcall(function() fireclickdetector(detector) end)
-        end
-        if root and firetouchinterest then
-            pcall(function()
-                firetouchinterest(mainPart, root, 0)
-                firetouchinterest(mainPart, root, 1)
-            end)
-        end
-        mainPart.AssemblyLinearVelocity = Vector3.new(0, 5.0, 0)
-
-    elseif mode == "Físico Directo (ApplyImpulse)" then
-        pcall(function()
-            mainPart:ApplyImpulse(Vector3.new(0, mainPart:GetMass() * 25, 0))
-        end)
-        if root and firetouchinterest then
-            pcall(function()
-                firetouchinterest(mainPart, root, 0)
-                firetouchinterest(mainPart, root, 1)
-            end)
-        end
-
-    elseif mode == "Toque de Red (Touch & Pop)" then
-        if root and firetouchinterest then
-            pcall(function()
-                firetouchinterest(mainPart, root, 0)
-                firetouchinterest(mainPart, root, 1)
-            end)
-        end
-        mainPart.AssemblyLinearVelocity = Vector3.new(0, 6.0, 0)
-
-    else
-        mainPart.AssemblyLinearVelocity = Vector3.new(0, 2.0, 0)
-    end
-
-    return true, details
-end
-
-local function launchOrMoveItem(targetEntity, mainPart, itemPos, genPos, root)
-    -- AUDITORÍA PRE-INTERACCIÓN
-    recordForensicIncident("1. DETECCIÓN PRE-INTENTO", targetEntity, mainPart, root, "Iniciando protocolo de despertar...")
-
-    local ok, reason = wakeUpItem(targetEntity, mainPart, root)
-    if not ok then
-        recordForensicIncident("❌ FALLO AL DESPERTAR", targetEntity, mainPart, root, reason)
+local function launchOrMoveItemSafe(targetEntity, mainPart, itemPos, genPos, root)
+    local drag = targetEntity:FindFirstChild("ItemDrag", true) or targetEntity:FindFirstChildWhichIsA("DragDetector", true)
+    if not drag then
+        recordForensicIncident("❌ FANTASMA RECHAZADO", targetEntity, mainPart, root, "No tiene ItemDrag. Objeto inservible.")
         return
     end
 
-    task.wait(0.06)
-    if not targetEntity.Parent or not mainPart.Parent then 
-        recordForensicIncident("❌ DESAPARECIDO TRAS DESPERTAR", targetEntity, mainPart, root, "El objeto dejó de existir en Workspace")
-        return 
+    recordForensicIncident("1. INICIO TRANSPORTE SEGURO", targetEntity, mainPart, root, "ItemDrag detectado activo.")
+
+    -- 1. Desanclar partes suavemente
+    if targetEntity:IsA("Model") then
+        for _, p in ipairs(targetEntity:GetDescendants()) do
+            if p:IsA("BasePart") then p.Anchored = false end
+        end
+    elseif targetEntity:IsA("BasePart") then
+        targetEntity.Anchored = false
     end
 
-    local mode = Config.TransportMode
-    local posBeforeKick = mainPart.Position
-    local itemHoriz = Vector3.new(posBeforeKick.X, 0, posBeforeKick.Z)
+    -- 2. Notificar propiedad física tocándolo sin teletransportarlo abruptamente
+    if root and firetouchinterest then
+        pcall(function()
+            firetouchinterest(mainPart, root, 0)
+            firetouchinterest(mainPart, root, 1)
+        end)
+    end
+
+    task.wait(0.04)
+    if not targetEntity.Parent or not mainPart.Parent then return end
+
+    local itemHoriz = Vector3.new(mainPart.Position.X, 0, mainPart.Position.Z)
     local genHoriz = Vector3.new(genPos.X, 0, genPos.Z)
     local dirToBase = (genHoriz - itemHoriz).Unit
-
-    local angle = (math.random() - 0.5) * 0.22
-    local cosA, sinA = math.cos(angle), math.sin(angle)
-    local spreadDir = Vector3.new(
-        dirToBase.X * cosA - dirToBase.Z * sinA,
-        0,
-        dirToBase.X * sinA + dirToBase.Z * cosA
-    ).Unit
-
     local distToSafeEdge = math.max(12, (itemHoriz - genHoriz).Magnitude - (Config.GeneratorSafeRadius - 12))
-    local targetThrowDist = math.min(Config.KickDistance, distToSafeEdge)
+    local targetDist = math.min(Config.KickDistance, distToSafeEdge)
 
-    local appliedVector = Vector3.zero
+    -- Vector cinético seguro (Control de velocidad: Máximo 34 studs/s para no alertar al servidor)
+    local safeSpeed = math.clamp(targetDist * 0.42, 18, 36)
+    local safeVelocity = (dirToBase * safeSpeed) + Vector3.new(0, Config.KickArcHeight, 0)
 
-    local function applyVelocityToAll(vel, angVel)
-        appliedVector = vel
-        if targetEntity:IsA("Model") then
-            for _, p in ipairs(targetEntity:GetDescendants()) do
-                if p:IsA("BasePart") then
-                    p.AssemblyLinearVelocity = vel
-                    p.AssemblyAngularVelocity = angVel
-                end
-            end
-        else
-            mainPart.AssemblyLinearVelocity = vel
-            mainPart.AssemblyAngularVelocity = angVel
-        end
-    end
+    -- Aplicar impulso legítimo
+    mainPart.AssemblyLinearVelocity = safeVelocity
+    mainPart.AssemblyAngularVelocity = Vector3.new(math.random(-2, 2), math.random(-2, 2), math.random(-2, 2))
 
-    if mode == "Patada Física (Lanzar)" then
-        local horizSpeed = math.clamp(targetThrowDist * 1.15, 30, 165)
-        local verticalBoost = Config.KickArcHeight
-        local kickVel = (spreadDir * horizSpeed) + Vector3.new(0, verticalBoost, 0)
-        local spin = Vector3.new(math.random(-5, 5), math.random(-5, 5), math.random(-5, 5))
-        applyVelocityToAll(kickVel, spin)
+    recordForensicIncident("2. IMPULSO SEGURO APLICADO", targetEntity, mainPart, root, string.format("Velocidad controlada: %.1f studs/s", safeSpeed))
 
-    elseif mode == "Arrastre + Impulso (Drag)" then
-        local pushSpeed = math.clamp(targetThrowDist * 0.95, 20, 140)
-        applyVelocityToAll((spreadDir * pushSpeed) + Vector3.new(0, Config.KickArcHeight * 0.75, 0), Vector3.zero)
-
-    elseif mode == "Deslizamiento Rápido" then
-        local nextNode = getTargetNodeTowardsBase(mainPart.Position, math.min(28, targetThrowDist))
-        local slideDir = (Vector3.new(nextNode.X, 0, nextNode.Z) - itemHoriz).Unit
-        applyVelocityToAll((slideDir * 60) + Vector3.new(0, 3, 0), Vector3.zero)
-
-    else
-        local nextNode = getTargetNodeTowardsBase(mainPart.Position, Config.WebStepDistance)
-        local rDist = math.random() * Config.SpreadRadius
-        local rAng = math.random() * math.pi * 2
-        local destPos = Vector3.new(
-            nextNode.X + math.cos(rAng) * rDist,
-            Config.WebGroundHeight + 0.6,
-            nextNode.Z + math.sin(rAng) * rDist
-        )
-
-        if targetEntity:IsA("Model") then
-            targetEntity:PivotTo(CFrame.new(destPos))
-        else
-            mainPart.CFrame = CFrame.new(destPos)
-        end
-        applyVelocityToAll(Vector3.new(0, -2.5, 0), Vector3.zero)
-    end
-
-    recordForensicIncident("2. IMPULSO APLICADO", targetEntity, mainPart, root, string.format("Modo: %s | Vector Impulso: (%.1f, %.1f, %.1f)", mode, appliedVector.X, appliedVector.Y, appliedVector.Z))
-
-    -- AUDITORÍA POST-LANZAMIENTO: Comprobar 0.35s después si realmente se movió o si el servidor lo frenó
+    -- Verificación post-vuelo a 0.4s
     task.spawn(function()
-        task.wait(0.35)
-        if targetEntity and targetEntity.Parent and mainPart and mainPart.Parent then
-            local posAfter = mainPart.Position
-            local deltaDist = math.floor((posAfter - posBeforeKick).Magnitude * 10) / 10
-            local velNow = mainPart.AssemblyLinearVelocity
-
-            local verdict = deltaDist > 6 and "✅ DESPLAZAMIENTO EXITOSO" or "⚠️ INMÓVIL / RESISTENCIA DEL SERVIDOR"
-            local extra = string.format("Delta Movido: %.1f studs | Vel Residual: (%.1f, %.1f, %.1f) | Veredicto: %s", deltaDist, velNow.X, velNow.Y, velNow.Z, verdict)
-
-            recordForensicIncident("3. VERIFICACIÓN POST-IMPACTO", targetEntity, mainPart, root, extra)
-        else
-            recordForensicIncident("3. VERIFICACIÓN POST-IMPACTO", targetEntity, mainPart, root, "El objeto desapareció o fue recogido por el juego.")
+        task.wait(0.4)
+        if targetEntity.Parent and mainPart.Parent then
+            local hasDragStill = targetEntity:FindFirstChild("ItemDrag", true) or targetEntity:FindFirstChildWhichIsA("DragDetector", true)
+            if hasDragStill then
+                recordForensicIncident("3. VERIFICACIÓN POST-VUELO", targetEntity, mainPart, root, "✅ ItemDrag INTACTO. El objeto sigue vivo.")
+            else
+                recordForensicIncident("3. VERIFICACIÓN POST-VUELO", targetEntity, mainPart, root, "❌ Servidor lo borró. Reducir velocidad de lanzamiento.")
+            end
         end
     end)
 end
 
--- Bucle de detección y despacho
+-- Bucle de pateo/transporte seguro
 task.spawn(function()
     while true do
         task.wait(Config.TeleportInterval)
@@ -1205,16 +698,14 @@ task.spawn(function()
                     end
                 end
 
-                table.sort(candidates, function(a, b)
-                    return a.Dist < b.Dist
-                end)
+                table.sort(candidates, function(a, b) return a.Dist < b.Dist end)
 
                 local countToProcess = math.min(#candidates, Config.ItemsPerTick)
                 for i = 1, countToProcess do
                     local c = candidates[i]
-                    RecentlyKicked[c.Entity] = tick() + 0.65
+                    RecentlyKicked[c.Entity] = tick() + 0.85
                     task.spawn(function()
-                        launchOrMoveItem(c.Entity, c.Part, c.Pos, genPos, root)
+                        launchOrMoveItemSafe(c.Entity, c.Part, c.Pos, genPos, root)
                     end)
                 end
             end
@@ -1223,7 +714,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 10. MOTOR DE CONDUCCIÓN EN PISTA + RETORNO A BASE POR GASOLINA
+-- 9. CONDUCCIÓN POR PISTAS
 -- ==============================================================================
 
 local function buildForwardRoadChain(startPos, currentDir, returnToBase)
@@ -1248,9 +739,7 @@ local function buildForwardRoadChain(startPos, currentDir, returnToBase)
                     local score
                     if returnToBase then
                         score = distBase + (dist * 0.3)
-                        if distBase > curDistToBase then
-                            score = score + 250
-                        end
+                        if distBase > curDistToBase then score = score + 250 end
                     else
                         local dirToNode = diff.Unit
                         local dot = dirToNode:Dot(curDir)
@@ -1271,30 +760,10 @@ local function buildForwardRoadChain(startPos, currentDir, returnToBase)
             used[bestNode] = true
             table.insert(chain, bestNode)
             local stepVec = Vector3.new(bestNode.Pos.X - curPos.X, 0, bestNode.Pos.Z - curPos.Z)
-            if stepVec.Magnitude > 0.1 then
-                curDir = stepVec.Unit
-            end
+            if stepVec.Magnitude > 0.1 then curDir = stepVec.Unit end
             curPos = bestNode.Pos
         else
             break
-        end
-    end
-
-    if #chain == 0 then
-        local fallbackNode = nil
-        local shortest = math.huge
-        for _, node in ipairs(RoadNodes) do
-            local distBase = (Vector3.new(node.Pos.X, 0, node.Pos.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude
-            if distBase <= Config.MaxMapRadius then
-                local d = (Vector3.new(node.Pos.X - startPos.X, 0, node.Pos.Z - startPos.Z)).Magnitude
-                if d >= 20 and d <= 135 and isStraightLineOnRoad(startPos, node.Pos) and d < shortest then
-                    shortest = d
-                    fallbackNode = node
-                end
-            end
-        end
-        if fallbackNode then
-            table.insert(chain, fallbackNode)
         end
     end
 
@@ -1309,41 +778,17 @@ RunService.Heartbeat:Connect(function()
     if not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat") then return end
 
     local myPos = root.Position
-
-    if FuelState.IsRefueling then
-        local distToBaseCenter = (Vector3.new(myPos.X, 0, myPos.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude
-        if distToBaseCenter <= 135 then
-            if distToBaseCenter > 22 then
-                local toBase = Vector3.new(BaseCenter.X - myPos.X, 0, BaseCenter.Z - myPos.Z).Unit
-                root.AssemblyLinearVelocity = Vector3.new(
-                    toBase.X * (Config.VehicleSpeed * 0.75),
-                    root.AssemblyLinearVelocity.Y,
-                    toBase.Z * (Config.VehicleSpeed * 0.75)
-                )
-            else
-                root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y, 0)
-            end
-            return
-        end
-    end
-
     local currentRoad, edgeDist, closestRoadSurfacePos = getRoadInfoAtPosition(myPos, true)
 
     if not currentRoad or edgeDist > 2.2 then
         IsRecoveringToRoad = true
-        CurrentScrapTarget = nil
         RoadTransit.Waypoints = {}
-
         if currentRoad then
             local toAsphalt = Vector3.new(closestRoadSurfacePos.X - myPos.X, 0, closestRoadSurfacePos.Z - myPos.Z)
             if toAsphalt.Magnitude > 1.0 then
                 local mDir = toAsphalt.Unit
                 RoadTransit.CurrentDirection = mDir
-                root.AssemblyLinearVelocity = Vector3.new(
-                    mDir.X * Config.VehicleSpeed,
-                    root.AssemblyLinearVelocity.Y,
-                    mDir.Z * Config.VehicleSpeed
-                )
+                root.AssemblyLinearVelocity = Vector3.new(mDir.X * Config.VehicleSpeed, root.AssemblyLinearVelocity.Y, mDir.Z * Config.VehicleSpeed)
             end
         end
         return
@@ -1351,57 +796,6 @@ RunService.Heartbeat:Connect(function()
 
     IsRecoveringToRoad = false
     currentRoad.LastVisited = tick()
-
-    local activeScrap = nil
-    if not FuelState.IsRefueling then
-        for _, sc in ipairs(RoadScrapList) do
-            if sc.Model and sc.Model.Parent and sc.Model:GetAttribute("Dead") ~= true and not (IgnoredScrapUntil[sc.Model] and tick() < IgnoredScrapUntil[sc.Model]) then
-                if sc.Dist <= 95 and isStraightLineOnRoad(myPos, sc.Pos) then
-                    activeScrap = sc
-                    break
-                end
-            end
-        end
-    end
-
-    if activeScrap then
-        CurrentScrapTarget = activeScrap.Model
-        local scrapPos = activeScrap.Pos
-        local rNode = activeScrap.RoadNode
-
-        local roadAxisX = rNode.Size.X >= rNode.Size.Z
-        local safeTargetPos = scrapPos
-        if roadAxisX then
-            local clampedZ = math.clamp(scrapPos.Z - rNode.Pos.Z, -Config.RoadMaxHalfWidth, Config.RoadMaxHalfWidth)
-            safeTargetPos = Vector3.new(scrapPos.X, scrapPos.Y, rNode.Pos.Z + clampedZ)
-        else
-            local clampedX = math.clamp(scrapPos.X - rNode.Pos.X, -Config.RoadMaxHalfWidth, Config.RoadMaxHalfWidth)
-            safeTargetPos = Vector3.new(rNode.Pos.X + clampedX, scrapPos.Y, scrapPos.Z)
-        end
-
-        local diffToScrap = Vector3.new(safeTargetPos.X - myPos.X, 0, safeTargetPos.Z - myPos.Z)
-        local distToScrap = diffToScrap.Magnitude
-
-        if distToScrap <= 6.5 then
-            IgnoredScrapUntil[activeScrap.Model] = tick() + 3.0
-        else
-            local driveDir = diffToScrap.Unit
-            RoadTransit.CurrentDirection = driveDir
-
-            local candidateOvershoot = safeTargetPos + (driveDir * Config.CrushOvershoot)
-            local _, overEdgeDist = getRoadInfoAtPosition(candidateOvershoot, true)
-            local finalDest = (overEdgeDist <= 2.0) and candidateOvershoot or safeTargetPos
-
-            local hDir = Vector3.new(finalDest.X - myPos.X, 0, finalDest.Z - myPos.Z)
-            if hDir.Magnitude > 1.2 then
-                local vel = hDir.Unit * Config.VehicleSpeed
-                root.AssemblyLinearVelocity = Vector3.new(vel.X, root.AssemblyLinearVelocity.Y, vel.Z)
-            end
-            return
-        end
-    else
-        CurrentScrapTarget = nil
-    end
 
     local wpNode = RoadTransit.Waypoints[RoadTransit.Index]
     if not wpNode or not isStraightLineOnRoad(myPos, wpNode.Pos) then
@@ -1413,7 +807,6 @@ RunService.Heartbeat:Connect(function()
     if wpNode then
         local diff = wpNode.Pos - myPos
         local horiz = Vector3.new(diff.X, 0, diff.Z)
-
         if horiz.Magnitude <= 18.0 then
             wpNode.LastVisited = tick()
             RoadTransit.Index = RoadTransit.Index + 1
@@ -1424,31 +817,18 @@ RunService.Heartbeat:Connect(function()
         else
             local mDir = horiz.Unit
             RoadTransit.CurrentDirection = mDir
-            root.AssemblyLinearVelocity = Vector3.new(
-                mDir.X * Config.VehicleSpeed,
-                root.AssemblyLinearVelocity.Y,
-                mDir.Z * Config.VehicleSpeed
-            )
-        end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        task.wait(0.4)
-        if Config.AutoFarmRoads then
-            scanRoadScrapTargets()
+            root.AssemblyLinearVelocity = Vector3.new(mDir.X * Config.VehicleSpeed, root.AssemblyLinearVelocity.Y, mDir.Z * Config.VehicleSpeed)
         end
     end
 end)
 
 -- ==============================================================================
--- 11. INTERFAZ FLUENT CON PESTAÑA FORENSE INTEGRADA
+-- 10. INTERFAZ FLUENT
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "SCRAP CRUSHER & FORENSIC V4.3",
-    SubTitle = "Auditoría en Tiempo Real + Red 1500m",
+    Title = "SCRAP CRUSHER V4.4 | GHOST-PROOF",
+    SubTitle = "Protección DragDetector + Red 1500m",
     TabWidth = 155,
     Size = UDim2.fromOffset(630, 540),
     Acrylic = false,
@@ -1464,146 +844,55 @@ local Tabs = {
     Fuel      = Window:AddTab({ Title = "Auto-Gasolina", Icon = "fuel" })
 }
 
--- PESTAÑA FORENSE
-Tabs.Forensics:AddSection("Auditoría en Vivo de Scrap & Interacciones Físicas")
-
-local ForensicSummaryParagraph = Tabs.Forensics:AddParagraph({
-    Title = "Resumen de Registro",
-    Content = "Sin registros capturados aún..."
-})
+-- FORENSE
+Tabs.Forensics:AddSection("Auditoría Anti-Fantasmas")
 
 local function compileFullForensicReport()
     local lines = {
         "==================================================================",
-        "          REPORTE FORENSE DE CHATARRA & FÍSICAS (SCRAP LOG)       ",
+        "          REPORTE FORENSE ANTI-FANTASMAS (V4.4)                  ",
         "==================================================================",
         string.format("Fecha de Extracción: %s", os.date("%Y-%m-%d %X")),
-        string.format("Eventos Registrados: %d", #ScrapForensicHistory),
-        string.format("Modo de Lanzamiento: %s | Modo Despertar: %s", Config.TransportMode, Config.WakeUpMode),
-        "\n[HISTORIAL DE INTERACCIONES CON CHATARRA (MÁS RECIENTES PRIMERO)]:\n"
+        string.format("Registros: %d", #ScrapForensicHistory),
+        "\n[HISTORIAL DETALLADO]:\n"
     }
-
-    if #ScrapForensicHistory == 0 then
-        table.insert(lines, "  (No se han registrado interacciones con chatarra en esta sesión)")
-    else
-        for i = 1, #ScrapForensicHistory do
-            local e = ScrapForensicHistory[i]
-            table.insert(lines, string.format("------------------------------------------------------------------"))
-            table.insert(lines, string.format("[%s] ETAPA: %s | Objeto: '%s' (%s)", e.Timestamp, e.Stage, e.Name, e.Class))
-            table.insert(lines, string.format("  • Distancia: %.1f studs | Pos: %s", e.DistanceToPlayer, e.WorldPos))
-            table.insert(lines, string.format("  • Anchored: %s | CanCollide: %s | Masa: %.1f | Vel: %s", tostring(e.Anchored), tostring(e.CanCollide), e.Mass, e.Velocity))
-            table.insert(lines, string.format("  • Network Owner: %s", tostring(e.NetworkOwner)))
-            table.insert(lines, string.format("  • Detector: %s", e.Detector))
-            table.insert(lines, string.format("  • Atributos Servidor: %s", e.Attributes))
-            if e.Details and e.Details ~= "" then
-                table.insert(lines, string.format("  🔍 DETALLES DE IMPACTO: %s", e.Details))
-            end
-        end
+    for i = 1, #ScrapForensicHistory do
+        local e = ScrapForensicHistory[i]
+        table.insert(lines, string.format("[%s] ETAPA: %s | Objeto: '%s' | Detector: %s", e.Timestamp, e.Stage, e.Name, e.Detector))
+        if e.Details and e.Details ~= "" then table.insert(lines, string.format("   Detalles: %s", e.Details)) end
     end
-
     lines[#lines + 1] = "=================================================================="
     return table.concat(lines, "\n")
 end
 
 Tabs.Forensics:AddButton({
-    Title = "📋 COPIAR BITÁCORA FORENSE COMPLETA",
-    Description = "Copia al portapapeles todos los datos y sucesos registrados de los scrap",
+    Title = "📋 COPIAR BITÁCORA FORENSE",
     Callback = function()
-        local report = compileFullForensicReport()
-        if setclipboard then
-            setclipboard(report)
-        elseif toclipboard then
-            toclipboard(report)
-        end
-        Fluent:Notify({ Title = "Bitácora Copiada", Content = "Pega los datos para diagnosticar la falla.", Duration = 3 })
+        local rep = compileFullForensicReport()
+        if setclipboard then setclipboard(rep) elseif toclipboard then toclipboard(rep) end
+        Fluent:Notify({ Title = "Copiado", Content = "Bitácora copiada al portapapeles.", Duration = 2.5 })
     end
 })
 
-Tabs.Forensics:AddButton({
-    Title = "🗑️ Limpiar Bitácora Forense",
-    Callback = function()
-        table.clear(ScrapForensicHistory)
-        TotalForensicLogs = 0
-        Fluent:Notify({ Title = "Limpio", Content = "Historial forense reiniciado.", Duration = 2 })
-    end
-})
+-- ITEMS
+Tabs.Items:AddSection("Transporte Seguro hacia la Base")
 
-Tabs.Forensics:AddToggle("ForensicToggle", {
-    Title = "Activar Registro de Sucesos",
-    Default = true,
-    Callback = function(v) Config.ForensicLogging = v end
-})
-
--- PESTAÑA ITEMS
-Tabs.Items:AddSection("Modos de Lanzamiento hacia la Base")
-
-local KickSendToggle = Tabs.Items:AddToggle("AutoSendToggle", {
-    Title = "👟 Activar Despertar & Patear hacia la Base",
+Tabs.Items:AddToggle("AutoSendToggle", {
+    Title = "👟 Activar Transporte Seguro (Anti-Fantasmas)",
     Default = true,
     Callback = function(v) Config.AutoSendItems = v end
 })
 
-Tabs.Items:AddDropdown("WakeUpModeDropdown", {
-    Title = "Modo para Despertar el Objeto",
-    Values = {
-        "Multi-Método (Recomendado)",
-        "Físico Directo (ApplyImpulse)",
-        "Toque de Red (Touch & Pop)",
-        "Desanclaje & Gravedad"
-    },
-    Default = "Multi-Método (Recomendado)",
-    Callback = function(v) Config.WakeUpMode = v end
-})
-
-Tabs.Items:AddDropdown("TransportModeDropdown", {
-    Title = "Modo de Movimiento / Patada",
-    Values = {
-        "Patada Física (Lanzar)",
-        "Arrastre + Impulso (Drag)",
-        "Deslizamiento Rápido",
-        "Teletransporte Telaraña"
-    },
-    Default = "Patada Física (Lanzar)",
-    Callback = function(v) Config.TransportMode = v end
-})
-
-Tabs.Items:AddSlider("PresenceSlider", {
-    Title = "Distancia para Despertar / Patear (Studs)",
-    Default = 10,
-    Min = 5,
-    Max = 25,
-    Rounding = 0,
-    Callback = function(v) Config.CollectRadius = v end
-})
-
 Tabs.Items:AddSlider("KickDistSlider", {
-    Title = "Fuerza / Distancia de la Patada (Studs)",
-    Default = 100,
+    Title = "Distancia de Desplazamiento Seguro (Studs)",
+    Default = 85,
     Min = 30,
-    Max = 220,
+    Max = 160,
     Rounding = 0,
     Callback = function(v) Config.KickDistance = v end
 })
 
-Tabs.Items:AddSlider("ArcHeightSlider", {
-    Title = "Altura del Arco al Patear",
-    Default = 28,
-    Min = 10,
-    Max = 65,
-    Rounding = 0,
-    Callback = function(v) Config.KickArcHeight = v end
-})
-
-Tabs.Items:AddSlider("BatchItemsSlider", {
-    Title = "Objetos Despertados a la Vez",
-    Default = 2,
-    Min = 1,
-    Max = 5,
-    Rounding = 0,
-    Callback = function(v) Config.ItemsPerTick = v end
-})
-
-Tabs.Items:AddSection("Objetos Permitidos")
+Tabs.Items:AddSection("Filtro de Recursos")
 
 Tabs.Items:AddToggle("MoveScrapMetalToggle", {
     Title = "🔩 Mover Scrap y Refined Metal",
@@ -1617,387 +906,51 @@ Tabs.Items:AddToggle("MoveFuelToggle", {
     Callback = function(v) Config.MoveFuelCans = v end
 })
 
-Tabs.Items:AddSection("Red Global de 1500 Studs (0% Lag)")
+-- AUTO-PISTAS
+Tabs.RoadFarm:AddSection("Conducción en Pista")
 
-Tabs.Items:AddSlider("MaxWebRadiusSlider", {
-    Title = "Rango Total de la Red (Studs)",
-    Default = 1500,
-    Min = 400,
-    Max = 2000,
-    Rounding = 0,
-    Callback = function(v)
-        Config.MaxMapRadius = v
-        rebuildSpiderwebNetwork()
-    end
-})
-
-Tabs.Items:AddSlider("StepDistSlider", {
-    Title = "Espaciado de Puntos (Studs)",
-    Default = 35,
-    Min = 12,
-    Max = 90,
-    Rounding = 0,
-    Callback = function(v)
-        Config.WebStepDistance = v
-        rebuildSpiderwebNetwork()
-    end
-})
-
-Tabs.Items:AddToggle("ShowBallsToggle", {
-    Title = "👁️ Mostrar Bolitas Cercanas (Preview)",
-    Default = false,
-    Callback = function(v)
-        Config.ShowWebVisuals = v
-        for _, pt in ipairs(ManualDeliveryPoints) do
-            if pt and pt.Parent then
-                pt.Transparency = v and 0.2 or 1
-            end
-        end
-    end
-})
-
-Tabs.Items:AddButton({
-    Title = "+ Agregar Bolita Manual Aquí",
-    Callback = function()
-        local _, root = getCharacterParts()
-        if not root then return end
-        createManualWebMarker(root.Position)
-        Fluent:Notify({ Title = "Punto Agregado", Content = "Total puntos: " .. #VirtualWebGrid, Duration = 2 })
-    end
-})
-
-Tabs.Items:AddSection("Protección de la Base")
-
-Tabs.Items:AddToggle("BasePreventToggle", {
-    Title = "No tocar objetos que ya están en la base",
-    Default = true,
-    Callback = function(v) Config.BasePrevent = v end
-})
-
-Tabs.Items:AddSlider("BaseRadiusSlider", {
-    Title = "Radio Seguro de la Base (Studs)",
-    Default = 145,
-    Min = 50,
-    Max = 300,
-    Rounding = 0,
-    Callback = function(v)
-        Config.GeneratorSafeRadius = v
-        rebuildSpiderwebNetwork()
-    end
-})
-
--- PESTAÑA AUTO-PISTAS
-Tabs.RoadFarm:AddSection("Atropello en Pistas")
-
-local AutoFarmToggle = Tabs.RoadFarm:AddToggle("AutoFarmToggle", {
+Tabs.RoadFarm:AddToggle("AutoFarmToggle", {
     Title = "🚜 Activar Auto-Atropello en Pistas",
     Default = false,
     Callback = function(v)
         Config.AutoFarmRoads = v
-        if v then
-            RoadTransit.Waypoints = {}
-            scanRoadScrapTargets()
-        else
-            applyBrake(0.8)
-        end
+        if not v then applyBrake(0.8) end
     end
 })
 
-local StatusParagraph = Tabs.RoadFarm:AddParagraph({
-    Title = "Monitor",
-    Content = "Cargando..."
-})
-
 Tabs.RoadFarm:AddSlider("CarSpeedSlider", {
-    Title = "Velocidad del Auto",
+    Title = "Velocidad de Conducción",
     Default = 115,
     Min = 60,
-    Max = 200,
+    Max = 180,
     Rounding = 0,
     Callback = function(v) Config.VehicleSpeed = v end
 })
 
-Tabs.RoadFarm:AddSlider("OvershootSlider", {
-    Title = "Rebase de Impacto (Overshoot Studs)",
-    Default = 16,
-    Min = 8,
-    Max = 35,
-    Rounding = 0,
-    Callback = function(v) Config.CrushOvershoot = v end
-})
+-- AUTO-EAT
+Tabs.AutoEat:AddSection("Auto-Comer")
 
-Tabs.RoadFarm:AddSlider("RoadWidthSlider", {
-    Title = "Ancho Máximo de Carril (Studs)",
-    Default = 12,
-    Min = 6,
-    Max = 18,
-    Rounding = 0,
-    Callback = function(v) Config.RoadMaxHalfWidth = v end
-})
-
--- PESTAÑA AUTO-EAT
-Tabs.AutoEat:AddSection("Consumo Inteligente de Zanahorias")
-
-local AutoEatToggleInstance = Tabs.AutoEat:AddToggle("AutoEatToggle", {
-    Title = "🥕 Activar Auto-Comer en Suelo",
+Tabs.AutoEat:AddToggle("AutoEatToggle", {
+    Title = "🥕 Activar Auto-Comer",
     Default = true,
     Callback = function(v) Config.AutoEatEnabled = v end
 })
 
-local EatStatusParagraph = Tabs.AutoEat:AddParagraph({
-    Title = "Estado Auto-Eat",
-    Content = "Monitoreando salud..."
-})
-
-Tabs.AutoEat:AddSlider("EatHpSlider", {
-    Title = "Vida Baja (%): Comer SOLO DORADAS ✨",
-    Default = 60,
-    Min = 10,
-    Max = 95,
-    Rounding = 0,
-    Callback = function(v) Config.EatHealthThreshold = v end
-})
-
-Tabs.AutoEat:AddSlider("EatHungerSlider", {
-    Title = "Hambre Baja (%): Comer CUALQUIERA 🥕",
-    Default = 50,
-    Min = 10,
-    Max = 90,
-    Rounding = 0,
-    Callback = function(v) Config.EatHungerThreshold = v end
-})
-
-Tabs.AutoEat:AddSlider("EatRadiusSlider", {
-    Title = "Radio de Absorción de Comida (Studs)",
-    Default = 24,
-    Min = 10,
-    Max = 45,
-    Rounding = 0,
-    Callback = function(v) Config.EatScanRadius = v end
-})
-
-Tabs.AutoEat:AddButton({
-    Title = "✨ Forzar Comer Zanahoria Dorada",
-    Callback = function() eatGroundFood(true) end
-})
-
-Tabs.AutoEat:AddButton({
-    Title = "🥕 Forzar Comer Cualquier Zanahoria",
-    Callback = function() eatGroundFood(false) end
-})
-
--- PESTAÑA AUTO-GASOLINA
-Tabs.Fuel:AddSection("Recarga en Tanque")
+-- AUTO-GASOLINA
+Tabs.Fuel:AddSection("Auto-Gasolina")
 
 Tabs.Fuel:AddToggle("AutoRefuelToggle", {
-    Title = "⛽ Ir a Base y Echar Gasolina Automáticamente",
+    Title = "⛽ Recarga Automática",
     Default = true,
     Callback = function(v) Config.AutoRefuelEnabled = v end
 })
 
-local FuelStatusParagraph = Tabs.Fuel:AddParagraph({
-    Title = "Estado del Combustible",
-    Content = "Monitoreando tanque..."
-})
-
-Tabs.Fuel:AddSlider("LowFuelSlider", {
-    Title = "Volver a Base si la Gasolina Baja de (%)",
-    Default = 25,
-    Min = 10,
-    Max = 60,
-    Rounding = 0,
-    Callback = function(v) Config.LowFuelThreshold = v end
-})
-
-Tabs.Fuel:AddSlider("FuelRadiusSlider", {
-    Title = "Radio para Atraer Galón al Tanque (Studs)",
-    Default = 45,
-    Min = 15,
-    Max = 80,
-    Rounding = 0,
-    Callback = function(v) Config.FuelCanScanRadius = v end
-})
-
 Tabs.Fuel:AddButton({
-    Title = "⛽ Echar Gasolina Ahora",
+    Title = "⛽ Acoplar Galón Cercano Ahora",
     Callback = function()
         local ok = refuelTruckFromNearbyCan()
-        if ok then
-            Fluent:Notify({ Title = "⛽ Gasolina", Content = "Galón acoplado al tanque.", Duration = 2 })
-        else
-            Fluent:Notify({ Title = "⚠️ Sin Galones Cerca", Content = "Acércate a un galón de gasolina.", Duration = 2 })
-        end
+        Fluent:Notify({ Title = "Gasolina", Content = ok and "Galón acoplado." or "Sin galones cerca.", Duration = 2 })
     end
 })
-
--- ==============================================================================
--- 12. WIDGETS FLOTANTES
--- ==============================================================================
-
-local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local FloatGui = Instance.new("ScreenGui")
-FloatGui.Name = "ScrapForensicFloatGuiV43"
-FloatGui.ResetOnSpawn = false
-FloatGui.Parent = GuiParent
-
-local MenuBtn = Instance.new("ImageButton")
-MenuBtn.Size = UDim2.new(0, 48, 0, 48)
-MenuBtn.Position = UDim2.new(0.04, 0, 0.72, 0)
-MenuBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
-MenuBtn.Image = "rbxassetid://10723415903"
-MenuBtn.Active = true
-MenuBtn.Draggable = true
-MenuBtn.Parent = FloatGui
-
-local MenuCorner = Instance.new("UICorner")
-MenuCorner.CornerRadius = UDim.new(1, 0)
-MenuCorner.Parent = MenuBtn
-
-local isMenuVisible = true
-MenuBtn.MouseButton1Click:Connect(function()
-    isMenuVisible = not isMenuVisible
-    Window.Root.Visible = isMenuVisible
-end)
-
-local DriveBtn = Instance.new("TextButton")
-DriveBtn.Size = UDim2.new(0, 48, 0, 48)
-DriveBtn.Position = UDim2.new(0.04, 0, 0.45, 0)
-DriveBtn.BackgroundColor3 = Color3.fromRGB(160, 30, 40)
-DriveBtn.Text = "🚜\nOFF"
-DriveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-DriveBtn.TextSize = 11
-DriveBtn.Font = Enum.Font.GothamBold
-DriveBtn.Active = true
-DriveBtn.Draggable = true
-DriveBtn.Parent = FloatGui
-
-local DriveCorner = Instance.new("UICorner")
-DriveCorner.CornerRadius = UDim.new(1, 0)
-DriveCorner.Parent = DriveBtn
-
-DriveBtn.MouseButton1Click:Connect(function()
-    Config.AutoFarmRoads = not Config.AutoFarmRoads
-    pcall(function() AutoFarmToggle:SetValue(Config.AutoFarmRoads) end)
-    if Config.AutoFarmRoads then
-        DriveBtn.BackgroundColor3 = Color3.fromRGB(30, 150, 65)
-        DriveBtn.Text = "🚜\nON"
-    else
-        DriveBtn.BackgroundColor3 = Color3.fromRGB(160, 30, 40)
-        DriveBtn.Text = "🚜\nOFF"
-        applyBrake(0.8)
-    end
-end)
-
-local KickWidgetBtn = Instance.new("TextButton")
-KickWidgetBtn.Size = UDim2.new(0, 48, 0, 48)
-KickWidgetBtn.Position = UDim2.new(0.04, 0, 0.54, 0)
-KickWidgetBtn.BackgroundColor3 = Color3.fromRGB(30, 130, 180)
-KickWidgetBtn.Text = "👟\nON"
-KickWidgetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-KickWidgetBtn.TextSize = 11
-KickWidgetBtn.Font = Enum.Font.GothamBold
-KickWidgetBtn.Active = true
-KickWidgetBtn.Draggable = true
-KickWidgetBtn.Parent = FloatGui
-
-local KickCorner = Instance.new("UICorner")
-KickCorner.CornerRadius = UDim.new(1, 0)
-KickCorner.Parent = KickWidgetBtn
-
-KickWidgetBtn.MouseButton1Click:Connect(function()
-    Config.AutoSendItems = not Config.AutoSendItems
-    pcall(function() KickSendToggle:SetValue(Config.AutoSendItems) end)
-    if Config.AutoSendItems then
-        KickWidgetBtn.BackgroundColor3 = Color3.fromRGB(30, 130, 180)
-        KickWidgetBtn.Text = "👟\nON"
-    else
-        KickWidgetBtn.BackgroundColor3 = Color3.fromRGB(160, 35, 40)
-        KickWidgetBtn.Text = "👟\nOFF"
-    end
-end)
-
-local AutoEatWidgetBtn = Instance.new("TextButton")
-AutoEatWidgetBtn.Size = UDim2.new(0, 48, 0, 48)
-AutoEatWidgetBtn.Position = UDim2.new(0.04, 0, 0.63, 0)
-AutoEatWidgetBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 60)
-AutoEatWidgetBtn.Text = "🥕\nON"
-AutoEatWidgetBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-AutoEatWidgetBtn.TextSize = 11
-AutoEatWidgetBtn.Font = Enum.Font.GothamBold
-AutoEatWidgetBtn.Active = true
-AutoEatWidgetBtn.Draggable = true
-AutoEatWidgetBtn.Parent = FloatGui
-
-local EatCorner = Instance.new("UICorner")
-EatCorner.CornerRadius = UDim.new(1, 0)
-EatCorner.Parent = AutoEatWidgetBtn
-
-AutoEatWidgetBtn.MouseButton1Click:Connect(function()
-    Config.AutoEatEnabled = not Config.AutoEatEnabled
-    pcall(function() AutoEatToggleInstance:SetValue(Config.AutoEatEnabled) end)
-    if Config.AutoEatEnabled then
-        AutoEatWidgetBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 60)
-        AutoEatWidgetBtn.Text = "🥕\nON"
-    else
-        AutoEatWidgetBtn.BackgroundColor3 = Color3.fromRGB(160, 35, 40)
-        AutoEatWidgetBtn.Text = "🥕\nOFF"
-    end
-end)
-
-task.spawn(function()
-    while true do
-        task.wait(0.6)
-        local targetText = "Recorriendo red vial (100% Pista)"
-        if FuelState.IsRefueling then
-            targetText = "⛽ Volviendo a Base por gasolina..."
-        elseif IsRecoveringToRoad then
-            targetText = "⚠️ Volviendo a la pista más cercana..."
-        elseif CurrentScrapTarget then
-            targetText = "Embestida -> " .. CurrentScrapTarget.Name
-        end
-
-        StatusParagraph:SetDesc(string.format(
-            "Rango: %d studs | Red RAM: %d nodos\nDespertar: %s\nModo: %s (%d obj a %dm)\nPistas: %d | Cúmulos: %d | Gasolina: %d%%\nEstado: %s",
-            Config.MaxMapRadius,
-            #VirtualWebGrid,
-            Config.WakeUpMode,
-            Config.TransportMode,
-            Config.ItemsPerTick,
-            Config.CollectRadius,
-            #RoadNodes,
-            #RoadScrapList,
-            FuelState.FuelPct,
-            targetText
-        ))
-
-        local pHP, pHunger = getPlayerStats()
-        EatStatusParagraph:SetDesc(string.format(
-            "Vida: %d%% | Hambre: %d%%\nAuto-Eat: %s | %s",
-            pHP, pHunger,
-            Config.AutoEatEnabled and "🟢 ON" or "🔴 OFF",
-            AutoEatState.Status
-        ))
-
-        FuelStatusParagraph:SetDesc(string.format(
-            "Tanque: %.0f / %.0f (%d%%)\nRetorno: %d%% | Estado: %s",
-            FuelState.CurrentFuel, FuelState.MaxFuel, FuelState.FuelPct,
-            Config.LowFuelThreshold,
-            FuelState.Status
-        ))
-
-        -- Actualizar Resumen Forense
-        if #ScrapForensicHistory > 0 then
-            local latest = ScrapForensicHistory[1]
-            ForensicSummaryParagraph:SetDesc(string.format(
-                "Eventos Registrados: %d\nÚltimo Suceso: [%s] %s sobre '%s'\nDetalle: %s",
-                #ScrapForensicHistory,
-                latest.Timestamp,
-                latest.Stage,
-                latest.Name,
-                latest.Details
-            ))
-        end
-    end
-end)
 
 Window:SelectTab(1)
