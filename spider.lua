@@ -1,6 +1,6 @@
 -- ==============================================================================
--- SCRIPT DEFINITIVO V5.0: RECOLECCIÓN Y ENTREGA REAL (ANTI-FANTASMA)
--- Fix: Logger seguro (sin crashear Teleports) + Arrastre Inteligente
+-- SCRIPT V6.0: RECOLECCIÓN Y ENTREGA REAL (LOGGER SEGURO)
+-- Fix: Eliminado hookeo de RemoteFunction para evitar crash del Teleporter
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -16,11 +16,11 @@ local lp = Players.LocalPlayer
 -- ==============================================================================
 local Config = {
     AutoCollectEnabled = true,
-    CollectRadius = 12, 
+    CollectRadius = 12,
     TransportMode = "Arrastre Inteligente",
-    DragDistance = 8, 
+    DragDistance = 8,
     AutoDepositEnabled = true,
-    DepositRadius = 15, 
+    DepositRadius = 15,
     MoveScrapAndMetal = true,
     MoveFuelCans = true,
     ScanInterval = 0.3,
@@ -28,7 +28,7 @@ local Config = {
 }
 
 -- ==============================================================================
--- ESTADO Y VARIABLES GLOBALES
+-- ESTADO GLOBAL
 -- ==============================================================================
 local Logger = { enabled = true, knownRemotes = {} }
 local DragTransport = { activeItems = {} }
@@ -37,7 +37,7 @@ local CachedGeneratorPart = nil
 local UI = {}
 
 -- ==============================================================================
--- LOGGER DE REMOTES (VERSIÓN SEGURA - SOLO REMOTEEVENTS)
+-- LOGGER SEGURO (SOLO REMOTEEVENTS)
 -- ==============================================================================
 local function logRemoteCall(remote, args)
     if not Logger.enabled then return end
@@ -55,7 +55,8 @@ end
 local function hookRemote(remote)
     if Logger.knownRemotes[remote] then return end
     Logger.knownRemotes[remote] = true
-    
+
+    -- SOLO HOACKEAMOS REMOTEEVENTS
     if remote:IsA("RemoteEvent") then
         local oldFire = remote.FireServer
         local success, err = pcall(function()
@@ -70,14 +71,14 @@ local function hookRemote(remote)
             warn("[Logger] No se pudo hookear:", remote:GetFullName())
         end
     elseif remote:IsA("RemoteFunction") then
-        -- NO HOACKEAMOS REMOTEFUNCTIONS PARA EVITAR CRASHEAR EL JUEGO (Como el Teleporter)
-        print("[Logger] Encontrado RemoteFunction (No hookeado por seguridad):", remote:GetFullName())
+        -- IMPORTANTE: No hookeamos RemoteFunctions para evitar crashear el juego
+        print("[Logger] RemoteFunction detectado (ignorado por seguridad):", remote:GetFullName())
     end
 end
 
 local function scanAndHookRemotes()
     for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
-        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+        if obj:IsA("RemoteEvent") then
             pcall(hookRemote, obj)
         end
     end
@@ -85,7 +86,7 @@ end
 
 scanAndHookRemotes()
 ReplicatedStorage.DescendantAdded:Connect(function(desc)
-    if desc:IsA("RemoteEvent") or desc:IsA("RemoteFunction") then
+    if desc:IsA("RemoteEvent") then
         task.wait(0.1)
         pcall(hookRemote, desc)
     end
@@ -105,10 +106,10 @@ local function isTargetItem(item)
     if not item or not item.Parent then return false end
     local n = item.Name:lower()
     local itemType = tostring(item:GetAttribute("ItemType") or ""):lower()
-    
+
     local isFuel = n:find("fuel") or n:find("gas") or n:find("jerry") or n:find("canister") or itemType:find("fuel")
     local isMetal = n:find("scrap") or n:find("metal") or n:find("chatarra") or n:find("barrel") or itemType:find("resource")
-    
+
     if Config.MoveFuelCans and isFuel then return true end
     if Config.MoveScrapAndMetal and isMetal then return true end
     return false
@@ -140,12 +141,12 @@ end
 -- ==============================================================================
 function DragTransport:StartDrag(item, mainPart)
     if self.activeItems[item] then return end
-    
+
     local clickDetector = item:FindFirstChild("ItemDrag", true) or item:FindFirstChildWhichIsA("ClickDetector", true)
     if clickDetector and fireclickdetector then
         pcall(function() fireclickdetector(clickDetector) end)
     end
-    
+
     if item:IsA("Model") then
         for _, p in ipairs(item:GetDescendants()) do
             if p:IsA("BasePart") then p.Anchored = false end
@@ -153,7 +154,7 @@ function DragTransport:StartDrag(item, mainPart)
     else
         mainPart.Anchored = false
     end
-    
+
     self.activeItems[item] = {
         part = mainPart,
         lastPos = mainPart.Position,
@@ -167,25 +168,25 @@ function DragTransport:Update()
         self:StopAll()
         return
     end
-    
+
     local holdCFrame = root.CFrame * CFrame.new(0, 2, -Config.DragDistance)
     local targetPos = holdCFrame.Position
-    
+
     for item, data in pairs(self.activeItems) do
         if not item or not item.Parent or not data.part or not data.part.Parent then
             self.activeItems[item] = nil
             continue
         end
-        
+
         local currentPos = data.part.Position
         local newPos = currentPos:Lerp(targetPos, 0.25)
-        
+
         if item:IsA("Model") then
             item:PivotTo(CFrame.new(newPos))
         else
             data.part.CFrame = CFrame.new(newPos)
         end
-        
+
         if data.part:IsA("BasePart") then
             data.part.AssemblyLinearVelocity = Vector3.zero
             data.part.AssemblyAngularVelocity = Vector3.zero
@@ -201,33 +202,32 @@ function DragTransport:StopAll()
 end
 
 -- ==============================================================================
--- LÓGICA DE DEPÓSITO (ENTREGA A LA BASE)
+-- LÓGICA DE DEPÓSITO
 -- ==============================================================================
 local function tryDepositItem(item)
     local shredder = findShredder()
     local generator = findGenerator()
     local _, root = getCharacterParts()
     if not root then return false end
-    
+
     local targetPart = nil
     local itemName = item.Name:lower()
-    
+
     if itemName:find("fuel") or itemName:find("gas") then
         targetPart = generator
     else
         targetPart = shredder
     end
-    
+
     if not targetPart then return false end
-    
     if (root.Position - targetPart.Position).Magnitude > Config.DepositRadius then
         return false
     end
-    
+
     local depositSuccess = false
-    
-    -- Método 1: RemoteEvent genérico
-    local depositRemote = ReplicatedStorage:FindFirstChild("Deposit", true) 
+
+    -- Método 1: RemoteEvent genérico (ej. "Deposit", "Sell", "Collect")
+    local depositRemote = ReplicatedStorage:FindFirstChild("Deposit", true)
         or ReplicatedStorage:FindFirstChild("Sell", true)
         or ReplicatedStorage:FindFirstChild("Collect", true)
     if depositRemote and depositRemote:IsA("RemoteEvent") then
@@ -236,7 +236,7 @@ local function tryDepositItem(item)
             depositSuccess = true
         end)
     end
-    
+
     -- Método 2: Toque simulado
     if not depositSuccess and firetouchinterest then
         local itemPart = item:IsA("BasePart") and item or item.PrimaryPart
@@ -248,7 +248,7 @@ local function tryDepositItem(item)
             depositSuccess = true
         end
     end
-    
+
     if depositSuccess then
         print("[Deposit] Intentando entregar:", item.Name)
         task.delay(0.5, function()
@@ -257,7 +257,7 @@ local function tryDepositItem(item)
             end
         end)
     end
-    
+
     return depositSuccess
 end
 
@@ -271,14 +271,14 @@ task.spawn(function()
             DragTransport:StopAll()
             continue
         end
-        
+
         local _, root = getCharacterParts()
         if not root then continue end
-        
+
         local myPos = root.Position
         local droppedFolder = workspace:FindFirstChild("DroppedItems") or workspace
         local itemsToProcess = {}
-        
+
         for _, item in ipairs(droppedFolder:GetChildren()) do
             if (item:IsA("Model") or item:IsA("BasePart")) and isTargetItem(item) then
                 local mainPart = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
@@ -290,13 +290,12 @@ task.spawn(function()
                 end
             end
         end
-        
+
         table.sort(itemsToProcess, function(a, b) return a.Dist < b.Dist end)
-        
+
         local processed = 0
         for _, data in ipairs(itemsToProcess) do
             if processed >= Config.MaxObjectsPerCycle then break end
-            
             if not DragTransport.activeItems[data.Entity] then
                 if Config.TransportMode == "Arrastre Inteligente" then
                     DragTransport:StartDrag(data.Entity, data.Part)
@@ -304,11 +303,11 @@ task.spawn(function()
                 end
             end
         end
-        
+
         if Config.TransportMode == "Arrastre Inteligente" then
             DragTransport:Update()
         end
-        
+
         if Config.AutoDepositEnabled then
             for item, _ in pairs(DragTransport.activeItems) do
                 if item and item.Parent then
@@ -323,7 +322,7 @@ end)
 -- INTERFAZ GRÁFICA (FLUENT)
 -- ==============================================================================
 local Window = Fluent:CreateWindow({
-    Title = "STA Scrap & Fuel Deliver V5",
+    Title = "STA Scrap & Fuel Deliver V6",
     SubTitle = "Arrastre + Depósito Real (Sin Fantasmas)",
     TabWidth = 160,
     Size = UDim2.fromOffset(620, 540),
