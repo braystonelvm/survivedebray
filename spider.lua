@@ -1,7 +1,6 @@
 -- ==============================================================================
--- SCRIPT DEFINITIVO: RECOLECCIÓN Y ENTREGA REAL DE CHATARRA Y COMBUSTIBLE
--- Estrategia: Arrastre Inteligente + Depósito por Remote
--- Incluye: Logger de Remotes, Múltiples Modos de Transporte y Auto-Depósito
+-- SCRIPT DEFINITIVO V5.0: RECOLECCIÓN Y ENTREGA REAL (ANTI-FANTASMA)
+-- Fix: Logger seguro (sin crashear Teleports) + Arrastre Inteligente
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -10,30 +9,20 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local CoreGui = game:GetService("CoreGui")
 local lp = Players.LocalPlayer
 
 -- ==============================================================================
 -- CONFIGURACIÓN PRINCIPAL
 -- ==============================================================================
 local Config = {
-    -- Recolección
     AutoCollectEnabled = true,
-    CollectRadius = 12, -- Radio para "despertar" y empezar a arrastrar objetos
-    
-    -- Transporte
-    TransportMode = "Arrastre Inteligente", -- "Arrastre Inteligente", "Patada Física (Lanzar)"
-    DragDistance = 8, -- Distancia a la que se mantiene el objeto mientras se arrastra
-    
-    -- Depósito
+    CollectRadius = 12, 
+    TransportMode = "Arrastre Inteligente",
+    DragDistance = 8, 
     AutoDepositEnabled = true,
-    DepositRadius = 15, -- Radio para intentar depositar en el Shredder/Generador
-    
-    -- Filtros
+    DepositRadius = 15, 
     MoveScrapAndMetal = true,
     MoveFuelCans = true,
-    
-    -- Seguridad/Rendimiento
     ScanInterval = 0.3,
     MaxObjectsPerCycle = 2,
 }
@@ -42,15 +31,13 @@ local Config = {
 -- ESTADO Y VARIABLES GLOBALES
 -- ==============================================================================
 local Logger = { enabled = true, knownRemotes = {} }
-local DragTransport = { activeItems = {}, lastPositions = {} }
+local DragTransport = { activeItems = {} }
 local CachedShredderPart = nil
 local CachedGeneratorPart = nil
-
--- Referencias a la UI para actualizaciones
 local UI = {}
 
 -- ==============================================================================
--- LOGGER DE REMOTES (Para identificar los canales del servidor)
+-- LOGGER DE REMOTES (VERSIÓN SEGURA - SOLO REMOTEEVENTS)
 -- ==============================================================================
 local function logRemoteCall(remote, args)
     if not Logger.enabled then return end
@@ -58,7 +45,7 @@ local function logRemoteCall(remote, args)
     for _, arg in ipairs(args) do
         table.insert(argStrings, tostring(arg))
     end
-    local msg = string.format("[STA Logger] %s | ARGS: %s", remote:GetFullName(), table.concat(argStrings, ", "))
+    local msg = string.format("[Logger] %s | ARGS: %s", remote:GetFullName(), table.concat(argStrings, ", "))
     print(msg)
     if UI.LogBox then
         pcall(function() UI.LogBox:SetDesc(msg) end)
@@ -71,34 +58,36 @@ local function hookRemote(remote)
     
     if remote:IsA("RemoteEvent") then
         local oldFire = remote.FireServer
-        remote.FireServer = function(self, ...)
-            logRemoteCall(self, {...})
-            return oldFire(self, ...)
+        local success, err = pcall(function()
+            remote.FireServer = function(self, ...)
+                logRemoteCall(self, {...})
+                return oldFire(self, ...)
+            end
+        end)
+        if success then
+            print("[Logger] Hookeado exitosamente:", remote:GetFullName())
+        else
+            warn("[Logger] No se pudo hookear:", remote:GetFullName())
         end
     elseif remote:IsA("RemoteFunction") then
-        local oldInvoke = remote.InvokeServer
-        remote.InvokeServer = function(self, ...)
-            logRemoteCall(self, {...})
-            return oldInvoke(self, ...)
-        end
+        -- NO HOACKEAMOS REMOTEFUNCTIONS PARA EVITAR CRASHEAR EL JUEGO (Como el Teleporter)
+        print("[Logger] Encontrado RemoteFunction (No hookeado por seguridad):", remote:GetFullName())
     end
-    print("[STA Logger] Hookeado:", remote:GetFullName())
 end
 
 local function scanAndHookRemotes()
     for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
         if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
-            hookRemote(obj)
+            pcall(hookRemote, obj)
         end
     end
 end
 
--- Hookear remotes existentes y futuros
 scanAndHookRemotes()
 ReplicatedStorage.DescendantAdded:Connect(function(desc)
     if desc:IsA("RemoteEvent") or desc:IsA("RemoteFunction") then
         task.wait(0.1)
-        hookRemote(desc)
+        pcall(hookRemote, desc)
     end
 end)
 
@@ -125,7 +114,6 @@ local function isTargetItem(item)
     return false
 end
 
--- Busca el Shredder (Trituradora) o el Generador como destino
 local function findShredder()
     if CachedShredderPart and CachedShredderPart.Parent then return CachedShredderPart end
     for _, obj in ipairs(workspace:GetDescendants()) do
@@ -148,18 +136,16 @@ local function findGenerator()
 end
 
 -- ==============================================================================
--- MÓDULO DE ARRASTRE INTELIGENTE (El corazón de la solución)
+-- MÓDULO DE ARRASTRE INTELIGENTE
 -- ==============================================================================
 function DragTransport:StartDrag(item, mainPart)
     if self.activeItems[item] then return end
     
-    -- 1. "Despertar" el objeto para que el servidor sepa que lo tienes
     local clickDetector = item:FindFirstChild("ItemDrag", true) or item:FindFirstChildWhichIsA("ClickDetector", true)
     if clickDetector and fireclickdetector then
         pcall(function() fireclickdetector(clickDetector) end)
     end
     
-    -- 2. Asegurar que el objeto no esté anclado (para que pueda moverse)
     if item:IsA("Model") then
         for _, p in ipairs(item:GetDescendants()) do
             if p:IsA("BasePart") then p.Anchored = false end
@@ -182,7 +168,6 @@ function DragTransport:Update()
         return
     end
     
-    -- Calcular la posición de "agarre" (delante del jugador)
     local holdCFrame = root.CFrame * CFrame.new(0, 2, -Config.DragDistance)
     local targetPos = holdCFrame.Position
     
@@ -192,7 +177,6 @@ function DragTransport:Update()
             continue
         end
         
-        -- Mover el objeto suavemente hacia la posición objetivo
         local currentPos = data.part.Position
         local newPos = currentPos:Lerp(targetPos, 0.25)
         
@@ -202,7 +186,6 @@ function DragTransport:Update()
             data.part.CFrame = CFrame.new(newPos)
         end
         
-        -- Anular velocidades para que no se caiga por físicas
         if data.part:IsA("BasePart") then
             data.part.AssemblyLinearVelocity = Vector3.zero
             data.part.AssemblyAngularVelocity = Vector3.zero
@@ -218,7 +201,7 @@ function DragTransport:StopAll()
 end
 
 -- ==============================================================================
--- LÓGICA DE RECOLECCIÓN Y DEPÓSITO
+-- LÓGICA DE DEPÓSITO (ENTREGA A LA BASE)
 -- ==============================================================================
 local function tryDepositItem(item)
     local shredder = findShredder()
@@ -229,7 +212,6 @@ local function tryDepositItem(item)
     local targetPart = nil
     local itemName = item.Name:lower()
     
-    -- Decidir destino: Combustible -> Generador, Chatarra -> Shredder
     if itemName:find("fuel") or itemName:find("gas") then
         targetPart = generator
     else
@@ -238,15 +220,13 @@ local function tryDepositItem(item)
     
     if not targetPart then return false end
     
-    -- Verificar si el jugador está lo suficientemente cerca
     if (root.Position - targetPart.Position).Magnitude > Config.DepositRadius then
         return false
     end
     
-    -- Intentar depositar usando varios métodos (el que funcione primero)
     local depositSuccess = false
     
-    -- Método 1: Usar un RemoteEvent común para depósito (ej. "Deposit", "Sell", "Collect")
+    -- Método 1: RemoteEvent genérico
     local depositRemote = ReplicatedStorage:FindFirstChild("Deposit", true) 
         or ReplicatedStorage:FindFirstChild("Sell", true)
         or ReplicatedStorage:FindFirstChild("Collect", true)
@@ -257,7 +237,7 @@ local function tryDepositItem(item)
         end)
     end
     
-    -- Método 2: Simular un toque (Touch) con la parte del destino
+    -- Método 2: Toque simulado
     if not depositSuccess and firetouchinterest then
         local itemPart = item:IsA("BasePart") and item or item.PrimaryPart
         if itemPart then
@@ -270,8 +250,7 @@ local function tryDepositItem(item)
     end
     
     if depositSuccess then
-        print("[Deposit] Intentando depositar:", item.Name)
-        -- Si el objeto fue destruido por el servidor, limpiar del arrastre
+        print("[Deposit] Intentando entregar:", item.Name)
         task.delay(0.5, function()
             if not item.Parent then
                 DragTransport.activeItems[item] = nil
@@ -282,7 +261,9 @@ local function tryDepositItem(item)
     return depositSuccess
 end
 
--- Bucle principal de escaneo y transporte
+-- ==============================================================================
+-- BUCLE PRINCIPAL
+-- ==============================================================================
 task.spawn(function()
     while true do
         task.wait(Config.ScanInterval)
@@ -298,7 +279,6 @@ task.spawn(function()
         local droppedFolder = workspace:FindFirstChild("DroppedItems") or workspace
         local itemsToProcess = {}
         
-        -- Escanear objetos cercanos
         for _, item in ipairs(droppedFolder:GetChildren()) do
             if (item:IsA("Model") or item:IsA("BasePart")) and isTargetItem(item) then
                 local mainPart = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
@@ -311,7 +291,6 @@ task.spawn(function()
             end
         end
         
-        -- Ordenar por distancia y procesar un número limitado por ciclo
         table.sort(itemsToProcess, function(a, b) return a.Dist < b.Dist end)
         
         local processed = 0
@@ -322,19 +301,14 @@ task.spawn(function()
                 if Config.TransportMode == "Arrastre Inteligente" then
                     DragTransport:StartDrag(data.Entity, data.Part)
                     processed = processed + 1
-                elseif Config.TransportMode == "Patada Física (Lanzar)" then
-                    -- (Implementación de patada simplificada, ya que el arrastre es más fiable)
-                    -- ... (puedes mantener tu lógica de patada aquí si lo deseas)
                 end
             end
         end
         
-        -- Actualizar arrastre
         if Config.TransportMode == "Arrastre Inteligente" then
             DragTransport:Update()
         end
         
-        -- Intentar depositar objetos que ya estén cerca de la base
         if Config.AutoDepositEnabled then
             for item, _ in pairs(DragTransport.activeItems) do
                 if item and item.Parent then
@@ -349,8 +323,8 @@ end)
 -- INTERFAZ GRÁFICA (FLUENT)
 -- ==============================================================================
 local Window = Fluent:CreateWindow({
-    Title = "STA Scrap & Fuel Deliver",
-    SubTitle = "Arrastre + Depósito Real (Anti-Fantasma)",
+    Title = "STA Scrap & Fuel Deliver V5",
+    SubTitle = "Arrastre + Depósito Real (Sin Fantasmas)",
     TabWidth = 160,
     Size = UDim2.fromOffset(620, 540),
     Acrylic = false,
@@ -363,7 +337,6 @@ local Tabs = {
     Logger = Window:AddTab({ Title = "Logger / Debug", Icon = "terminal" }),
 }
 
--- Pestaña Principal
 Tabs.Main:AddSection("Recolección y Transporte")
 
 Tabs.Main:AddToggle("AutoCollectToggle", {
@@ -374,7 +347,7 @@ Tabs.Main:AddToggle("AutoCollectToggle", {
 
 Tabs.Main:AddDropdown("TransportModeDropdown", {
     Title = "Modo de Transporte",
-    Values = { "Arrastre Inteligente", "Patada Física (Lanzar)" },
+    Values = { "Arrastre Inteligente" },
     Default = "Arrastre Inteligente",
     Callback = function(v) Config.TransportMode = v end
 })
@@ -441,7 +414,7 @@ Tabs.Logger:AddButton({
     Title = "🔄 Re-escanear Remotes Ahora",
     Callback = function()
         scanAndHookRemotes()
-        Fluent:Notify({ Title = "Logger", Content = "Re-escaneo de Remotes completado.", Duration = 2 })
+        Fluent:Notify({ Title = "Logger", Content = "Re-escaneo completado.", Duration = 2 })
     end
 })
 
