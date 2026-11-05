@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ZOMBIE HUB MASTER V17.5: UNSTUCK + RESCATE CONTROLADO + ASALTANTES A ESQUINA
+-- ZOMBIE HUB MASTER V17.0: AUTO-UNSTUCK + CICLO DÍA/NOCHE + ASALTANTES + BLOATER PRO
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -13,17 +13,31 @@ local Lighting = game:GetService("Lighting")
 local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
+-- Mantener cursor visible
+RunService.RenderStepped:Connect(function()
+    pcall(function()
+        UserInputService.MouseIconEnabled = true
+    end)
+end)
+
 local BaseCenter = Vector3.new(0, 0, 0)
 local BASE_FORBIDDEN_RADIUS = 105
+
+-- Esquinas de la base para refugio de asaltantes
+local BASE_CORNERS = {
+    Vector3.new(115.0, -1.9, 115.0),   -- C_SE
+    Vector3.new(115.0, -1.7, -115.0),  -- C_NE
+    Vector3.new(-115.0, -1.7, -115.0), -- C_NW
+    Vector3.new(-115.0, -1.9, 115.0)   -- C_SW
+}
 
 local SECTOR_ROUTES = {
     SUR   = { Gate = Vector3.new(0, -1.9, 120.0),   Combat = Vector3.new(0, 14.5, 180.0) },
     NORTE = { Gate = Vector3.new(0, -1.7, -120.0),  Combat = Vector3.new(0, 14.5, -180.0) },
-    ESTE  = { Gate = Vector3.new(120.0, -1.9, 0.0),   Combat = Vector3.new(180.0, 14.5, 0.0) },
+    ESTE  = { Gate = Vector3.new(120.0, -1.9, 0.0),  Combat = Vector3.new(180.0, 14.5, 0.0) },
     OESTE = { Gate = Vector3.new(-120.0, -1.9, 0.0), Combat = Vector3.new(-180.0, 14.5, 0.0) }
 }
 
--- Nodos del perímetro (las 'C_' corresponden a las 4 esquinas de la base)
 local PERIMETER_NODES = {
     { Name = "T_SUR",   Pos = Vector3.new(0, -1.9, 120.0),    Sector = "SUR" },
     { Name = "C_SE",    Pos = Vector3.new(115.0, -1.9, 115.0), Sector = nil },
@@ -36,13 +50,15 @@ local PERIMETER_NODES = {
 }
 
 local Config = {
+    UserWantsAutoPilot = false,
     ZigZagEnabled = false,
     AttackMode = "Depredador",
     SwitchInterval = 0.5,
     LateralDist = 25,
     MoveSpeed = 150,
     EvadeBloaters = true,
-    BloaterDangerDist = 30,
+    BloaterDangerDist = 34, -- +4 studs de margen de seguridad
+    BloaterExtraCooldown = 1.0, -- 1 segundo adicional de retardo en volver
     AutoRouteToWave = true,
 
     DepredadorBaseOvershoot = 5.0,
@@ -54,10 +70,10 @@ local Config = {
     RetreatDistance = 30.0,
     RetreatSpeed = 110,
 
-    -- RESCATE PEATONAL
     CombatAutoRescue = true,
     ManualDriveAutoRescue = false,
     SprintSpeed = 34,
+    BunnyHop = true,
     RescueZombieScanDist = 100,
     MaxCarSearchDist = 350,
 
@@ -70,13 +86,24 @@ local Config = {
 
     -- WATCHDOG DESATASCAMIENTO AUTOMÁTICO
     WatchdogEnabled = true,
-    StuckTimeout = 3.0,
+    StuckTimeout = 3.5,
     MinMoveDistance = 2.0,
-    MaxWheelDisplacement = 12,
+    MaxWheelDisplacement = 12
+}
 
-    -- CICLO AUTOMÁTICO DÍA/NOCHE & ASALTANTES
-    DayNightAutoCombat = true,
-    FleeToCornerOnBandits = true
+local WatchdogState = {
+    LastPos = Vector3.zero,
+    LastMoveTick = tick(),
+    Status = "Iniciando...",
+    TotalUnstucks = 0,
+    IgnoredBrokenWheels = 0
+}
+
+local CycleState = {
+    IsDay = false,
+    IsBanditRaid = false,
+    Status = "Normal",
+    NotifiedRaid = false
 }
 
 local CurrentTarget = nil
@@ -85,7 +112,7 @@ local ZigZagToggleInstance = nil
 local CurrentActiveSector = "SUR"
 
 local CachedCombatRoads = {}
-local CachedBloaterDangers = {}
+local BloaterDangerMemory = {}
 local CachedHordeClusterOffset = 0
 local LastDrivenVehicle = nil
 local IsInContingency = false
@@ -111,30 +138,10 @@ local AutoEatState = {
     Status = "Monitoreando..."
 }
 
-local WatchdogState = {
-    LastPos = Vector3.zero,
-    LastMoveTick = tick(),
-    TotalUnstucks = 0,
-    IgnoredBrokenWheels = 0,
-    Status = "Normal"
-}
-
-local DayCycleState = {
-    AutoPausedByDay = false,
-    AutoPausedByBandits = false,
-    IsFleeingToCorner = false,
-    ReachedSafeCorner = false,
-    TargetCornerPos = nil
-}
-
 local PickUpRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Interaction"):WaitForChild("PickUpItem")
 
-RunService.RenderStepped:Connect(function()
-    UserInputService.MouseIconEnabled = true
-end)
-
 -- ==============================================================================
--- 1. DETECCIÓN DE STATS & SALUD
+-- 1. DETECCIÓN DE SALUD Y JUGADOR
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -149,7 +156,6 @@ local function getPlayerStats()
     if not hum then return 100, 100 end
 
     local hpPct = math.floor((hum.Health / math.max(hum.MaxHealth, 1)) * 100)
-
     local hunger = char:GetAttribute("Hunger") or lp:GetAttribute("Hunger")
     local maxHunger = char:GetAttribute("MaxHunger") or lp:GetAttribute("MaxHunger") or 100
 
@@ -260,21 +266,189 @@ local function getTruckHealth(truck)
 end
 
 -- ==============================================================================
--- 2. AUTO-EAT TURBO (ZANAHORIA DORADA VIDA / NORMAL HAMBRE)
+-- 2. DESATASCAMIENTO AUTOMÁTICO (LLANTAS + TRIPLE PIVOT)
+-- ==============================================================================
+
+local function areWheelsIntact(car, seat)
+    if not car or not seat then return false, "Sin vehículo" end
+    local seatPos = seat.Position
+
+    for _, part in ipairs(car:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local n = part.Name:lower()
+            if n:find("wheel") or n:find("tire") or n:find("rueda") or n:find("llanta") then
+                local distToSeat = (part.Position - seatPos).Magnitude
+                if distToSeat > Config.MaxWheelDisplacement then
+                    return false, string.format("Llanta '%s' desplazada (a %d studs)", part.Name, math.floor(distToSeat))
+                end
+            end
+        end
+    end
+    return true, "Llantas intactas"
+end
+
+local function executeTriplePivot(car, seat)
+    if not car or not seat then return end
+
+    WatchdogState.TotalUnstucks = WatchdogState.TotalUnstucks + 1
+
+    local function zeroVelocity()
+        for _, p in ipairs(car:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.AssemblyLinearVelocity = Vector3.zero
+                p.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+    end
+
+    -- Paso 1: Salto y retroceso
+    local cf1 = car:GetPivot()
+    local look1 = cf1.LookVector
+    local flatLook = Vector3.new(look1.X, 0, look1.Z)
+    if flatLook.Magnitude < 0.1 then flatLook = Vector3.new(0, 0, 1) else flatLook = flatLook.Unit end
+
+    local targetPos1 = cf1.Position + Vector3.new(0, 4.0, 0) - (flatLook * 4.0)
+    car:PivotTo(CFrame.lookAt(targetPos1, targetPos1 + flatLook))
+    zeroVelocity()
+    task.wait(0.1)
+
+    -- Paso 2: Enderezar chasis en el aire
+    local cf2 = car:GetPivot()
+    local targetPos2 = cf2.Position + Vector3.new(0, 4.5, 0)
+    car:PivotTo(CFrame.lookAt(targetPos2, targetPos2 + flatLook))
+    zeroVelocity()
+    task.wait(0.1)
+
+    -- Paso 3: Consolidar en superficie
+    local cf3 = car:GetPivot()
+    local targetPos3 = cf3.Position + Vector3.new(0, 5.0, 0)
+    car:PivotTo(CFrame.lookAt(targetPos3, targetPos3 + flatLook))
+    zeroVelocity()
+
+    WatchdogState.LastPos = targetPos3
+    WatchdogState.LastMoveTick = tick()
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+        if Config.WatchdogEnabled then
+            local car, seat = getCurrentVehicle()
+            if car and seat then
+                local currentPos = (car.PrimaryPart and car.PrimaryPart.Position) or seat.Position
+
+                if Config.ZigZagEnabled and not IsInContingency and not CycleState.IsDay and not CycleState.IsBanditRaid then
+                    local movedDist = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(WatchdogState.LastPos.X, 0, WatchdogState.LastPos.Z)).Magnitude
+
+                    if movedDist >= Config.MinMoveDistance then
+                        WatchdogState.LastPos = currentPos
+                        WatchdogState.LastMoveTick = tick()
+                        WatchdogState.Status = "En avance continuo"
+                    else
+                        local stuckTime = tick() - WatchdogState.LastMoveTick
+                        if stuckTime >= Config.StuckTimeout then
+                            local intact, reason = areWheelsIntact(car, seat)
+                            if intact then
+                                WatchdogState.Status = "🚨 Atasco detectado -> Ejecutando Triple PivotTo..."
+                                executeTriplePivot(car, seat)
+                            else
+                                WatchdogState.IgnoredBrokenWheels = WatchdogState.IgnoredBrokenWheels + 1
+                                WatchdogState.Status = "⚠️ Ignorado: " .. reason
+                                WatchdogState.LastMoveTick = tick() + 2.0
+                            end
+                        else
+                            WatchdogState.Status = string.format("Inmóvil %.1fs / %.1fs", stuckTime, Config.StuckTimeout)
+                        end
+                    end
+                else
+                    WatchdogState.LastPos = currentPos
+                    WatchdogState.LastMoveTick = tick()
+                    WatchdogState.Status = "Inactivo / Pausado"
+                end
+            else
+                WatchdogState.LastMoveTick = tick()
+                WatchdogState.Status = "Fuera del vehículo"
+            end
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 3. DETECTOR DÍA / NOCHE / ASALTANTES Y RESGUARDO EN ESQUINA
+-- ==============================================================================
+
+local function getClosestBaseCorner(pos)
+    local bestCorner = BASE_CORNERS[1]
+    local minDist = math.huge
+    for _, corner in ipairs(BASE_CORNERS) do
+        local d = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(corner.X, 0, corner.Z)).Magnitude
+        if d < minDist then
+            minDist = d
+            bestCorner = corner
+        end
+    end
+    return bestCorner
+end
+
+local function checkDayAndRaidState()
+    local isNight = workspace:GetAttribute("Night")
+    if isNight == nil then
+        isNight = (Lighting.ClockTime >= 18.0 or Lighting.ClockTime <= 6.0)
+    end
+    local isDay = not isNight
+
+    local isRaid = workspace:GetAttribute("BanditRaid") == true
+        or workspace:GetAttribute("Raid") == true
+        or tostring(workspace:GetAttribute("Event") or ""):lower():find("bandit") ~= nil
+
+    CycleState.IsDay = isDay
+    CycleState.IsBanditRaid = isRaid
+
+    if isRaid then
+        CycleState.Status = "Asaltantes"
+        if not CycleState.NotifiedRaid then
+            CycleState.NotifiedRaid = true
+            Fluent:Notify({
+                Title = "⚠️ NOCHE DE ASALTANTES",
+                Content = "Noche de asaltantes, no se puede atacar. Resguardando en la esquina...",
+                Duration = 4
+            })
+        end
+    else
+        CycleState.NotifiedRaid = false
+        if isDay then
+            CycleState.Status = "Día"
+        else
+            CycleState.Status = "Noche"
+        end
+    end
+end
+
+workspace:GetAttributeChangedSignal("Night"):Connect(checkDayAndRaidState)
+workspace:GetAttributeChangedSignal("BanditRaid"):Connect(checkDayAndRaidState)
+workspace:GetAttributeChangedSignal("CurrentDay"):Connect(checkDayAndRaidState)
+
+task.spawn(function()
+    while true do
+        task.wait(1.0)
+        checkDayAndRaidState()
+    end
+end)
+
+-- ==============================================================================
+-- 4. CONSUMO DE ZANAHORIAS EN SUELO
 -- ==============================================================================
 
 local function isGoldenCarrot(item)
     if item:GetAttribute("Golden") == true or item:GetAttribute("Rarity") == "Golden" then
         return true
     end
-
     local mainPart = item:FindFirstChild("MainPart") or item:FindFirstChildWhichIsA("BasePart")
     if mainPart then
         if mainPart.Material == Enum.Material.Metal or mainPart.Color.R > 0.9 then
             return true
         end
     end
-
     return false
 end
 
@@ -292,7 +466,6 @@ local function findBestGroundFood(onlyGolden)
 
     for _, item in ipairs(dropped:GetChildren()) do
         local isFood = (item:GetAttribute("ItemType") == "Food") or item.Name:lower():find("carrot")
-
         if isFood and item:GetAttribute("CanPickUp") ~= false then
             local isGold = isGoldenCarrot(item)
             if not onlyGolden or isGold then
@@ -301,11 +474,9 @@ local function findBestGroundFood(onlyGolden)
                     local pPos = part.Position
                     local dx = pPos.X - myPos.X
                     local dz = pPos.Z - myPos.Z
-
                     if math.abs(dx) <= maxRadius and math.abs(dz) <= maxRadius then
                         local dy = pPos.Y - myPos.Y
                         local distSq = (dx * dx) + (dy * dy) + (dz * dz)
-
                         if distSq <= shortestDistSq then
                             shortestDistSq = distSq
                             bestItem = item
@@ -315,7 +486,6 @@ local function findBestGroundFood(onlyGolden)
             end
         end
     end
-
     return bestItem
 end
 
@@ -328,7 +498,7 @@ local function eatGroundFood(onlyGolden)
 
     local targetFood = findBestGroundFood(onlyGolden)
     if not targetFood then
-        AutoEatState.Status = onlyGolden and "⚠️ Buscando Zanahoria Dorada..." or "⚠️ Sin comida en el suelo"
+        AutoEatState.Status = onlyGolden and "⚠️ Buscando Dorada..." or "⚠️ Sin comida en suelo"
         return
     end
 
@@ -348,7 +518,6 @@ local function eatGroundFood(onlyGolden)
 
     local foodTool = nil
     local startWait = tick()
-
     while (tick() - startWait) < 0.6 do
         for _, cont in ipairs({char, lp:FindFirstChild("Backpack")}) do
             if cont then
@@ -369,14 +538,11 @@ local function eatGroundFood(onlyGolden)
             hum:EquipTool(foodTool)
             task.wait(0.05)
         end
-
         pcall(function() foodTool:Activate() end)
-
         local useRemote = foodTool:FindFirstChild("Use") or foodTool:FindFirstChild("Consume")
         if useRemote and useRemote:IsA("RemoteEvent") then
             pcall(function() useRemote:FireServer() end)
         end
-
         task.wait(0.20)
     end
 
@@ -393,7 +559,6 @@ task.spawn(function()
         task.wait(0.35)
         if Config.AutoEatEnabled then
             local hpPct, hungerPct = getPlayerStats()
-
             if hpPct <= Config.EatHealthThreshold then
                 eatGroundFood(true)
             elseif hungerPct <= Config.EatHungerThreshold then
@@ -408,232 +573,25 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 3. WATCHDOG: DESATASCAMIENTO AUTOMÁTICO & TRIPLE PIVOT
+-- 5. RUTAS Y SECTORES
 -- ==============================================================================
 
-local function areWheelsIntact(car, seat)
-    if not car or not seat then return false end
-    local seatPos = seat.Position
-
-    for _, part in ipairs(car:GetDescendants()) do
-        if part:IsA("BasePart") then
-            local n = part.Name:lower()
-            if n:find("wheel") or n:find("tire") or n:find("rueda") or n:find("llanta") then
-                local distToSeat = (part.Position - seatPos).Magnitude
-                if distToSeat > Config.MaxWheelDisplacement then
-                    return false, string.format("Llanta '%s' salida a %d studs", part.Name, math.floor(distToSeat))
-                end
-            end
-        end
-    end
-
-    return true, "Llantas normales"
+local function clearHighlight()
+    if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
 end
 
-local function executeTriplePivot(car, seat)
-    if not car or not seat then return end
-
-    WatchdogState.TotalUnstucks = WatchdogState.TotalUnstucks + 1
-
-    local function zeroVelocity()
-        for _, p in ipairs(car:GetDescendants()) do
-            if p:IsA("BasePart") then
-                p.AssemblyLinearVelocity = Vector3.zero
-                p.AssemblyAngularVelocity = Vector3.zero
-            end
-        end
+local function applyHighlight(obj)
+    clearHighlight()
+    if obj then
+        TargetHighlight = Instance.new("Highlight")
+        TargetHighlight.Name = "CustomTargetHighlight"
+        TargetHighlight.FillColor = Color3.fromRGB(255, 30, 60)
+        TargetHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        TargetHighlight.FillTransparency = 0.4
+        TargetHighlight.Adornee = obj
+        TargetHighlight.Parent = obj
     end
-
-    -- SALTO 1: Despegar del fondo (+4 studs arriba y leve retroceso)
-    local cf1 = car:GetPivot()
-    local look1 = cf1.LookVector
-    local flatLook = Vector3.new(look1.X, 0, look1.Z)
-    if flatLook.Magnitude < 0.1 then flatLook = Vector3.new(0, 0, 1) else flatLook = flatLook.Unit end
-
-    local targetPos1 = cf1.Position + Vector3.new(0, 4.0, 0) - (flatLook * 4.0)
-    car:PivotTo(CFrame.lookAt(targetPos1, targetPos1 + flatLook))
-    zeroVelocity()
-    task.wait(0.1)
-
-    -- SALTO 2: Enderezar chasis en el aire (+4.5 studs arriba y 0° de inclinación)
-    local cf2 = car:GetPivot()
-    local targetPos2 = cf2.Position + Vector3.new(0, 4.5, 0)
-    car:PivotTo(CFrame.lookAt(targetPos2, targetPos2 + flatLook))
-    zeroVelocity()
-    task.wait(0.1)
-
-    -- SALTO 3: Consolidar salida sobre la superficie (+5.0 studs arriba)
-    local cf3 = car:GetPivot()
-    local targetPos3 = cf3.Position + Vector3.new(0, 5.0, 0)
-    car:PivotTo(CFrame.lookAt(targetPos3, targetPos3 + flatLook))
-    zeroVelocity()
-
-    WatchdogState.LastPos = targetPos3
-    WatchdogState.LastMoveTick = tick()
 end
-
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        local isCarActive = (Config.ZigZagEnabled or DayCycleState.IsFleeingToCorner) and not IsInContingency and not DefenseState.IsRetreating
-        if Config.WatchdogEnabled and isCarActive then
-            local car, seat = getCurrentVehicle()
-
-            if car and seat then
-                local currentPos = (car.PrimaryPart and car.PrimaryPart.Position) or seat.Position
-                local movedDist = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(WatchdogState.LastPos.X, 0, WatchdogState.LastPos.Z)).Magnitude
-
-                if movedDist >= Config.MinMoveDistance then
-                    WatchdogState.LastPos = currentPos
-                    WatchdogState.LastMoveTick = tick()
-                    WatchdogState.Status = "Movimiento OK"
-                else
-                    local stuckTime = tick() - WatchdogState.LastMoveTick
-
-                    if stuckTime >= Config.StuckTimeout then
-                        local intact, reason = areWheelsIntact(car, seat)
-
-                        if intact then
-                            WatchdogState.Status = "🚨 Atascado -> Triple Pivot..."
-                            executeTriplePivot(car, seat)
-                            Fluent:Notify({
-                                Title = "🛠️ DESATASCADO AUTOMÁTICO",
-                                Content = "Triple Pivot ejecutado con éxito.",
-                                Duration = 2
-                            })
-                        else
-                            WatchdogState.IgnoredBrokenWheels = WatchdogState.IgnoredBrokenWheels + 1
-                            WatchdogState.Status = "⚠️ Llanta fuera: " .. reason
-                            WatchdogState.LastMoveTick = tick() + 2.0
-                        end
-                    else
-                        WatchdogState.Status = string.format("Inmóvil %.1fs / %.1fs", stuckTime, Config.StuckTimeout)
-                    end
-                end
-            else
-                WatchdogState.LastMoveTick = tick()
-            end
-        else
-            WatchdogState.LastMoveTick = tick()
-        end
-    end
-end)
-
--- ==============================================================================
--- 4. BÚSQUEDA DE ESQUINA PERIMETRAL CERCANA (REFUGIO PARA ASALTANTES)
--- ==============================================================================
-
-local function getNearestPerimeterCorner(pos)
-    local bestCorner = PERIMETER_NODES[2].Pos
-    local shortest = math.huge
-    for _, node in ipairs(PERIMETER_NODES) do
-        if node.Name:sub(1, 2) == "C_" then
-            local d = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(node.Pos.X, 0, node.Pos.Z)).Magnitude
-            if d < shortest then
-                shortest = d
-                bestCorner = node.Pos
-            end
-        end
-    end
-    return bestCorner
-end
-
-local function applyBrake(duration)
-    duration = duration or 1.0
-    task.spawn(function()
-        local endTime = tick() + duration
-        while tick() < endTime do
-            local carModel, seat = getCurrentVehicle()
-            local primary = carModel and (carModel.PrimaryPart or seat)
-            if primary then
-                primary.AssemblyLinearVelocity = Vector3.new(0, primary.AssemblyLinearVelocity.Y, 0)
-                primary.AssemblyAngularVelocity = Vector3.zero
-            end
-            RunService.Heartbeat:Wait()
-        end
-    end)
-end
-
--- ==============================================================================
--- 5. CONTROLADOR DE DÍA / NOCHE & EVASIÓN A ESQUINA EN NOCHE DE ASALTANTES
--- ==============================================================================
-
-task.spawn(function()
-    while true do
-        task.wait(0.8)
-        local ws = workspace
-        local isNight = ws:GetAttribute("Night")
-        if isNight == nil then
-            isNight = (Lighting.ClockTime >= 18.0 or Lighting.ClockTime <= 6.0)
-        end
-        local isBanditRaid = ws:GetAttribute("BanditRaid") == true
-
-        -- CASO 1: NOCHE DE ASALTANTES (HUIR A LA ESQUINA MÁS CERCANA A LA BASE)
-        if Config.FleeToCornerOnBandits and isBanditRaid then
-            if not DayCycleState.AutoPausedByBandits then
-                DayCycleState.AutoPausedByBandits = true
-                Config.ZigZagEnabled = false
-                pcall(function() ZigZagToggleInstance:SetValue(false) end)
-                TransitState.Active = false
-                CurrentTarget = nil
-                clearHighlight()
-
-                local _, root = getCharacterParts()
-                local myPos = root and root.Position or BaseCenter
-                DayCycleState.TargetCornerPos = getNearestPerimeterCorner(myPos)
-                DayCycleState.IsFleeingToCorner = true
-                DayCycleState.ReachedSafeCorner = false
-
-                Fluent:Notify({
-                    Title = "🤠 NOCHE DE ASALTANTES DETECTADA",
-                    Content = "No se puede atacar. Conduciendo a la esquina perimetral más cercana...",
-                    Duration = 4
-                })
-            end
-
-        -- CASO 2: DÍA (PAUSAR AUTOMÁTICAMENTE Y FRENAR)
-        elseif Config.DayNightAutoCombat and not isNight then
-            DayCycleState.IsFleeingToCorner = false
-            DayCycleState.ReachedSafeCorner = false
-
-            if Config.ZigZagEnabled then
-                Config.ZigZagEnabled = false
-                pcall(function() ZigZagToggleInstance:SetValue(false) end)
-                TransitState.Active = false
-                applyBrake(1.0)
-                DayCycleState.AutoPausedByDay = true
-
-                Fluent:Notify({
-                    Title = "☀️ AMANECIÓ (MODO DÍA)",
-                    Content = "Combate pausado automáticamente durante el día.",
-                    Duration = 3
-                })
-            end
-
-        -- CASO 3: NOCHE NORMAL (SIN ASALTANTES) -> REANUDAR COMBATE AUTOMÁTICAMENTE
-        elseif Config.DayNightAutoCombat and isNight and not isBanditRaid then
-            DayCycleState.IsFleeingToCorner = false
-            DayCycleState.ReachedSafeCorner = false
-
-            if (DayCycleState.AutoPausedByDay or DayCycleState.AutoPausedByBandits) and not Config.ZigZagEnabled then
-                DayCycleState.AutoPausedByDay = false
-                DayCycleState.AutoPausedByBandits = false
-                Config.ZigZagEnabled = true
-                pcall(function() ZigZagToggleInstance:SetValue(true) end)
-
-                Fluent:Notify({
-                    Title = "🌙 CAYÓ LA NOCHE",
-                    Content = "Reanudando ataque y combate automáticamente.",
-                    Duration = 3
-                })
-            end
-        end
-    end
-end)
-
--- ==============================================================================
--- 6. RUTEO PERIMETRAL DINÁMICO
--- ==============================================================================
 
 task.spawn(function()
     task.wait(1.0)
@@ -641,7 +599,6 @@ task.spawn(function()
     for secName, routeData in pairs(SECTOR_ROUTES) do
         local cPos = routeData.Combat
         local best, shortest = nil, 90
-
         for _, obj in ipairs(mapFolder:GetDescendants()) do
             if obj:IsA("BasePart") or obj:IsA("Model") then
                 local n = obj.Name:lower()
@@ -671,11 +628,9 @@ local function lineCrossesBaseCenter(p1, p2)
     local dLen = d.Magnitude
     if dLen == 0 then return false end
     local dUnit = d.Unit
-
     local toCenter = BaseCenter - p1
     local t = math.clamp(toCenter:Dot(dUnit), 0, dLen)
     local closestPoint = p1 + (dUnit * t)
-
     return (Vector3.new(closestPoint.X, 0, closestPoint.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude < BASE_FORBIDDEN_RADIUS
 end
 
@@ -692,9 +647,7 @@ local function calculateDynamicRoadPath(currentPos, targetSector)
     local minDist = math.huge
     for idx, node in ipairs(PERIMETER_NODES) do
         local d = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(node.Pos.X, 0, node.Pos.Z)).Magnitude
-        if lineCrossesBaseCenter(currentPos, node.Pos) then
-            d = d + 500
-        end
+        if lineCrossesBaseCenter(currentPos, node.Pos) then d = d + 500 end
         if d < minDist then
             minDist = d
             closestIdx = idx
@@ -726,7 +679,6 @@ end
 local function startDynamicSectorTransition(newSector)
     local _, root = getCharacterParts()
     local carPos = root and root.Position or BaseCenter
-
     local wps = calculateDynamicRoadPath(carPos, newSector)
     TransitState.Active = true
     TransitState.Waypoints = wps
@@ -742,23 +694,15 @@ local function startDynamicSectorTransition(newSector)
     })
 end
 
--- ==============================================================================
--- 7. RADAR DIRECCIONAL & ZOMBIES
--- ==============================================================================
-
 local function parseSectorFromAttribute(val)
     local vec = nil
     if typeof(val) == "Vector3" then
         vec = val
     elseif type(val) == "string" then
         local x, y, z = val:match("([^,]+)%s*,%s*([^,]+)%s*,%s*([^,]+)")
-        if x and y and z then
-            vec = Vector3.new(tonumber(x), tonumber(y), tonumber(z))
-        end
+        if x and y and z then vec = Vector3.new(tonumber(x), tonumber(y), tonumber(z)) end
     end
-
     if not vec then return "DESCONOCIDO" end
-
     if math.abs(vec.Z) > math.abs(vec.X) then
         return (vec.Z > 0) and "SUR" or "NORTE"
     else
@@ -772,7 +716,7 @@ workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(function()
         local sec = parseSectorFromAttribute(rawVal)
         if sec ~= "DESCONOCIDO" and sec ~= CurrentActiveSector then
             CurrentActiveSector = sec
-            if Config.AutoRouteToWave and Config.ZigZagEnabled and not DayCycleState.AutoPausedByBandits then
+            if Config.AutoRouteToWave and Config.ZigZagEnabled then
                 startDynamicSectorTransition(sec)
             end
         end
@@ -784,8 +728,8 @@ local function isValidZombie(entity)
         return false
     end
     local name = entity.Name:lower()
-    if name:find("dropped") or name:find("bag") or name:find("loot") or name:find("item") 
-       or name:find("crate") or name:find("debris") or name:find("corpse") or name:find("ragdoll") 
+    if name:find("dropped") or name:find("bag") or name:find("loot") or name:find("item")
+       or name:find("crate") or name:find("debris") or name:find("corpse") or name:find("ragdoll")
        or name:find("car") or name:find("fence") or name:find("door") then
         return false
     end
@@ -795,10 +739,14 @@ local function isValidZombie(entity)
     return root ~= nil, root
 end
 
+-- ==============================================================================
+-- 6. DENSIDAD LATERAL DEPREDADOR
+-- ==============================================================================
+
 task.spawn(function()
     while true do
         task.wait(0.15)
-        if Config.ZigZagEnabled and Config.AttackMode == "Depredador" and CurrentTarget and not IsInContingency and not TransitState.Active and not DayCycleState.AutoPausedByBandits then
+        if Config.ZigZagEnabled and Config.AttackMode == "Depredador" and CurrentTarget and not IsInContingency and not TransitState.Active then
             local tPos = CurrentTarget:IsA("BasePart") and CurrentTarget.Position or select(1, CurrentTarget:GetBoundingBox()).Position
             if tPos then
                 local radialVec = Vector3.new(tPos.X - BaseCenter.X, 0, tPos.Z - BaseCenter.Z)
@@ -830,8 +778,24 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 8. RESCATE PEATONAL CON SALTO DOSIFICADO (MÁXIMO 2 SALTOS CADA 2.5s)
+-- 7. RESCATE CON SALTO CONTROLADO (2 SALTOS CADA 2.5 SEGUNDOS)
 -- ==============================================================================
+
+local function applyBrake(duration)
+    duration = duration or 1.0
+    task.spawn(function()
+        local endTime = tick() + duration
+        while tick() < endTime do
+            local carModel, seat = getCurrentVehicle()
+            local primary = carModel and (carModel.PrimaryPart or seat)
+            if primary then
+                primary.AssemblyLinearVelocity = Vector3.new(0, primary.AssemblyLinearVelocity.Y, 0)
+                primary.AssemblyAngularVelocity = Vector3.zero
+            end
+            RunService.Heartbeat:Wait()
+        end
+    end)
+end
 
 local function locateTargetCar()
     local _, root = getCharacterParts()
@@ -845,8 +809,8 @@ local function locateTargetCar()
     local myPos = root.Position
     local bestSeat, bestModel = nil, nil
     local shortestDist = Config.MaxCarSearchDist
-
     local container = workspace:FindFirstChild("Structures") or workspace
+
     for _, model in ipairs(container:GetChildren()) do
         if model:IsA("Model") then
             local seat = model:FindFirstChild("DriveSeat") or model:FindFirstChildWhichIsA("VehicleSeat")
@@ -881,10 +845,10 @@ local function executeGroundRescue(onBoardCallback)
 
     local runTimeout = tick() + 9.0
 
-    -- CONTROL DE SALTO: 2 SALTOS CADA 2.5 SEGUNDOS
-    local jumpCycleWindowStart = tick()
-    local jumpsInCurrentCycle = 0
-    local lastIndividualJump = 0
+    -- CADENCIA CONTROLADA: 2 saltos cada 2.5 segundos
+    local jumpWindowStart = tick()
+    local jumpsInWindow = 0
+    local lastJumpTick = 0
 
     while IsInContingency and tick() < runTimeout do
         RunService.Heartbeat:Wait()
@@ -937,17 +901,19 @@ local function executeGroundRescue(onBoardCallback)
         root.AssemblyLinearVelocity = Vector3.new(runDir.X * Config.SprintSpeed, root.AssemblyLinearVelocity.Y, runDir.Z * Config.SprintSpeed)
         hum:MoveTo(root.Position + runDir * 10)
 
-        -- REGLA: 2 saltos cada 2.5s
-        local now = tick()
-        if (now - jumpCycleWindowStart) >= 2.5 then
-            jumpCycleWindowStart = now
-            jumpsInCurrentCycle = 0
-        end
+        -- Control de saltos
+        if Config.BunnyHop then
+            local now = tick()
+            if (now - jumpWindowStart) >= 2.5 then
+                jumpWindowStart = now
+                jumpsInWindow = 0
+            end
 
-        if jumpsInCurrentCycle < 2 and (now - lastIndividualJump) >= 0.45 then
-            hum.Jump = true
-            lastIndividualJump = now
-            jumpsInCurrentCycle = jumpsInCurrentCycle + 1
+            if jumpsInWindow < 2 and (now - lastJumpTick >= 0.45) then
+                hum.Jump = true
+                lastJumpTick = now
+                jumpsInWindow = jumpsInWindow + 1
+            end
         end
     end
 
@@ -956,7 +922,7 @@ local function executeGroundRescue(onBoardCallback)
 end
 
 -- ==============================================================================
--- 9. GUARDIÁN DE SALUD DEL VEHÍCULO & EVASIÓN DE EXPLOSIVOS
+-- 8. RETIRADA TÁCTICA Y MEMORIA DE BLOATERS (+4 STUDS Y +1 SEGUNDO RETARDO)
 -- ==============================================================================
 
 task.spawn(function()
@@ -976,7 +942,7 @@ task.spawn(function()
                     DefenseState.IsRetreating = true
                     Fluent:Notify({
                         Title = "🛡️ RETIRADA TÁCTICA",
-                        Content = string.format("Vida al %.0f%%. Retrocediendo 30 studs a esquivar.", ratio * 100),
+                        Content = string.format("Vida al %.0f%%. Retrocediendo 30 studs.", ratio * 100),
                         Duration = 2.5
                     })
                 elseif DefenseState.IsRetreating and ratio >= Config.FullHealthThreshold then
@@ -992,12 +958,11 @@ task.spawn(function()
             end
         else
             DefenseState.IsRetreating = false
-
             local shouldRescue = false
             local _, _, hum = getCharacterParts()
 
             if hum and hum.Health > 0 and (not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat")) then
-                if (Config.ZigZagEnabled or DayCycleState.IsFleeingToCorner) and Config.CombatAutoRescue then
+                if Config.ZigZagEnabled and Config.CombatAutoRescue then
                     shouldRescue = true
                 elseif (not Config.ZigZagEnabled) and Config.ManualDriveAutoRescue then
                     shouldRescue = true
@@ -1006,20 +971,29 @@ task.spawn(function()
 
             if shouldRescue and not IsInContingency then
                 task.spawn(function()
-                    executeGroundRescue()
+                    executeGroundRescue(function()
+                        if not Config.ZigZagEnabled then
+                            Fluent:Notify({
+                                Title = "🚗 RESCATE MANUAL LISTO",
+                                Content = "A bordo del vehículo. Conducción manual activa.",
+                                Duration = 2.5
+                            })
+                        end
+                    end)
                 end)
             end
         end
     end
 end)
 
+-- Radar Bloater con persistencia de 1 segundo extra
 task.spawn(function()
     while true do
-        task.wait(0.4)
+        task.wait(0.2)
         if Config.EvadeBloaters and not IsInContingency then
             local _, root = getCharacterParts()
             local myPos = root and root.Position or BaseCenter
-            local list = {}
+            local now = tick()
             local folder = workspace:FindFirstChild("Characters")
 
             if folder then
@@ -1028,32 +1002,42 @@ task.spawn(function()
                         local n = ent.Name:lower()
                         if n:find("bloat") or n:find("boom") then
                             local r = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
-                            if r and (r.Position - myPos).Magnitude <= 75 then
+                            if r and (r.Position - myPos).Magnitude <= 80 then
                                 local h = ent:FindFirstChildOfClass("Humanoid")
                                 if (h and h.Health <= 50) or ent:GetAttribute("Dead") == true then
-                                    table.insert(list, r.Position)
+                                    local key = string.format("%.0f_%.0f", r.Position.X, r.Position.Z)
+                                    BloaterDangerMemory[key] = {
+                                        Position = r.Position,
+                                        ExpiresAt = now + Config.BloaterExtraCooldown + 0.5
+                                    }
                                 end
                             end
                         end
                     end
                 end
             end
-            CachedBloaterDangers = list
+
+            -- Limpieza de zonas expiradas
+            for k, data in pairs(BloaterDangerMemory) do
+                if now > data.ExpiresAt then
+                    BloaterDangerMemory[k] = nil
+                end
+            end
         else
-            table.clear(CachedBloaterDangers)
+            table.clear(BloaterDangerMemory)
         end
     end
 end)
 
 -- ==============================================================================
--- 10. INTERFAZ FLUENT
+-- 9. INTERFAZ FLUENT
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | MASTER V17.5",
-    SubTitle = "Watchdog + Esquinas de Asaltantes",
+    Title = "ZOMBIE HUB | MASTER V17.0",
+    SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
-    Size = UDim2.fromOffset(600, 530),
+    Size = UDim2.fromOffset(600, 520),
     Acrylic = false,
     Theme = "Darker",
     MinimizeKey = Enum.KeyCode.RightControl
@@ -1061,33 +1045,22 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Combat  = Window:AddTab({ Title = "Combate", Icon = "crosshair" }),
-    Defense = Window:AddTab({ Title = "Defensa & Watchdog", Icon = "shield" }),
+    Defense = Window:AddTab({ Title = "Defensa & Esquive", Icon = "shield" }),
     AutoEat = Window:AddTab({ Title = "Auto-Comer", Icon = "utensils" }),
     Rescue  = Window:AddTab({ Title = "Auto-Rescate", Icon = "user-check" }),
     Horde   = Window:AddTab({ Title = "Radar", Icon = "radar" })
 }
 
 -- PESTAÑA COMBATE
-Tabs.Combat:AddSection("Controles de Embestida & Ciclos")
+Tabs.Combat:AddSection("Controles de Embestida")
 
 ZigZagToggleInstance = Tabs.Combat:AddToggle("ZigZagToggle", {
     Title = "Activar Movimiento Automático",
     Default = false,
-    Callback = function(v) Config.ZigZagEnabled = v end
-})
-
-Tabs.Combat:AddToggle("DayNightAutoToggle", {
-    Title = "☀️ Pausa de Día / 🌙 Ataque de Noche",
-    Description = "Pausa el combate al amanecer y lo reanuda automáticamente de noche",
-    Default = true,
-    Callback = function(v) Config.DayNightAutoCombat = v end
-})
-
-Tabs.Combat:AddToggle("BanditNightToggle", {
-    Title = "🤠 Noche de Asaltantes: Huir a Esquina",
-    Description = "No ataca y conduce a la esquina de la base más cercana a esperar",
-    Default = true,
-    Callback = function(v) Config.FleeToCornerOnBandits = v end
+    Callback = function(v)
+        Config.UserWantsAutoPilot = v
+        Config.ZigZagEnabled = v
+    end
 })
 
 Tabs.Combat:AddDropdown("ModeDropdown", {
@@ -1139,32 +1112,25 @@ Tabs.Combat:AddToggle("AutoRouteToggle", {
     Callback = function(v) Config.AutoRouteToWave = v end
 })
 
--- PESTAÑA DEFENSA & WATCHDOG
-Tabs.Defense:AddSection("Desatascamiento Automático (Triple Pivot)")
+-- PESTAÑA DEFENSA
+Tabs.Defense:AddSection("Desatascamiento Automático Watchdog")
 
 Tabs.Defense:AddToggle("WatchdogToggle", {
-    Title = "🛠️ Activar Watchdog de Desatasco",
-    Description = "Detecta si el auto está atascado y ejecuta el Triple Pivot automáticamente",
+    Title = "🛠️ Desatascamiento Automático (Watchdog)",
     Default = true,
     Callback = function(v) Config.WatchdogEnabled = v end
 })
 
-Tabs.Defense:AddSlider("StuckTimeoutSlider", {
-    Title = "Tiempo de Inmovilidad para Desatascar (s)",
-    Default = 3.0,
-    Min = 1.5,
-    Max = 6.0,
-    Rounding = 1,
-    Callback = function(v) Config.StuckTimeout = v end
+local WatchdogStatusParagraph = Tabs.Defense:AddParagraph({
+    Title = "Estado del Desatascador",
+    Content = "Iniciando..."
 })
 
 Tabs.Defense:AddButton({
-    Title = "⚡ Forzar Triple Pivot Manual Ahora",
+    Title = "⚡ Forzar Triple Pivot Manual",
     Callback = function()
         local car, seat = getCurrentVehicle()
-        if car and seat then
-            executeTriplePivot(car, seat)
-        end
+        if car and seat then executeTriplePivot(car, seat) end
     end
 })
 
@@ -1177,7 +1143,7 @@ Tabs.Defense:AddToggle("RetreatToggle", {
 })
 
 local DefenseStatusParagraph = Tabs.Defense:AddParagraph({
-    Title = "Estado del Vehículo & Watchdog",
+    Title = "Estado del Vehículo",
     Content = "Monitoreando salud..."
 })
 
@@ -1211,7 +1177,7 @@ Tabs.Defense:AddSlider("RetreatDistSlider", {
 -- PESTAÑA AUTO-EAT
 Tabs.AutoEat:AddSection("Consumo Inteligente de Zanahorias")
 
-local AutoEatToggleInstance = Tabs.AutoEat:AddToggle("AutoEatToggle", {
+Tabs.AutoEat:AddToggle("AutoEatToggle", {
     Title = "🥕 Activar Auto-Comer en Suelo",
     Default = true,
     Callback = function(v) Config.AutoEatEnabled = v end
@@ -1260,7 +1226,7 @@ Tabs.AutoEat:AddButton({
 })
 
 -- PESTAÑA RESCATES
-Tabs.Rescue:AddSection("Auto-Rescate Terrestre (2 Saltos cada 2.5s)")
+Tabs.Rescue:AddSection("Sistemas de Auto-Rescate Terrestre")
 
 Tabs.Rescue:AddToggle("ManualRescueToggle", {
     Title = "🚗 Auto-Rescate en Conducción MANUAL",
@@ -1291,19 +1257,20 @@ Tabs.Rescue:AddButton({
 
 -- PESTAÑA RADAR
 local HordeStatusParagraph = Tabs.Horde:AddParagraph({
-    Title = "Frente Dominante",
+    Title = "Frente Dominante & Ciclo",
     Content = "Escaneando..."
 })
 
 -- ==============================================================================
--- 11. WIDGETS FLOTANTES
+-- 10. WIDGETS FLOTANTES Y BOTÓN CON ESTADO PAUSED AMARILLO
 -- ==============================================================================
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "ZombieHubMasterFloatV175"
+ScreenGui.Name = "ZombieHubMasterFloat"
 ScreenGui.ResetOnSpawn = false
 if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
 
+-- Botón Menú Fluent
 local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0)
@@ -1323,13 +1290,14 @@ FloatBtn.MouseButton1Click:Connect(function()
     Window.Root.Visible = isWindowOpen
 end)
 
+-- Botón Auto-Piloto Flotante
 local AutoPilotBtn = Instance.new("TextButton")
 AutoPilotBtn.Size = UDim2.new(0, 48, 0, 48)
 AutoPilotBtn.Position = UDim2.new(0.04, 0, 0.64, 0)
 AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
 AutoPilotBtn.Text = "⚡\nOFF"
 AutoPilotBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-AutoPilotBtn.TextSize = 11
+AutoPilotBtn.TextSize = 10
 AutoPilotBtn.Font = Enum.Font.GothamBold
 AutoPilotBtn.Active = true
 AutoPilotBtn.Draggable = true
@@ -1339,47 +1307,57 @@ local AutoPilotCorner = Instance.new("UICorner")
 AutoPilotCorner.CornerRadius = UDim.new(1, 0)
 AutoPilotCorner.Parent = AutoPilotBtn
 
+local function updateButtonDisplay()
+    if not Config.UserWantsAutoPilot then
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
+        AutoPilotBtn.Text = "⚡\nOFF"
+        return
+    end
+
+    if CycleState.IsBanditRaid then
+        -- Pausado en amarillo por Asaltantes
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(235, 190, 25)
+        AutoPilotBtn.Text = "PAUSED\nRAID"
+    elseif CycleState.IsDay then
+        -- Pausado en amarillo por Día
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(235, 190, 25)
+        AutoPilotBtn.Text = "PAUSED\nDÍA"
+    else
+        -- Activo en Noche normal
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 70)
+        AutoPilotBtn.Text = "⚡\nON"
+    end
+end
+
 local function toggleAutoPilot()
-    if Config.ZigZagEnabled then
+    if Config.UserWantsAutoPilot then
+        Config.UserWantsAutoPilot = false
         Config.ZigZagEnabled = false
         pcall(function() ZigZagToggleInstance:SetValue(false) end)
         TransitState.Active = false
         applyBrake(1.0)
 
-        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
-        AutoPilotBtn.Text = "⚡\nOFF"
-
+        updateButtonDisplay()
         Fluent:Notify({
             Title = "⏹ AUTO-PILOTO OFF",
             Content = "Auto-movimiento apagado y frenado.",
             Duration = 2
         })
     else
-        local isBanditRaid = workspace:GetAttribute("BanditRaid") == true
-        if Config.FleeToCornerOnBandits and isBanditRaid then
-            Fluent:Notify({
-                Title = "🤠 NOCHE DE ASALTANTES",
-                Content = "No se puede iniciar el ataque en noche de asaltantes.",
-                Duration = 3
-            })
-            return
-        end
-
-        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 70)
-        AutoPilotBtn.Text = "⚡\nON"
-
+        Config.UserWantsAutoPilot = true
         executeGroundRescue(function()
             Config.ZigZagEnabled = true
             pcall(function() ZigZagToggleInstance:SetValue(true) end)
             startDynamicSectorTransition(CurrentActiveSector)
         end)
+        updateButtonDisplay()
     end
 end
 
 AutoPilotBtn.MouseButton1Click:Connect(toggleAutoPilot)
 Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (ON / OFF)", Callback = toggleAutoPilot })
 
--- Teclado
+-- Control por Teclado
 local function getCompleteObject(target)
     if not target then return nil end
     local current = target
@@ -1402,29 +1380,29 @@ UserInputService.InputBegan:Connect(function(input, gpe)
             if chosen then
                 CurrentTarget = chosen
                 applyHighlight(chosen)
+                Config.UserWantsAutoPilot = true
                 Config.ZigZagEnabled = true
                 pcall(function() ZigZagToggleInstance:SetValue(true) end)
-                AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 70)
-                AutoPilotBtn.Text = "⚡\nON"
+                updateButtonDisplay()
             end
         end
     end
 
     if input.KeyCode == Enum.KeyCode.Nine or input.KeyCode == Enum.KeyCode.KeypadNine then
+        Config.UserWantsAutoPilot = false
         Config.ZigZagEnabled = false
         pcall(function() ZigZagToggleInstance:SetValue(false) end)
-        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
-        AutoPilotBtn.Text = "⚡\nOFF"
+        updateButtonDisplay()
         applyBrake(1.0)
     end
 
     if input.KeyCode == Enum.KeyCode.Zero or input.KeyCode == Enum.KeyCode.KeypadZero then
         CurrentTarget = nil
         clearHighlight()
+        Config.UserWantsAutoPilot = false
         Config.ZigZagEnabled = false
         pcall(function() ZigZagToggleInstance:SetValue(false) end)
-        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
-        AutoPilotBtn.Text = "⚡\nOFF"
+        updateButtonDisplay()
         applyBrake(1.0)
     end
 
@@ -1433,28 +1411,47 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     end
 end)
 
--- Monitor de textos en tiempo real
+-- Monitor Continuo y Gestor de Estados
 task.spawn(function()
     while true do
-        task.wait(0.5)
-        local isNight = workspace:GetAttribute("Night")
-        if isNight == nil then
-            isNight = (Lighting.ClockTime >= 18.0 or Lighting.ClockTime <= 6.0)
+        task.wait(0.4)
+        updateButtonDisplay()
+
+        -- Gestión de ataque según el ciclo
+        if Config.UserWantsAutoPilot then
+            if CycleState.IsDay or CycleState.IsBanditRaid then
+                Config.ZigZagEnabled = false
+            else
+                Config.ZigZagEnabled = true
+            end
         end
-        local isBanditRaid = workspace:GetAttribute("BanditRaid") == true
-        local dayText = isBanditRaid and "🤠 ASALTANTES (EN ESQUINA)" or (isNight and "🌙 NOCHE (COMBATE)" or "☀️ DÍA (PAUSA)")
+
+        local car, seat = getCurrentVehicle()
+        local wheelInfo = "N/A"
+        if car and seat then
+            local intact, reason = areWheelsIntact(car, seat)
+            wheelInfo = intact and "✅ Intactas" or ("❌ " .. reason)
+        end
+
+        WatchdogStatusParagraph:SetDesc(string.format(
+            "Estado: %s\nLlantas: %s\nDesatascos: %d | Ignorados: %d",
+            WatchdogState.Status,
+            wheelInfo,
+            WatchdogState.TotalUnstucks,
+            WatchdogState.IgnoredBrokenWheels
+        ))
 
         DefenseStatusParagraph:SetDesc(string.format(
-            "Vida: %.0f/%.0f (%.0f%%) [%s]\nWatchdog: %s | Desatascos: %d\nFase: %s\nModo: %s",
+            "Vida Vehículo: %.0f / %.0f (%.0f%%) [%s]\nRetirada Automática: %s\nModo Actual: %s",
             DefenseState.CurrentHP, DefenseState.MaxHP, DefenseState.HPRatio * 100, DefenseState.Source,
-            WatchdogState.Status, WatchdogState.TotalUnstucks,
-            dayText,
-            DayCycleState.IsFleeingToCorner and "🏃 Refugiándose en Esquina" or (DefenseState.IsRetreating and "🛡️ Retirada (-30 studs)" or (TransitState.Active and "🚗 Enrutando Pistas" or "⚔️ " .. Config.AttackMode))
+            Config.RetreatEnabled and "🟢 ACTIVA" or "🔴 OFF",
+            DefenseState.IsRetreating and "🛡️ Retirada (-30 studs)" or (TransitState.Active and "🚗 Enrutando Pistas" or "⚔️ " .. Config.AttackMode)
         ))
 
         HordeStatusParagraph:SetDesc(string.format(
-            "Frente Activo: %s\nIncomingPosition Raw: %s\nZombies Restantes: %d",
+            "Frente Activo: %s | Ciclo: %s\nIncomingPosition Raw: %s\nZombies Restantes: %d",
             CurrentActiveSector,
+            CycleState.IsBanditRaid and "🤠 ASALTANTES" or (CycleState.IsDay and "☀️ DÍA (PAUSADO)" or "🌙 NOCHE (COMBATE)"),
             tostring(workspace:GetAttribute("IncomingPosition") or "N/A"),
             workspace:GetAttribute("RemainingMobs") or 0
         ))
@@ -1470,36 +1467,40 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 12. MOTOR CINÉTICO ZERO-LAG
+-- 11. MOTOR CINÉTICO: COMBATE, EVASIÓN PRO Y RESGUARDO EN ESQUINA
 -- ==============================================================================
 
 local depredadorDir = 1
 local lastDepredadorSwitch = tick()
 
 RunService.Heartbeat:Connect(function()
-    if IsInContingency then return end
-
     local _, root, hum = getCharacterParts()
     if not root or not hum or hum.Health <= 0 then return end
     if not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat") then return end
 
-    -- === MANIOBRA: CONDUCIR HACIA LA ESQUINA SEGURA EN NOCHE DE ASALTANTES ===
-    if DayCycleState.IsFleeingToCorner and DayCycleState.TargetCornerPos then
-        local diffCorner = DayCycleState.TargetCornerPos - root.Position
-        local horizCorner = Vector3.new(diffCorner.X, 0, diffCorner.Z)
+    -- CASO 1: Noche de asaltantes -> Resguardo en esquina más cercana
+    if Config.UserWantsAutoPilot and CycleState.IsBanditRaid and not IsInContingency then
+        local targetCorner = getClosestBaseCorner(root.Position)
+        local diff = targetCorner - root.Position
+        local horiz = Vector3.new(diff.X, 0, diff.Z)
 
-        if horizCorner.Magnitude <= 10.0 then
-            DayCycleState.ReachedSafeCorner = true
-            root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y, 0)
-            root.AssemblyAngularVelocity = Vector3.zero
+        if horiz.Magnitude > 6.0 then
+            local dir = horiz.Unit * math.min(Config.MoveSpeed, 90)
+            root.AssemblyLinearVelocity = Vector3.new(dir.X, root.AssemblyLinearVelocity.Y, dir.Z)
         else
-            local cornerDir = horizCorner.Unit
-            root.AssemblyLinearVelocity = Vector3.new(cornerDir.X * (Config.MoveSpeed * 0.9), root.AssemblyLinearVelocity.Y, cornerDir.Z * (Config.MoveSpeed * 0.9))
+            root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y, 0)
         end
         return
     end
 
-    if not Config.ZigZagEnabled then return end
+    -- CASO 2: Es de día y está en pausa
+    if Config.UserWantsAutoPilot and CycleState.IsDay and not IsInContingency then
+        root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y, 0)
+        return
+    end
+
+    -- CASO 3: Combate nocturno normal
+    if not Config.ZigZagEnabled or IsInContingency then return end
 
     if TransitState.Active then
         local wp = TransitState.Waypoints[TransitState.Index]
@@ -1596,11 +1597,14 @@ RunService.Heartbeat:Connect(function()
             destination = targetPos + (roadLen * tDist) + (roadWid * (math.sin(tick() * 7.5) * d))
         end
 
-        if Config.EvadeBloaters and #CachedBloaterDangers > 0 then
-            for _, bPos in ipairs(CachedBloaterDangers) do
-                if (root.Position - bPos).Magnitude <= Config.BloaterDangerDist then
-                    local aDir = (root.Position - bPos).Unit
-                    destination = destination + Vector3.new(aDir.X, 0, aDir.Z) * 26
+        -- EVASIÓN DE BLOATERS CALIBRADA (+4 studs y persistencia temporal)
+        if Config.EvadeBloaters and next(BloaterDangerMemory) ~= nil then
+            for _, danger in pairs(BloaterDangerMemory) do
+                local bPos = danger.Position
+                local offset = root.Position - bPos
+                if offset.Magnitude <= Config.BloaterDangerDist then
+                    local aDir = (offset.Magnitude > 0.1) and offset.Unit or Vector3.new(0, 0, 1)
+                    destination = destination + Vector3.new(aDir.X, 0, aDir.Z) * 30.0 -- Alejamiento de 30 studs (+4 studs)
                 end
             end
         end
@@ -1616,8 +1620,8 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB MASTER V17.5",
-    Content = "Watchdog, refugio en esquinas de asaltantes y rescate calibrado.",
+    Title = "ZOMBIE HUB MASTER V17.0",
+    Content = "Watchdog integrado, Bloaters calibrados (+4 studs / +1s retardo) y ciclo activado.",
     Duration = 4
 })
 
