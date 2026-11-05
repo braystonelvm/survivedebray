@@ -81,7 +81,7 @@ local Config = {
     -- AUTO-EAT
     AutoEatEnabled = true,
     EatHealthThreshold = 60,
-    EatHungerThreshold = 50,
+    EatHungerThreshold = 80,
     EatScanRadius = 24,
     EatCooldown = 0.9,
 
@@ -1225,7 +1225,7 @@ Tabs.AutoEat:AddSlider("EatHpSlider", {
 
 Tabs.AutoEat:AddSlider("EatHungerSlider", {
     Title = "Hambre Baja (%): Comer CUALQUIERA 🥕",
-    Default = 50,
+    Default = 80,
     Min = 10,
     Max = 90,
     Rounding = 0,
