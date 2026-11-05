@@ -1,5 +1,5 @@
 -- ==============================================================================
--- ZOMBIE HUB MASTER V17.0: AUTO-UNSTUCK + CICLO DÍA/NOCHE + ASALTANTES + BLOATER PRO
+-- ZOMBIE HUB MASTER V17.1: AUTO-UNSTUCK + CICLO DÍA/NOCHE + ASALTANTES + BLOATER ZIGZAG
 -- ==============================================================================
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
@@ -57,7 +57,8 @@ local Config = {
     LateralDist = 25,
     MoveSpeed = 150,
     EvadeBloaters = true,
-    BloaterDangerDist = 34, -- +4 studs de margen de seguridad
+    BloaterDangerDist = 20, -- Distancia reducida a 20 studs por defecto
+    BloaterRandomZigZag = true, -- Evasión activa en zigzag aleatorio
     BloaterExtraCooldown = 1.0, -- 1 segundo adicional de retardo en volver
     AutoRouteToWave = true,
 
@@ -922,7 +923,7 @@ local function executeGroundRescue(onBoardCallback)
 end
 
 -- ==============================================================================
--- 8. RETIRADA TÁCTICA Y MEMORIA DE BLOATERS (+4 STUDS Y +1 SEGUNDO RETARDO)
+-- 8. RETIRADA TÁCTICA Y MEMORIA DE BLOATERS
 -- ==============================================================================
 
 task.spawn(function()
@@ -1034,7 +1035,7 @@ end)
 -- ==============================================================================
 
 local Window = Fluent:CreateWindow({
-    Title = "ZOMBIE HUB | MASTER V17.0",
+    Title = "ZOMBIE HUB | MASTER V17.1",
     SubTitle = "Sobrevive al Apocalipsis",
     TabWidth = 160,
     Size = UDim2.fromOffset(600, 520),
@@ -1113,6 +1114,30 @@ Tabs.Combat:AddToggle("AutoRouteToggle", {
 })
 
 -- PESTAÑA DEFENSA
+Tabs.Defense:AddSection("Evasión de Bloaters (Anti-Explosión)")
+
+Tabs.Defense:AddToggle("EvadeBloatersToggle", {
+    Title = "💣 Esquivar Explosión de Bloaters",
+    Default = true,
+    Callback = function(v) Config.EvadeBloaters = v end
+})
+
+Tabs.Defense:AddToggle("BloaterZigZagToggle", {
+    Title = "🌪️ Evasión Bloater con ZigZag Random",
+    Description = "Hace zigzag dinámico y errático al esquivar para no trabarse ni salir volando",
+    Default = true,
+    Callback = function(v) Config.BloaterRandomZigZag = v end
+})
+
+Tabs.Defense:AddSlider("BloaterDistSlider", {
+    Title = "Distancia Evasión Bloater (Studs)",
+    Default = 20,
+    Min = 10,
+    Max = 50,
+    Rounding = 0,
+    Callback = function(v) Config.BloaterDangerDist = v end
+})
+
 Tabs.Defense:AddSection("Desatascamiento Automático Watchdog")
 
 Tabs.Defense:AddToggle("WatchdogToggle", {
@@ -1315,15 +1340,12 @@ local function updateButtonDisplay()
     end
 
     if CycleState.IsBanditRaid then
-        -- Pausado en amarillo por Asaltantes
         AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(235, 190, 25)
         AutoPilotBtn.Text = "PAUSED\nRAID"
     elseif CycleState.IsDay then
-        -- Pausado en amarillo por Día
         AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(235, 190, 25)
         AutoPilotBtn.Text = "PAUSED\nDÍA"
     else
-        -- Activo en Noche normal
         AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 70)
         AutoPilotBtn.Text = "⚡\nON"
     end
@@ -1417,7 +1439,6 @@ task.spawn(function()
         task.wait(0.4)
         updateButtonDisplay()
 
-        -- Gestión de ataque según el ciclo
         if Config.UserWantsAutoPilot then
             if CycleState.IsDay or CycleState.IsBanditRaid then
                 Config.ZigZagEnabled = false
@@ -1467,7 +1488,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 11. MOTOR CINÉTICO: COMBATE, EVASIÓN PRO Y RESGUARDO EN ESQUINA
+-- 11. MOTOR CINÉTICO: COMBATE, EVASIÓN ZIGZAG PRO Y RESGUARDO EN ESQUINA
 -- ==============================================================================
 
 local depredadorDir = 1
@@ -1493,9 +1514,8 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- CASO 2: Es de día y está en pausa
+    -- CASO 2: Es de día y está en pausa (SIN FRENO PARA PERMITIR CONDUCCIÓN MANUAL)
     if Config.UserWantsAutoPilot and CycleState.IsDay and not IsInContingency then
-        root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y, 0)
         return
     end
 
@@ -1597,14 +1617,25 @@ RunService.Heartbeat:Connect(function()
             destination = targetPos + (roadLen * tDist) + (roadWid * (math.sin(tick() * 7.5) * d))
         end
 
-        -- EVASIÓN DE BLOATERS CALIBRADA (+4 studs y persistencia temporal)
+        -- EVASIÓN DE BLOATERS CALIBRADA (Con opción de Zigzag Random y sin atascos)
         if Config.EvadeBloaters and next(BloaterDangerMemory) ~= nil then
             for _, danger in pairs(BloaterDangerMemory) do
                 local bPos = danger.Position
                 local offset = root.Position - bPos
-                if offset.Magnitude <= Config.BloaterDangerDist then
-                    local aDir = (offset.Magnitude > 0.1) and offset.Unit or Vector3.new(0, 0, 1)
-                    destination = destination + Vector3.new(aDir.X, 0, aDir.Z) * 30.0 -- Alejamiento de 30 studs (+4 studs)
+                local distToDanger = offset.Magnitude
+                if distToDanger <= Config.BloaterDangerDist then
+                    local aDir = (distToDanger > 0.1) and offset.Unit or Vector3.new(0, 0, 1)
+
+                    if Config.BloaterRandomZigZag then
+                        -- Vector perpendicular con oscilación dinámica para esquivar a los lados sin trabar el avance
+                        local perp = Vector3.new(-aDir.Z, 0, aDir.X)
+                        local randomWeave = math.sin(tick() * 9.0) + (math.cos(tick() * 14.5) * 0.6)
+                        local lateralOffset = perp * (randomWeave * (Config.LateralDist * 0.8))
+                        destination = destination + Vector3.new(aDir.X, 0, aDir.Z) * 15.0 + lateralOffset
+                    else
+                        -- Evasión directa estándar
+                        destination = destination + Vector3.new(aDir.X, 0, aDir.Z) * 20.0
+                    end
                 end
             end
         end
@@ -1620,8 +1651,8 @@ RunService.Heartbeat:Connect(function()
 end)
 
 Fluent:Notify({
-    Title = "ZOMBIE HUB MASTER V17.0",
-    Content = "Watchdog integrado, Bloaters calibrados (+4 studs / +1s retardo) y ciclo activado.",
+    Title = "ZOMBIE HUB MASTER V17.1",
+    Content = "Bloaters calibrados a 20 studs con ZigZag Random y pausa diurna sin freno.",
     Duration = 4
 })
 
