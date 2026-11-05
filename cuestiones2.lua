@@ -1,370 +1,314 @@
 -- ==============================================================================
--- CHEST & LOOT ROAMER V4 (INTERFAZ NATIVA - CERO ERRORES / 0% LAG)
+-- ZOMBIE HUB MASTER V17.5: UNSTUCK + RESCATE CONTROLADO + ASALTANTES A ESQUINA
 -- ==============================================================================
 
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local Lighting = game:GetService("Lighting")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local lp = Players.LocalPlayer
+local mouse = lp:GetMouse()
 
 local BaseCenter = Vector3.new(0, 0, 0)
+local BASE_FORBIDDEN_RADIUS = 105
 
--- Eliminar desenfoques
-pcall(function()
-    for _, obj in ipairs(Lighting:GetChildren()) do
-        if obj:IsA("BlurEffect") then obj:Destroy() end
-    end
-end)
-
-local State = {
-    Running = false,
-    Paused = false,
-    NoclipEnabled = false,
-    CurrentStatus = "Inactivo",
-    FlySpeed = 160,
-    ChestWaitTime = 1.0,
-    MapBoundaryRadius = 1250,
-    NearbyRadarRadius = 350,
-    ItemRadarRadius = 180,
-    CollectDroppedItems = true,
-    LoopAll = true,
-    TotalChestsLooted = 0,
-    TotalItemsCollected = 0,
-    PatrolStep = 1,
-    ReturningToBase = false,
-
-    -- MODO FUEL
-    FuelOnlyMode = false,
-    FuelScanRadius = 500
+local SECTOR_ROUTES = {
+    SUR   = { Gate = Vector3.new(0, -1.9, 120.0),   Combat = Vector3.new(0, 14.5, 180.0) },
+    NORTE = { Gate = Vector3.new(0, -1.7, -120.0),  Combat = Vector3.new(0, 14.5, -180.0) },
+    ESTE  = { Gate = Vector3.new(120.0, -1.9, 0.0),   Combat = Vector3.new(180.0, 14.5, 0.0) },
+    OESTE = { Gate = Vector3.new(-120.0, -1.9, 0.0), Combat = Vector3.new(-180.0, 14.5, 0.0) }
 }
 
-local KnownChests = {}
-local VisitedChests = {}
-local PassedItemsCooldown = {}
+-- Nodos del perímetro (las 'C_' corresponden a las 4 esquinas de la base)
+local PERIMETER_NODES = {
+    { Name = "T_SUR",   Pos = Vector3.new(0, -1.9, 120.0),    Sector = "SUR" },
+    { Name = "C_SE",    Pos = Vector3.new(115.0, -1.9, 115.0), Sector = nil },
+    { Name = "T_ESTE",  Pos = Vector3.new(120.0, -1.9, 0.0),   Sector = "ESTE" },
+    { Name = "C_NE",    Pos = Vector3.new(115.0, -1.7, -115.0),Sector = nil },
+    { Name = "T_NORTE", Pos = Vector3.new(0, -1.7, -120.0),   Sector = "NORTE" },
+    { Name = "C_NW",    Pos = Vector3.new(-115.0, -1.7, -115.0),Sector = nil },
+    { Name = "T_OESTE", Pos = Vector3.new(-120.0, -1.9, 0.0),  Sector = "OESTE" },
+    { Name = "C_SW",    Pos = Vector3.new(-115.0, -1.9, 115.0), Sector = nil }
+}
 
-local PickUpRemote = nil
-task.spawn(function()
-    local rem = ReplicatedStorage:WaitForChild("Remotes", 5)
-    local inter = rem and rem:WaitForChild("Interaction", 5)
-    if inter then
-        PickUpRemote = inter:WaitForChild("PickUpItem", 5)
-    end
-end)
+local Config = {
+    ZigZagEnabled = false,
+    AttackMode = "Depredador",
+    SwitchInterval = 0.5,
+    LateralDist = 25,
+    MoveSpeed = 150,
+    EvadeBloaters = true,
+    BloaterDangerDist = 30,
+    AutoRouteToWave = true,
+
+    DepredadorBaseOvershoot = 5.0,
+    DepredadorFarOvershoot = 25.0,
+
+    RetreatEnabled = true,
+    LowHealthThreshold = 0.30,
+    FullHealthThreshold = 0.95,
+    RetreatDistance = 30.0,
+    RetreatSpeed = 110,
+
+    -- RESCATE PEATONAL
+    CombatAutoRescue = true,
+    ManualDriveAutoRescue = false,
+    SprintSpeed = 34,
+    RescueZombieScanDist = 100,
+    MaxCarSearchDist = 350,
+
+    -- AUTO-EAT
+    AutoEatEnabled = true,
+    EatHealthThreshold = 60,
+    EatHungerThreshold = 50,
+    EatScanRadius = 24,
+    EatCooldown = 0.9,
+
+    -- WATCHDOG DESATASCAMIENTO AUTOMÁTICO
+    WatchdogEnabled = true,
+    StuckTimeout = 3.0,
+    MinMoveDistance = 2.0,
+    MaxWheelDisplacement = 12,
+
+    -- CICLO AUTOMÁTICO DÍA/NOCHE & ASALTANTES
+    DayNightAutoCombat = true,
+    FleeToCornerOnBandits = true
+}
+
+local CurrentTarget = nil
+local TargetHighlight = nil
+local ZigZagToggleInstance = nil
+local CurrentActiveSector = "SUR"
+
+local CachedCombatRoads = {}
+local CachedBloaterDangers = {}
+local CachedHordeClusterOffset = 0
+local LastDrivenVehicle = nil
+local IsInContingency = false
+
+local DefenseState = {
+    IsRetreating = false,
+    CurrentHP = 2500,
+    MaxHP = 2500,
+    HPRatio = 1.0,
+    Source = "Desconocido"
+}
+
+local TransitState = {
+    Active = false,
+    Waypoints = {},
+    Index = 1,
+    TargetSector = "SUR"
+}
+
+local AutoEatState = {
+    IsEating = false,
+    LastEatTick = 0,
+    Status = "Monitoreando..."
+}
+
+local WatchdogState = {
+    LastPos = Vector3.zero,
+    LastMoveTick = tick(),
+    TotalUnstucks = 0,
+    IgnoredBrokenWheels = 0,
+    Status = "Normal"
+}
+
+local DayCycleState = {
+    AutoPausedByDay = false,
+    AutoPausedByBandits = false,
+    IsFleeingToCorner = false,
+    ReachedSafeCorner = false,
+    TargetCornerPos = nil
+}
+
+local PickUpRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Interaction"):WaitForChild("PickUpItem")
 
 RunService.RenderStepped:Connect(function()
-    pcall(function()
-        UserInputService.MouseIconEnabled = true
-    end)
+    UserInputService.MouseIconEnabled = true
 end)
 
 -- ==============================================================================
--- 1. FÍSICAS DE VUELO 3D Y NOCLIP
+-- 1. DETECCIÓN DE STATS & SALUD
 -- ==============================================================================
 
-local function getRootPart()
+local function getCharacterParts()
     local char = lp.Character
-    return char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    local root = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso"))
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    return char, root, hum
 end
 
-local function removePhysicsHelpers()
-    local root = getRootPart()
-    if root then
-        local bp = root:FindFirstChild("ChestRoamBP")
-        if bp then bp:Destroy() end
-        local bg = root:FindFirstChild("ChestRoamBG")
-        if bg then bg:Destroy() end
-        root.AssemblyLinearVelocity = Vector3.zero
-    end
-end
+local function getPlayerStats()
+    local char, _, hum = getCharacterParts()
+    if not hum then return 100, 100 end
 
-local function restoreCollisions()
-    local char = lp.Character
-    if char then
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = true end
+    local hpPct = math.floor((hum.Health / math.max(hum.MaxHealth, 1)) * 100)
+
+    local hunger = char:GetAttribute("Hunger") or lp:GetAttribute("Hunger")
+    local maxHunger = char:GetAttribute("MaxHunger") or lp:GetAttribute("MaxHunger") or 100
+
+    local hungerPct = 100
+    if type(hunger) == "number" then
+        hungerPct = math.floor((hunger / maxHunger) * 100)
+    else
+        local hVal = char:FindFirstChild("Hunger") or lp:FindFirstChild("Hunger")
+        if hVal and (hVal:IsA("NumberValue") or hVal:IsA("IntValue")) then
+            hungerPct = math.floor((hVal.Value / 100) * 100)
         end
     end
+
+    return hpPct, hungerPct
 end
 
-RunService.Stepped:Connect(function()
-    if State.Running and not State.Paused and State.NoclipEnabled then
-        local char = lp.Character
-        if char then
-            for _, p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") then p.CanCollide = false end
+local function getVehicleRootModel(seat)
+    if not seat then return nil end
+    local current = seat
+    local topModel = seat:FindFirstAncestorOfClass("Model")
+    while current and current ~= workspace do
+        if current:IsA("Model") then
+            topModel = current
+            local pName = current.Parent and current.Parent.Name:lower() or ""
+            if current.Parent == workspace or pName == "structures" or pName == "vehicles" or pName == "map" then
+                return current
             end
         end
+        current = current.Parent
     end
-end)
-
-local function getOrCreatePhysics(root, initialPos)
-    local bodyPos = root:FindFirstChild("ChestRoamBP")
-    if not bodyPos then
-        bodyPos = Instance.new("BodyPosition")
-        bodyPos.Name = "ChestRoamBP"
-        bodyPos.MaxForce = Vector3.new(1e6, math.huge, 1e6)
-        bodyPos.P = 28000
-        bodyPos.D = 900
-        bodyPos.Position = initialPos or root.Position
-        bodyPos.Parent = root
-    end
-
-    local bodyGyro = root:FindFirstChild("ChestRoamBG")
-    if not bodyGyro then
-        bodyGyro = Instance.new("BodyGyro")
-        bodyGyro.Name = "ChestRoamBG"
-        bodyGyro.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-        bodyGyro.CFrame = root.CFrame
-        bodyGyro.Parent = root
-    end
-
-    return bodyPos, bodyGyro
+    return topModel
 end
 
-local function secureFlightStart()
-    local root = getRootPart()
-    if not root then return false end
-
-    root.AssemblyLinearVelocity = Vector3.zero
-    local bodyPos = getOrCreatePhysics(root, root.Position + Vector3.new(0, 3, 0))
-    bodyPos.Position = root.Position + Vector3.new(0, 3, 0)
-    task.wait(0.15)
-    return true
+local function getCurrentVehicle()
+    local _, _, hum = getCharacterParts()
+    if hum and hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
+        local seat = hum.SeatPart
+        local model = getVehicleRootModel(seat)
+        if model then LastDrivenVehicle = model end
+        return model, seat
+    end
+    return nil, nil
 end
 
-local function flyMoveTo3D(targetPos, speed, stopDistance)
-    stopDistance = stopDistance or 3.2
-    local root = getRootPart()
-    if not root then return false end
+local function getTruckHealth(truck)
+    if not truck then return 2500, 2500, 1.0, "Sin auto" end
+    local foundHP, foundMax = nil, nil
+    local src = "Desconocido"
 
-    local finalDest = targetPos + Vector3.new(0, 2.2, 0)
-    local bodyPos = getOrCreatePhysics(root, root.Position)
-    local timeout = tick() + 25
-    local lastPos = root.Position
-    local stuckCounter = 0
+    local config = truck:FindFirstChild("Configuration", true) or truck:FindFirstChild("Config", true)
+    if config then
+        local h = config:GetAttribute("Health") or config:GetAttribute("HP")
+        local mh = config:GetAttribute("MaxHealth") or config:GetAttribute("MaxHP")
+        if h and type(h) == "number" then foundHP = h; src = "Config.Attr" end
+        if mh and type(mh) == "number" then foundMax = mh end
 
-    while State.Running and tick() < timeout do
-        RunService.Heartbeat:Wait()
-
-        while State.Running and State.Paused do
-            bodyPos.Position = root.Position
-            task.wait(0.2)
-        end
-
-        if not State.Running then break end
-
-        local diff = finalDest - root.Position
-        local dist = diff.Magnitude
-
-        if dist <= stopDistance then
-            bodyPos.Position = finalDest
-            return true
-        end
-
-        if (root.Position - lastPos).Magnitude < 0.25 then
-            stuckCounter = stuckCounter + 1
-            if stuckCounter >= 25 then
-                bodyPos.Position = root.Position + Vector3.new(0, 4, 0)
-                stuckCounter = 0
-            end
-        else
-            stuckCounter = 0
-            lastPos = root.Position
-        end
-
-        local stepDir = diff.Unit
-        local nextStep = root.Position + (stepDir * (speed * 0.1))
-        bodyPos.Position = nextStep
-    end
-
-    if bodyPos then bodyPos.Position = finalDest end
-    return false
-end
-
--- ==============================================================================
--- 2. DETECCIÓN DE COFRES (OMITE COFRES ABIERTOS)
--- ==============================================================================
-
-local function isChestModel(obj)
-    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
-    if obj == lp.Character or obj:IsDescendantOf(lp.Character) then return false end
-
-    -- Omitir si ya está abierto
-    if obj:GetAttribute("Open") == true 
-       or obj:GetAttribute("Opened") == true 
-       or obj:GetAttribute("Looted") == true 
-       or obj:GetAttribute("Empty") == true then
-        return false
-    end
-
-    local prompt = obj:FindFirstChildOfClass("ProximityPrompt") or obj:FindFirstChildWhichIsA("ProximityPrompt", true)
-    if prompt then
-        if not prompt.Enabled then return false end
-        local text = (prompt.ObjectText .. " " .. prompt.ActionText):lower()
-        if text:find("open") or text:find("abrir") or text:find("crate") or text:find("chest") then
-            return true
+        if not foundHP then
+            local vH = config:FindFirstChild("Health") or config:FindFirstChild("HP")
+            if vH and vH:IsA("ValueBase") then foundHP = vH.Value; src = "Config.Value" end
+            local vM = config:FindFirstChild("MaxHealth") or config:FindFirstChild("MaxHP")
+            if vM and vM:IsA("ValueBase") then foundMax = vM.Value end
         end
     end
 
-    if obj:GetAttribute("Crate") == true then return true end
-    if obj.Parent and obj.Parent.Name == "Crates" then return true end
-
-    return false
-end
-
-local function registerChest(item)
-    if not item or not item.Parent then return end
-    if isChestModel(item) and not KnownChests[item] then
-        local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
-        if part then
-            KnownChests[item] = {
-                Instance = item,
-                Part = part,
-                Name = item.Name
-            }
-        end
-    end
-end
-
-task.spawn(function()
-    local mapFolder = workspace:FindFirstChild("Map")
-    local cratesFolder = mapFolder and mapFolder:FindFirstChild("Crates")
-
-    if cratesFolder then
-        cratesFolder.ChildAdded:Connect(registerChest)
-        for _, c in ipairs(cratesFolder:GetChildren()) do registerChest(c) end
-    end
-
-    workspace.DescendantAdded:Connect(function(desc)
-        if desc.Parent and desc.Parent.Name == "Crates" then
-            registerChest(desc)
-        elseif isChestModel(desc) then
-            registerChest(desc)
-        end
-    end)
-end)
-
-local function scanLoadedChestsAroundPlayer()
-    local root = getRootPart()
-    if not root then return end
-
-    local mapFolder = workspace:FindFirstChild("Map")
-    local cratesFolder = mapFolder and mapFolder:FindFirstChild("Crates")
-
-    if cratesFolder then
-        for _, c in ipairs(cratesFolder:GetChildren()) do registerChest(c) end
-    end
-
-    for _, container in ipairs({workspace:FindFirstChild("Structures"), mapFolder}) do
-        if container then
-            for _, desc in ipairs(container:GetChildren()) do
-                if isChestModel(desc) then registerChest(desc) end
-            end
-        end
-    end
-end
-
--- ==============================================================================
--- 3. DETECCIÓN DE ÍTEMS Y GALONES DE GASOLINA
--- ==============================================================================
-
-local function isCollectableDroppedItem(item)
-    if not item or not item.Parent then return false end
-    if item == lp.Character or item:IsDescendantOf(lp.Character) then return false end
-
-    local n = item.Name:lower()
-    local itemType = tostring(item:GetAttribute("ItemType") or ""):lower()
-    local toolType = tostring(item:GetAttribute("ToolType") or ""):lower()
-
-    if itemType == "food" or n:find("carrot") then
-        return false
-    end
-
-    if item:GetAttribute("CanPickUp") ~= nil 
-       or item:GetAttribute("ToolLoaded") == true 
-       or item:GetAttribute("Tier") ~= nil 
-       or item:IsA("Tool") 
-       or itemType == "ammo" 
-       or toolType ~= "" 
-       or n:find("ammo") 
-       or n:find("medkit") 
-       or n:find("bandage") 
-       or n:find("turret") 
-       or n:find("wire") 
-       or n:find("gun") 
-       or n:find("shotgun") 
-       or n:find("rifle") 
-       or n:find("gas") 
-       or n:find("grenade") 
-       or n:find("molotov") then
-        return true
-    end
-
-    return false
-end
-
-local function getNearestLootItem(currentPos, maxDist)
-    local dropped = workspace:FindFirstChild("DroppedItems")
-    if not dropped then return nil end
-
-    local best = nil
-    local shortest = maxDist
-    local now = tick()
-
-    for _, item in ipairs(dropped:GetChildren()) do
-        if not (PassedItemsCooldown[item] and now < PassedItemsCooldown[item]) then
-            if isCollectableDroppedItem(item) then
-                local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
-                if part then
-                    local d = (part.Position - currentPos).Magnitude
-                    if d < shortest then
-                        shortest = d
-                        best = {
-                            Instance = item,
-                            Part = part,
-                            Pos = part.Position,
-                            Name = item.Name,
-                            Dist = d
-                        }
+    if not foundHP then
+        for _, obj in ipairs({truck, truck.PrimaryPart}) do
+            if obj then
+                for _, attr in ipairs({"Health", "HP", "Durability", "Vida"}) do
+                    local val = obj:GetAttribute(attr)
+                    if val and type(val) == "number" then
+                        foundHP = val
+                        foundMax = obj:GetAttribute("Max" .. attr) or 2500
+                        src = "Model.Attr"
+                        break
                     end
+                end
+            end
+            if foundHP then break end
+        end
+    end
+
+    if not foundHP then
+        for _, desc in ipairs(truck:GetDescendants()) do
+            if desc:IsA("NumberValue") or desc:IsA("IntValue") then
+                local n = desc.Name:lower()
+                if n == "health" or n == "hp" or n == "durability" then
+                    foundHP = desc.Value
+                    src = "Descendant.Value"
+                    break
                 end
             end
         end
     end
 
-    return best
+    if not foundHP then
+        local mock = truck:FindFirstChild("MockHumanoid", true) or truck:FindFirstChildOfClass("Humanoid")
+        if mock then
+            foundHP = mock:GetAttribute("Health") or (mock:IsA("Humanoid") and mock.Health)
+            foundMax = mock:GetAttribute("MaxHealth") or (mock:IsA("Humanoid") and mock.MaxHealth)
+            src = "MockHumanoid"
+        end
+    end
+
+    foundMax = foundMax or 2500
+    foundHP = foundHP or foundMax
+    local ratio = (foundMax > 0) and (foundHP / foundMax) or 1.0
+    return foundHP, foundMax, ratio, src
 end
 
-local function getNearestBaseFuelCan(currentPos)
+-- ==============================================================================
+-- 2. AUTO-EAT TURBO (ZANAHORIA DORADA VIDA / NORMAL HAMBRE)
+-- ==============================================================================
+
+local function isGoldenCarrot(item)
+    if item:GetAttribute("Golden") == true or item:GetAttribute("Rarity") == "Golden" then
+        return true
+    end
+
+    local mainPart = item:FindFirstChild("MainPart") or item:FindFirstChildWhichIsA("BasePart")
+    if mainPart then
+        if mainPart.Material == Enum.Material.Metal or mainPart.Color.R > 0.9 then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function findBestGroundFood(onlyGolden)
+    local _, root = getCharacterParts()
+    if not root then return nil end
+
     local dropped = workspace:FindFirstChild("DroppedItems")
     if not dropped then return nil end
 
-    local best = nil
-    local shortest = math.huge
-    local now = tick()
+    local myPos = root.Position
+    local bestItem = nil
+    local maxRadius = Config.EatScanRadius
+    local shortestDistSq = maxRadius * maxRadius
 
     for _, item in ipairs(dropped:GetChildren()) do
-        if not (PassedItemsCooldown[item] and now < PassedItemsCooldown[item]) then
-            local n = item.Name:lower()
-            local isFuel = (n == "fuel" or n == "refined fuel" or n:find("fuel") or n:find("gas") or n:find("jerry")) and not n:find("mask")
-            if isFuel then
+        local isFood = (item:GetAttribute("ItemType") == "Food") or item.Name:lower():find("carrot")
+
+        if isFood and item:GetAttribute("CanPickUp") ~= false then
+            local isGold = isGoldenCarrot(item)
+            if not onlyGolden or isGold then
                 local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
                 if part then
-                    local distFromBase = (Vector3.new(part.Position.X, 0, part.Position.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude
-                    if distFromBase <= State.FuelScanRadius then
-                        local d = (part.Position - currentPos).Magnitude
-                        if d < shortest then
-                            shortest = d
-                            best = {
-                                Instance = item,
-                                Part = part,
-                                Pos = part.Position,
-                                Name = item.Name,
-                                Dist = d
-                            }
+                    local pPos = part.Position
+                    local dx = pPos.X - myPos.X
+                    local dz = pPos.Z - myPos.Z
+
+                    if math.abs(dx) <= maxRadius and math.abs(dz) <= maxRadius then
+                        local dy = pPos.Y - myPos.Y
+                        local distSq = (dx * dx) + (dy * dy) + (dz * dz)
+
+                        if distSq <= shortestDistSq then
+                            shortestDistSq = distSq
+                            bestItem = item
                         end
                     end
                 end
@@ -372,398 +316,1309 @@ local function getNearestBaseFuelCan(currentPos)
         end
     end
 
-    return best
+    return bestItem
 end
 
--- ==============================================================================
--- 4. WAYPOINTS DE PATRULLA
--- ==============================================================================
+local function eatGroundFood(onlyGolden)
+    if AutoEatState.IsEating then return end
+    if (tick() - AutoEatState.LastEatTick) < Config.EatCooldown then return end
 
-local function getEffectiveMapRadius()
-    local rawRadius = workspace:GetAttribute("MapRadius") or workspace:GetAttribute("WorldRadius")
-    if rawRadius and type(rawRadius) == "number" then
-        if rawRadius < 100 then
-            return math.clamp(rawRadius * 32, 700, 2200)
-        else
-            return math.clamp(rawRadius, 700, 2500)
+    local char, _, hum = getCharacterParts()
+    if not hum or hum.Health <= 0 then return end
+
+    local targetFood = findBestGroundFood(onlyGolden)
+    if not targetFood then
+        AutoEatState.Status = onlyGolden and "⚠️ Buscando Zanahoria Dorada..." or "⚠️ Sin comida en el suelo"
+        return
+    end
+
+    AutoEatState.IsEating = true
+    local isGold = isGoldenCarrot(targetFood)
+    AutoEatState.Status = isGold and "✨ Comiendo DORADA..." or "🥕 Comiendo Normal..."
+
+    local previousTool = nil
+    for _, item in ipairs(char:GetChildren()) do
+        if item:IsA("Tool") then
+            previousTool = item
+            break
         end
     end
-    return State.MapBoundaryRadius
+
+    pcall(function() PickUpRemote:FireServer(targetFood) end)
+
+    local foodTool = nil
+    local startWait = tick()
+
+    while (tick() - startWait) < 0.6 do
+        for _, cont in ipairs({char, lp:FindFirstChild("Backpack")}) do
+            if cont then
+                for _, item in ipairs(cont:GetChildren()) do
+                    if item:IsA("Tool") and (item:GetAttribute("ItemType") == "Food" or item.Name:lower():find("carrot")) then
+                        foodTool = item
+                        break
+                    end
+                end
+            end
+        end
+        if foodTool then break end
+        task.wait(0.04)
+    end
+
+    if foodTool then
+        if foodTool.Parent ~= char then
+            hum:EquipTool(foodTool)
+            task.wait(0.05)
+        end
+
+        pcall(function() foodTool:Activate() end)
+
+        local useRemote = foodTool:FindFirstChild("Use") or foodTool:FindFirstChild("Consume")
+        if useRemote and useRemote:IsA("RemoteEvent") then
+            pcall(function() useRemote:FireServer() end)
+        end
+
+        task.wait(0.20)
+    end
+
+    if previousTool and previousTool.Parent then
+        hum:EquipTool(previousTool)
+    end
+
+    AutoEatState.LastEatTick = tick()
+    AutoEatState.IsEating = false
 end
 
-local function buildExplorationWaypoints()
-    local maxRadius = getEffectiveMapRadius()
-    local gen = workspace:FindFirstChild("Generator") or workspace:FindFirstChild("Center")
-    local center = (gen and gen:IsA("BasePart") and gen.Position) or BaseCenter
+task.spawn(function()
+    while true do
+        task.wait(0.35)
+        if Config.AutoEatEnabled then
+            local hpPct, hungerPct = getPlayerStats()
+
+            if hpPct <= Config.EatHealthThreshold then
+                eatGroundFood(true)
+            elseif hungerPct <= Config.EatHungerThreshold then
+                eatGroundFood(false)
+            else
+                AutoEatState.Status = string.format("🟢 OK (Vida: %d%% | Comida: %d%%)", hpPct, hungerPct)
+            end
+        else
+            AutoEatState.Status = "🔴 OFF"
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 3. WATCHDOG: DESATASCAMIENTO AUTOMÁTICO & TRIPLE PIVOT
+-- ==============================================================================
+
+local function areWheelsIntact(car, seat)
+    if not car or not seat then return false end
+    local seatPos = seat.Position
+
+    for _, part in ipairs(car:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local n = part.Name:lower()
+            if n:find("wheel") or n:find("tire") or n:find("rueda") or n:find("llanta") then
+                local distToSeat = (part.Position - seatPos).Magnitude
+                if distToSeat > Config.MaxWheelDisplacement then
+                    return false, string.format("Llanta '%s' salida a %d studs", part.Name, math.floor(distToSeat))
+                end
+            end
+        end
+    end
+
+    return true, "Llantas normales"
+end
+
+local function executeTriplePivot(car, seat)
+    if not car or not seat then return end
+
+    WatchdogState.TotalUnstucks = WatchdogState.TotalUnstucks + 1
+
+    local function zeroVelocity()
+        for _, p in ipairs(car:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.AssemblyLinearVelocity = Vector3.zero
+                p.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+    end
+
+    -- SALTO 1: Despegar del fondo (+4 studs arriba y leve retroceso)
+    local cf1 = car:GetPivot()
+    local look1 = cf1.LookVector
+    local flatLook = Vector3.new(look1.X, 0, look1.Z)
+    if flatLook.Magnitude < 0.1 then flatLook = Vector3.new(0, 0, 1) else flatLook = flatLook.Unit end
+
+    local targetPos1 = cf1.Position + Vector3.new(0, 4.0, 0) - (flatLook * 4.0)
+    car:PivotTo(CFrame.lookAt(targetPos1, targetPos1 + flatLook))
+    zeroVelocity()
+    task.wait(0.1)
+
+    -- SALTO 2: Enderezar chasis en el aire (+4.5 studs arriba y 0° de inclinación)
+    local cf2 = car:GetPivot()
+    local targetPos2 = cf2.Position + Vector3.new(0, 4.5, 0)
+    car:PivotTo(CFrame.lookAt(targetPos2, targetPos2 + flatLook))
+    zeroVelocity()
+    task.wait(0.1)
+
+    -- SALTO 3: Consolidar salida sobre la superficie (+5.0 studs arriba)
+    local cf3 = car:GetPivot()
+    local targetPos3 = cf3.Position + Vector3.new(0, 5.0, 0)
+    car:PivotTo(CFrame.lookAt(targetPos3, targetPos3 + flatLook))
+    zeroVelocity()
+
+    WatchdogState.LastPos = targetPos3
+    WatchdogState.LastMoveTick = tick()
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.3)
+        local isCarActive = (Config.ZigZagEnabled or DayCycleState.IsFleeingToCorner) and not IsInContingency and not DefenseState.IsRetreating
+        if Config.WatchdogEnabled and isCarActive then
+            local car, seat = getCurrentVehicle()
+
+            if car and seat then
+                local currentPos = (car.PrimaryPart and car.PrimaryPart.Position) or seat.Position
+                local movedDist = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(WatchdogState.LastPos.X, 0, WatchdogState.LastPos.Z)).Magnitude
+
+                if movedDist >= Config.MinMoveDistance then
+                    WatchdogState.LastPos = currentPos
+                    WatchdogState.LastMoveTick = tick()
+                    WatchdogState.Status = "Movimiento OK"
+                else
+                    local stuckTime = tick() - WatchdogState.LastMoveTick
+
+                    if stuckTime >= Config.StuckTimeout then
+                        local intact, reason = areWheelsIntact(car, seat)
+
+                        if intact then
+                            WatchdogState.Status = "🚨 Atascado -> Triple Pivot..."
+                            executeTriplePivot(car, seat)
+                            Fluent:Notify({
+                                Title = "🛠️ DESATASCADO AUTOMÁTICO",
+                                Content = "Triple Pivot ejecutado con éxito.",
+                                Duration = 2
+                            })
+                        else
+                            WatchdogState.IgnoredBrokenWheels = WatchdogState.IgnoredBrokenWheels + 1
+                            WatchdogState.Status = "⚠️ Llanta fuera: " .. reason
+                            WatchdogState.LastMoveTick = tick() + 2.0
+                        end
+                    else
+                        WatchdogState.Status = string.format("Inmóvil %.1fs / %.1fs", stuckTime, Config.StuckTimeout)
+                    end
+                end
+            else
+                WatchdogState.LastMoveTick = tick()
+            end
+        else
+            WatchdogState.LastMoveTick = tick()
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 4. BÚSQUEDA DE ESQUINA PERIMETRAL CERCANA (REFUGIO PARA ASALTANTES)
+-- ==============================================================================
+
+local function getNearestPerimeterCorner(pos)
+    local bestCorner = PERIMETER_NODES[2].Pos
+    local shortest = math.huge
+    for _, node in ipairs(PERIMETER_NODES) do
+        if node.Name:sub(1, 2) == "C_" then
+            local d = (Vector3.new(pos.X, 0, pos.Z) - Vector3.new(node.Pos.X, 0, node.Pos.Z)).Magnitude
+            if d < shortest then
+                shortest = d
+                bestCorner = node.Pos
+            end
+        end
+    end
+    return bestCorner
+end
+
+local function applyBrake(duration)
+    duration = duration or 1.0
+    task.spawn(function()
+        local endTime = tick() + duration
+        while tick() < endTime do
+            local carModel, seat = getCurrentVehicle()
+            local primary = carModel and (carModel.PrimaryPart or seat)
+            if primary then
+                primary.AssemblyLinearVelocity = Vector3.new(0, primary.AssemblyLinearVelocity.Y, 0)
+                primary.AssemblyAngularVelocity = Vector3.zero
+            end
+            RunService.Heartbeat:Wait()
+        end
+    end)
+end
+
+-- ==============================================================================
+-- 5. CONTROLADOR DE DÍA / NOCHE & EVASIÓN A ESQUINA EN NOCHE DE ASALTANTES
+-- ==============================================================================
+
+task.spawn(function()
+    while true do
+        task.wait(0.8)
+        local ws = workspace
+        local isNight = ws:GetAttribute("Night")
+        if isNight == nil then
+            isNight = (Lighting.ClockTime >= 18.0 or Lighting.ClockTime <= 6.0)
+        end
+        local isBanditRaid = ws:GetAttribute("BanditRaid") == true
+
+        -- CASO 1: NOCHE DE ASALTANTES (HUIR A LA ESQUINA MÁS CERCANA A LA BASE)
+        if Config.FleeToCornerOnBandits and isBanditRaid then
+            if not DayCycleState.AutoPausedByBandits then
+                DayCycleState.AutoPausedByBandits = true
+                Config.ZigZagEnabled = false
+                pcall(function() ZigZagToggleInstance:SetValue(false) end)
+                TransitState.Active = false
+                CurrentTarget = nil
+                clearHighlight()
+
+                local _, root = getCharacterParts()
+                local myPos = root and root.Position or BaseCenter
+                DayCycleState.TargetCornerPos = getNearestPerimeterCorner(myPos)
+                DayCycleState.IsFleeingToCorner = true
+                DayCycleState.ReachedSafeCorner = false
+
+                Fluent:Notify({
+                    Title = "🤠 NOCHE DE ASALTANTES DETECTADA",
+                    Content = "No se puede atacar. Conduciendo a la esquina perimetral más cercana...",
+                    Duration = 4
+                })
+            end
+
+        -- CASO 2: DÍA (PAUSAR AUTOMÁTICAMENTE Y FRENAR)
+        elseif Config.DayNightAutoCombat and not isNight then
+            DayCycleState.IsFleeingToCorner = false
+            DayCycleState.ReachedSafeCorner = false
+
+            if Config.ZigZagEnabled then
+                Config.ZigZagEnabled = false
+                pcall(function() ZigZagToggleInstance:SetValue(false) end)
+                TransitState.Active = false
+                applyBrake(1.0)
+                DayCycleState.AutoPausedByDay = true
+
+                Fluent:Notify({
+                    Title = "☀️ AMANECIÓ (MODO DÍA)",
+                    Content = "Combate pausado automáticamente durante el día.",
+                    Duration = 3
+                })
+            end
+
+        -- CASO 3: NOCHE NORMAL (SIN ASALTANTES) -> REANUDAR COMBATE AUTOMÁTICAMENTE
+        elseif Config.DayNightAutoCombat and isNight and not isBanditRaid then
+            DayCycleState.IsFleeingToCorner = false
+            DayCycleState.ReachedSafeCorner = false
+
+            if (DayCycleState.AutoPausedByDay or DayCycleState.AutoPausedByBandits) and not Config.ZigZagEnabled then
+                DayCycleState.AutoPausedByDay = false
+                DayCycleState.AutoPausedByBandits = false
+                Config.ZigZagEnabled = true
+                pcall(function() ZigZagToggleInstance:SetValue(true) end)
+
+                Fluent:Notify({
+                    Title = "🌙 CAYÓ LA NOCHE",
+                    Content = "Reanudando ataque y combate automáticamente.",
+                    Duration = 3
+                })
+            end
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 6. RUTEO PERIMETRAL DINÁMICO
+-- ==============================================================================
+
+task.spawn(function()
+    task.wait(1.0)
+    local mapFolder = workspace:FindFirstChild("Map") or workspace:FindFirstChild("Tiles") or workspace
+    for secName, routeData in pairs(SECTOR_ROUTES) do
+        local cPos = routeData.Combat
+        local best, shortest = nil, 90
+
+        for _, obj in ipairs(mapFolder:GetDescendants()) do
+            if obj:IsA("BasePart") or obj:IsA("Model") then
+                local n = obj.Name:lower()
+                if (n:find("straight") or n:find("road") or n:find("pista")) and not n:find("corner") and not n:find("tsection") and not n:find("section") then
+                    local p = obj:IsA("Model") and select(1, obj:GetBoundingBox()).Position or obj.Position
+                    local dist = (p - cPos).Magnitude
+                    if dist < shortest and (p - BaseCenter).Magnitude >= 135 then
+                        shortest = dist
+                        best = obj
+                    end
+                end
+            end
+        end
+        CachedCombatRoads[secName] = best
+    end
+end)
+
+local function getCombatStraightRoad(secName)
+    if CachedCombatRoads[secName] and CachedCombatRoads[secName].Parent then
+        return CachedCombatRoads[secName]
+    end
+    return nil
+end
+
+local function lineCrossesBaseCenter(p1, p2)
+    local d = p2 - p1
+    local dLen = d.Magnitude
+    if dLen == 0 then return false end
+    local dUnit = d.Unit
+
+    local toCenter = BaseCenter - p1
+    local t = math.clamp(toCenter:Dot(dUnit), 0, dLen)
+    local closestPoint = p1 + (dUnit * t)
+
+    return (Vector3.new(closestPoint.X, 0, closestPoint.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude < BASE_FORBIDDEN_RADIUS
+end
+
+local function calculateDynamicRoadPath(currentPos, targetSector)
+    local targetGateIdx = 1
+    for idx, node in ipairs(PERIMETER_NODES) do
+        if node.Sector == targetSector then
+            targetGateIdx = idx
+            break
+        end
+    end
+
+    local closestIdx = 1
+    local minDist = math.huge
+    for idx, node in ipairs(PERIMETER_NODES) do
+        local d = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(node.Pos.X, 0, node.Pos.Z)).Magnitude
+        if lineCrossesBaseCenter(currentPos, node.Pos) then
+            d = d + 500
+        end
+        if d < minDist then
+            minDist = d
+            closestIdx = idx
+        end
+    end
+
     local waypoints = {}
-    local rOuter = maxRadius
-    local rMid = maxRadius * 0.55
+    table.insert(waypoints, PERIMETER_NODES[closestIdx].Pos)
 
-    for angle = 0, 315, 45 do
-        local rad = math.rad(angle)
-        table.insert(waypoints, Vector3.new(center.X + math.cos(rad) * rOuter, 18, center.Z + math.sin(rad) * rOuter))
+    if closestIdx ~= targetGateIdx then
+        local total = #PERIMETER_NODES
+        local fSteps = (targetGateIdx - closestIdx) % total
+        local bSteps = (closestIdx - targetGateIdx) % total
+        local dir = (fSteps <= bSteps) and 1 or -1
+        local cur = closestIdx
+
+        while cur ~= targetGateIdx do
+            cur = cur + dir
+            if cur > total then cur = 1 end
+            if cur < 1 then cur = total end
+            table.insert(waypoints, PERIMETER_NODES[cur].Pos)
+        end
     end
 
-    for angle = 22.5, 337.5, 45 do
-        local rad = math.rad(angle)
-        table.insert(waypoints, Vector3.new(center.X + math.cos(rad) * rMid, 18, center.Z + math.sin(rad) * rMid))
-    end
-
+    table.insert(waypoints, SECTOR_ROUTES[targetSector].Combat)
     return waypoints
 end
 
+local function startDynamicSectorTransition(newSector)
+    local _, root = getCharacterParts()
+    local carPos = root and root.Position or BaseCenter
+
+    local wps = calculateDynamicRoadPath(carPos, newSector)
+    TransitState.Active = true
+    TransitState.Waypoints = wps
+    TransitState.Index = 1
+    TransitState.TargetSector = newSector
+    CurrentTarget = nil
+    clearHighlight()
+
+    Fluent:Notify({
+        Title = "🚗 RUTA PERIMETRAL: " .. newSector,
+        Content = string.format("Bordeando la base hacia la entrada del %s...", newSector),
+        Duration = 3
+    })
+end
+
 -- ==============================================================================
--- 5. ACCIÓN: VOLVER A LA BASE Y APAGAR TODO
+-- 7. RADAR DIRECCIONAL & ZOMBIES
 -- ==============================================================================
 
-local function executeReturnToBaseAndShutdown()
-    if not State.Running then
-        State.Running = true
-        secureFlightStart()
-        State.NoclipEnabled = true
+local function parseSectorFromAttribute(val)
+    local vec = nil
+    if typeof(val) == "Vector3" then
+        vec = val
+    elseif type(val) == "string" then
+        local x, y, z = val:match("([^,]+)%s*,%s*([^,]+)%s*,%s*([^,]+)")
+        if x and y and z then
+            vec = Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+        end
     end
 
-    State.ReturningToBase = true
-    State.CurrentStatus = "🚀 Volviendo a la Base..."
+    if not vec then return "DESCONOCIDO" end
 
-    flyMoveTo3D(BaseCenter + Vector3.new(0, 4.0, 0), State.FlySpeed, 4.0)
-
-    -- APAGAR TOTALMENTE TODAS LAS MODIFICACIONES AL LLEGAR
-    State.Running = false
-    State.Paused = false
-    State.NoclipEnabled = false
-    State.ReturningToBase = false
-
-    removePhysicsHelpers()
-    restoreCollisions()
-
-    State.CurrentStatus = "🟢 En Base: Todas las modificaciones apagadas."
-end
-
--- ==============================================================================
--- 6. INTERFAZ NATIVA (ROBUSTA, SIN FLUENT, 0% ERRORES DE CORE_GUI)
--- ==============================================================================
-
-local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "ChestRoamerCleanGui"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.Parent = GuiParent
-
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 440, 0, 360)
-MainFrame.Position = UDim2.new(0.5, -220, 0.5, -180)
-MainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
-
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 10)
-MainCorner.Parent = MainFrame
-
-local TitleBar = Instance.new("TextLabel")
-TitleBar.Size = UDim2.new(1, 0, 0, 36)
-TitleBar.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-TitleBar.Text = "  📦 CHEST & LOOT ROAMER V4 (NATIVO)"
-TitleBar.TextColor3 = Color3.fromRGB(255, 170, 0)
-TitleBar.TextSize = 11
-TitleBar.Font = Enum.Font.GothamBold
-TitleBar.TextXAlignment = Enum.TextXAlignment.Left
-TitleBar.Parent = MainFrame
-
-local TitleCorner = Instance.new("UICorner")
-TitleCorner.CornerRadius = UDim.new(0, 10)
-TitleCorner.Parent = TitleBar
-
-local StatusBox = Instance.new("TextLabel")
-StatusBox.Size = UDim2.new(1, -20, 0, 80)
-StatusBox.Position = UDim2.new(0, 10, 0, 44)
-StatusBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-StatusBox.TextColor3 = Color3.fromRGB(0, 255, 170)
-StatusBox.TextSize = 10
-StatusBox.Font = Enum.Font.Code
-StatusBox.TextXAlignment = Enum.TextXAlignment.Left
-StatusBox.TextYAlignment = Enum.TextYAlignment.Top
-StatusBox.Text = "Iniciando sistema..."
-StatusBox.Parent = MainFrame
-
-local StatusCorner = Instance.new("UICorner")
-StatusCorner.CornerRadius = UDim.new(0, 6)
-StatusCorner.Parent = StatusBox
-
-local function createBtn(text, color, pos, size, callback)
-    local btn = Instance.new("TextButton")
-    btn.Size = size
-    btn.Position = pos
-    btn.BackgroundColor3 = color
-    btn.Text = text
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.TextSize = 10
-    btn.Font = Enum.Font.GothamBold
-    btn.Parent = MainFrame
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 6)
-    corner.Parent = btn
-
-    btn.MouseButton1Click:Connect(callback)
-    return btn
-end
-
--- Botón 1: Play / Iniciar
-createBtn("▶ INICIAR EXPEDICIÓN", Color3.fromRGB(30, 150, 70), UDim2.new(0, 10, 0, 134), UDim2.new(0.48, -5, 0, 38), function()
-    if State.Running then return end
-    State.Running = true
-    State.Paused = false
-    State.NoclipEnabled = false
-    State.ReturningToBase = false
-    State.PatrolStep = 1
-    table.clear(VisitedChests)
-
-    State.CurrentStatus = "Iniciando Fly seguro..."
-    secureFlightStart()
-
-    task.spawn(function()
-        for s = 3, 1, -1 do
-            if not State.Running then break end
-            State.CurrentStatus = string.format("Fly activo. Noclip en %ds...", s)
-            task.wait(1)
-        end
-        if State.Running then
-            State.NoclipEnabled = true
-            State.CurrentStatus = State.FuelOnlyMode and "Modo Fuel Base activo..." or "Explorando mapa..."
-        end
-    end)
-end)
-
--- Botón 2: Volver a Base y Apagar
-createBtn("🏠 BASE Y APAGAR", Color3.fromRGB(180, 40, 50), UDim2.new(0.52, 0, 0, 134), UDim2.new(0.48, -10, 0, 38), executeReturnToBaseAndShutdown)
-
--- Botón 3: Toggle Fuel Solo en Base
-local FuelBtn
-FuelBtn = createBtn("⛽ SOLO FUEL BASE: OFF", Color3.fromRGB(45, 50, 65), UDim2.new(0, 10, 0, 180), UDim2.new(1, -20, 0, 34), function()
-    State.FuelOnlyMode = not State.FuelOnlyMode
-    if State.FuelOnlyMode then
-        FuelBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 20)
-        FuelBtn.Text = string.format("⛽ SOLO FUEL BASE: ON (%d STUDS)", State.FuelScanRadius)
+    if math.abs(vec.Z) > math.abs(vec.X) then
+        return (vec.Z > 0) and "SUR" or "NORTE"
     else
-        FuelBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 65)
-        FuelBtn.Text = "⛽ SOLO FUEL BASE: OFF"
+        return (vec.X > 0) and "ESTE" or "OESTE"
+    end
+end
+
+workspace:GetAttributeChangedSignal("IncomingPosition"):Connect(function()
+    local rawVal = workspace:GetAttribute("IncomingPosition")
+    if rawVal then
+        local sec = parseSectorFromAttribute(rawVal)
+        if sec ~= "DESCONOCIDO" and sec ~= CurrentActiveSector then
+            CurrentActiveSector = sec
+            if Config.AutoRouteToWave and Config.ZigZagEnabled and not DayCycleState.AutoPausedByBandits then
+                startDynamicSectorTransition(sec)
+            end
+        end
     end
 end)
 
--- Botón 4: Pausa
-createBtn("⏸ PAUSA / REANUDAR", Color3.fromRGB(60, 65, 80), UDim2.new(0, 10, 0, 222), UDim2.new(0.48, -5, 0, 32), function()
-    if State.Running then
-        State.Paused = not State.Paused
-        State.CurrentStatus = State.Paused and "Pausado manualmente" or "Reanudado"
+local function isValidZombie(entity)
+    if not entity or not entity:IsA("Model") or entity == lp.Character or Players:GetPlayerFromCharacter(entity) then
+        return false
+    end
+    local name = entity.Name:lower()
+    if name:find("dropped") or name:find("bag") or name:find("loot") or name:find("item") 
+       or name:find("crate") or name:find("debris") or name:find("corpse") or name:find("ragdoll") 
+       or name:find("car") or name:find("fence") or name:find("door") then
+        return false
+    end
+    local hum = entity:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    local root = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
+    return root ~= nil, root
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.15)
+        if Config.ZigZagEnabled and Config.AttackMode == "Depredador" and CurrentTarget and not IsInContingency and not TransitState.Active and not DayCycleState.AutoPausedByBandits then
+            local tPos = CurrentTarget:IsA("BasePart") and CurrentTarget.Position or select(1, CurrentTarget:GetBoundingBox()).Position
+            if tPos then
+                local radialVec = Vector3.new(tPos.X - BaseCenter.X, 0, tPos.Z - BaseCenter.Z)
+                local roadLengthDir = radialVec.Magnitude > 0 and radialVec.Unit or Vector3.new(0, 0, 1)
+                local roadWidthDir = Vector3.new(-roadLengthDir.Z, 0, roadLengthDir.X)
+
+                local charFolder = workspace:FindFirstChild("Characters") or workspace
+                local lateralSum, count = 0, 0
+
+                for _, entity in ipairs(charFolder:GetChildren()) do
+                    local valid, eRoot = isValidZombie(entity)
+                    if valid then
+                        local offset = eRoot.Position - tPos
+                        local distAlong = math.abs(offset:Dot(roadLengthDir))
+                        local distLateral = offset:Dot(roadWidthDir)
+
+                        if distAlong <= 55 and math.abs(distLateral) <= Config.LateralDist + 10 then
+                            lateralSum = lateralSum + distLateral
+                            count = count + 1
+                        end
+                    end
+                end
+                CachedHordeClusterOffset = count > 0 and math.clamp(lateralSum / count, -Config.LateralDist * 0.8, Config.LateralDist * 0.8) or 0
+            end
+        else
+            CachedHordeClusterOffset = 0
+        end
     end
 end)
 
--- Botón 5: Reiniciar Lista
-createBtn("🔄 REINICIAR RUTA", Color3.fromRGB(60, 65, 80), UDim2.new(0.52, 0, 0, 222), UDim2.new(0.48, -10, 0, 32), function()
-    table.clear(VisitedChests)
-    table.clear(PassedItemsCooldown)
-    State.CurrentStatus = "Ruta reiniciada."
-end)
+-- ==============================================================================
+-- 8. RESCATE PEATONAL CON SALTO DOSIFICADO (MÁXIMO 2 SALTOS CADA 2.5s)
+-- ==============================================================================
 
--- Botón 6: Configurar Radio de Fuel (+/- 100)
-createBtn("➖ RADIO FUEL (-100)", Color3.fromRGB(35, 40, 50), UDim2.new(0, 10, 0, 262), UDim2.new(0.48, -5, 0, 28), function()
-    State.FuelScanRadius = math.max(100, State.FuelScanRadius - 100)
-    if State.FuelOnlyMode then
-        FuelBtn.Text = string.format("⛽ SOLO FUEL BASE: ON (%d STUDS)", State.FuelScanRadius)
+local function locateTargetCar()
+    local _, root = getCharacterParts()
+    if not root then return nil, nil end
+
+    if LastDrivenVehicle and LastDrivenVehicle.Parent then
+        local seat = LastDrivenVehicle:FindFirstChild("DriveSeat") or LastDrivenVehicle:FindFirstChildWhichIsA("VehicleSeat")
+        if seat then return LastDrivenVehicle, seat end
+    end
+
+    local myPos = root.Position
+    local bestSeat, bestModel = nil, nil
+    local shortestDist = Config.MaxCarSearchDist
+
+    local container = workspace:FindFirstChild("Structures") or workspace
+    for _, model in ipairs(container:GetChildren()) do
+        if model:IsA("Model") then
+            local seat = model:FindFirstChild("DriveSeat") or model:FindFirstChildWhichIsA("VehicleSeat")
+            if seat then
+                local dist = (seat.Position - myPos).Magnitude
+                if dist < shortestDist then
+                    shortestDist = dist
+                    bestSeat = seat
+                    bestModel = model
+                end
+            end
+        end
+    end
+    return bestModel, bestSeat
+end
+
+local function executeGroundRescue(onBoardCallback)
+    if IsInContingency then return end
+    local char, root, hum = getCharacterParts()
+    if not root or not hum or hum.Health <= 0 then return end
+
+    if hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then
+        if onBoardCallback then onBoardCallback() end
+        return
+    end
+
+    local carModel, seat = locateTargetCar()
+    if not carModel or not seat then return end
+
+    IsInContingency = true
+    LastDrivenVehicle = carModel
+
+    local runTimeout = tick() + 9.0
+
+    -- CONTROL DE SALTO: 2 SALTOS CADA 2.5 SEGUNDOS
+    local jumpCycleWindowStart = tick()
+    local jumpsInCurrentCycle = 0
+    local lastIndividualJump = 0
+
+    while IsInContingency and tick() < runTimeout do
+        RunService.Heartbeat:Wait()
+        if not hum or hum.Health <= 0 then break end
+        if hum.SeatPart and hum.SeatPart:IsA("VehicleSeat") then break end
+
+        local hoodPos = (seat.CFrame * CFrame.new(0, 0, -6.5)).Position
+        local diff = hoodPos - root.Position
+        local horiz = Vector3.new(diff.X, 0, diff.Z)
+        local dist = horiz.Magnitude
+
+        if dist <= 6.5 then
+            if carModel:GetAttribute("Dead") == true then
+                local p = carModel:FindFirstChildWhichIsA("ProximityPrompt", true)
+                if p and fireproximityprompt then
+                    pcall(function() fireproximityprompt(p) end)
+                    pcall(function() fireproximityprompt(p, 0) end)
+                end
+                task.wait(0.2)
+            end
+
+            local sitP = seat:FindFirstChild("SitPrompt") or seat:FindFirstChildOfClass("ProximityPrompt")
+            if sitP and fireproximityprompt then
+                pcall(function() fireproximityprompt(sitP) end)
+                pcall(function() fireproximityprompt(sitP, 0) end)
+            end
+            hum:ChangeState(Enum.HumanoidStateType.Seated)
+            pcall(function() seat:Sit(hum) end)
+            task.wait(0.2)
+            break
+        end
+
+        local avoidVector = Vector3.zero
+        local charFolder = workspace:FindFirstChild("Characters") or workspace
+
+        for _, ent in ipairs(charFolder:GetChildren()) do
+            if ent:IsA("Model") and ent ~= char and not Players:GetPlayerFromCharacter(ent) then
+                local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+                if eRoot then
+                    local offset = root.Position - eRoot.Position
+                    local eDist = offset.Magnitude
+                    if eDist <= Config.RescueZombieScanDist and eDist <= 14.0 and eDist > 0.5 then
+                        avoidVector = avoidVector + (Vector3.new(offset.X, 0, offset.Z).Unit * (15.0 - eDist) * 1.8)
+                    end
+                end
+            end
+        end
+
+        local runDir = (horiz.Unit + avoidVector).Unit
+        root.AssemblyLinearVelocity = Vector3.new(runDir.X * Config.SprintSpeed, root.AssemblyLinearVelocity.Y, runDir.Z * Config.SprintSpeed)
+        hum:MoveTo(root.Position + runDir * 10)
+
+        -- REGLA: 2 saltos cada 2.5s
+        local now = tick()
+        if (now - jumpCycleWindowStart) >= 2.5 then
+            jumpCycleWindowStart = now
+            jumpsInCurrentCycle = 0
+        end
+
+        if jumpsInCurrentCycle < 2 and (now - lastIndividualJump) >= 0.45 then
+            hum.Jump = true
+            lastIndividualJump = now
+            jumpsInCurrentCycle = jumpsInCurrentCycle + 1
+        end
+    end
+
+    IsInContingency = false
+    if onBoardCallback then onBoardCallback() end
+end
+
+-- ==============================================================================
+-- 9. GUARDIÁN DE SALUD DEL VEHÍCULO & EVASIÓN DE EXPLOSIVOS
+-- ==============================================================================
+
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+        local truck = getCurrentVehicle()
+
+        if truck then
+            local hp, maxHp, ratio, src = getTruckHealth(truck)
+            DefenseState.CurrentHP = hp
+            DefenseState.MaxHP = maxHp
+            DefenseState.HPRatio = ratio
+            DefenseState.Source = src
+
+            if Config.RetreatEnabled then
+                if not DefenseState.IsRetreating and ratio <= Config.LowHealthThreshold then
+                    DefenseState.IsRetreating = true
+                    Fluent:Notify({
+                        Title = "🛡️ RETIRADA TÁCTICA",
+                        Content = string.format("Vida al %.0f%%. Retrocediendo 30 studs a esquivar.", ratio * 100),
+                        Duration = 2.5
+                    })
+                elseif DefenseState.IsRetreating and ratio >= Config.FullHealthThreshold then
+                    DefenseState.IsRetreating = false
+                    Fluent:Notify({
+                        Title = "⚔️ SALUD RECUPERADA",
+                        Content = "Vida al 95%. Reanudando combate.",
+                        Duration = 2.5
+                    })
+                end
+            else
+                DefenseState.IsRetreating = false
+            end
+        else
+            DefenseState.IsRetreating = false
+
+            local shouldRescue = false
+            local _, _, hum = getCharacterParts()
+
+            if hum and hum.Health > 0 and (not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat")) then
+                if (Config.ZigZagEnabled or DayCycleState.IsFleeingToCorner) and Config.CombatAutoRescue then
+                    shouldRescue = true
+                elseif (not Config.ZigZagEnabled) and Config.ManualDriveAutoRescue then
+                    shouldRescue = true
+                end
+            end
+
+            if shouldRescue and not IsInContingency then
+                task.spawn(function()
+                    executeGroundRescue()
+                end)
+            end
+        end
     end
 end)
 
-createBtn("➕ RADIO FUEL (+100)", Color3.fromRGB(35, 40, 50), UDim2.new(0.52, 0, 0, 262), UDim2.new(0.48, -10, 0, 28), function()
-    State.FuelScanRadius = math.min(1500, State.FuelScanRadius + 100)
-    if State.FuelOnlyMode then
-        FuelBtn.Text = string.format("⛽ SOLO FUEL BASE: ON (%d STUDS)", State.FuelScanRadius)
+task.spawn(function()
+    while true do
+        task.wait(0.4)
+        if Config.EvadeBloaters and not IsInContingency then
+            local _, root = getCharacterParts()
+            local myPos = root and root.Position or BaseCenter
+            local list = {}
+            local folder = workspace:FindFirstChild("Characters")
+
+            if folder then
+                for _, ent in ipairs(folder:GetChildren()) do
+                    if ent:IsA("Model") and ent ~= lp.Character then
+                        local n = ent.Name:lower()
+                        if n:find("bloat") or n:find("boom") then
+                            local r = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+                            if r and (r.Position - myPos).Magnitude <= 75 then
+                                local h = ent:FindFirstChildOfClass("Humanoid")
+                                if (h and h.Health <= 50) or ent:GetAttribute("Dead") == true then
+                                    table.insert(list, r.Position)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            CachedBloaterDangers = list
+        else
+            table.clear(CachedBloaterDangers)
+        end
     end
 end)
 
--- Botón Flotante para Delta
-local FloatBtn = Instance.new("TextButton")
+-- ==============================================================================
+-- 10. INTERFAZ FLUENT
+-- ==============================================================================
+
+local Window = Fluent:CreateWindow({
+    Title = "ZOMBIE HUB | MASTER V17.5",
+    SubTitle = "Watchdog + Esquinas de Asaltantes",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(600, 530),
+    Acrylic = false,
+    Theme = "Darker",
+    MinimizeKey = Enum.KeyCode.RightControl
+})
+
+local Tabs = {
+    Combat  = Window:AddTab({ Title = "Combate", Icon = "crosshair" }),
+    Defense = Window:AddTab({ Title = "Defensa & Watchdog", Icon = "shield" }),
+    AutoEat = Window:AddTab({ Title = "Auto-Comer", Icon = "utensils" }),
+    Rescue  = Window:AddTab({ Title = "Auto-Rescate", Icon = "user-check" }),
+    Horde   = Window:AddTab({ Title = "Radar", Icon = "radar" })
+}
+
+-- PESTAÑA COMBATE
+Tabs.Combat:AddSection("Controles de Embestida & Ciclos")
+
+ZigZagToggleInstance = Tabs.Combat:AddToggle("ZigZagToggle", {
+    Title = "Activar Movimiento Automático",
+    Default = false,
+    Callback = function(v) Config.ZigZagEnabled = v end
+})
+
+Tabs.Combat:AddToggle("DayNightAutoToggle", {
+    Title = "☀️ Pausa de Día / 🌙 Ataque de Noche",
+    Description = "Pausa el combate al amanecer y lo reanuda automáticamente de noche",
+    Default = true,
+    Callback = function(v) Config.DayNightAutoCombat = v end
+})
+
+Tabs.Combat:AddToggle("BanditNightToggle", {
+    Title = "🤠 Noche de Asaltantes: Huir a Esquina",
+    Description = "No ataca y conduce a la esquina de la base más cercana a esperar",
+    Default = true,
+    Callback = function(v) Config.FleeToCornerOnBandits = v end
+})
+
+Tabs.Combat:AddDropdown("ModeDropdown", {
+    Title = "Modo de Ataque / Patrón",
+    Values = { "Depredador", "Torbellino", "Zigzag Clásico", "Rombo", "Círculo", "Cuadrado", "Zigzag Caótico" },
+    Default = "Depredador",
+    Callback = function(v) Config.AttackMode = v end
+})
+
+Tabs.Combat:AddSlider("SpeedSlider", {
+    Title = "Velocidad de Embestida",
+    Default = 150,
+    Min = 20,
+    Max = 220,
+    Rounding = 0,
+    Callback = function(v) Config.MoveSpeed = v end
+})
+
+Tabs.Combat:AddSlider("DistSlider", {
+    Title = "Amplitud Lateral (Studs)",
+    Default = 25,
+    Min = 2,
+    Max = 70,
+    Rounding = 0,
+    Callback = function(v) Config.LateralDist = v end
+})
+
+Tabs.Combat:AddSlider("DepredadorFarSlider", {
+    Title = "Depredador: Rebase Hacia Horda (Studs)",
+    Default = 25,
+    Min = 0,
+    Max = 60,
+    Rounding = 0,
+    Callback = function(v) Config.DepredadorFarOvershoot = v end
+})
+
+Tabs.Combat:AddSlider("DepredadorBaseSlider", {
+    Title = "Depredador: Rebase Hacia Base (Studs)",
+    Default = 5,
+    Min = 0,
+    Max = 40,
+    Rounding = 0,
+    Callback = function(v) Config.DepredadorBaseOvershoot = v end
+})
+
+Tabs.Combat:AddToggle("AutoRouteToggle", {
+    Title = "🚗 Auto-Ruta Dinámica por Pistas",
+    Default = true,
+    Callback = function(v) Config.AutoRouteToWave = v end
+})
+
+-- PESTAÑA DEFENSA & WATCHDOG
+Tabs.Defense:AddSection("Desatascamiento Automático (Triple Pivot)")
+
+Tabs.Defense:AddToggle("WatchdogToggle", {
+    Title = "🛠️ Activar Watchdog de Desatasco",
+    Description = "Detecta si el auto está atascado y ejecuta el Triple Pivot automáticamente",
+    Default = true,
+    Callback = function(v) Config.WatchdogEnabled = v end
+})
+
+Tabs.Defense:AddSlider("StuckTimeoutSlider", {
+    Title = "Tiempo de Inmovilidad para Desatascar (s)",
+    Default = 3.0,
+    Min = 1.5,
+    Max = 6.0,
+    Rounding = 1,
+    Callback = function(v) Config.StuckTimeout = v end
+})
+
+Tabs.Defense:AddButton({
+    Title = "⚡ Forzar Triple Pivot Manual Ahora",
+    Callback = function()
+        local car, seat = getCurrentVehicle()
+        if car and seat then
+            executeTriplePivot(car, seat)
+        end
+    end
+})
+
+Tabs.Defense:AddSection("Retirada Táctica por Daño")
+
+Tabs.Defense:AddToggle("RetreatToggle", {
+    Title = "🛡️ Activar Retirada y Esquive por Baja Vida",
+    Default = true,
+    Callback = function(v) Config.RetreatEnabled = v end
+})
+
+local DefenseStatusParagraph = Tabs.Defense:AddParagraph({
+    Title = "Estado del Vehículo & Watchdog",
+    Content = "Monitoreando salud..."
+})
+
+Tabs.Defense:AddSlider("LowHPSlider", {
+    Title = "Umbral de Retirada (% Vida)",
+    Default = 30,
+    Min = 10,
+    Max = 50,
+    Rounding = 0,
+    Callback = function(v) Config.LowHealthThreshold = v / 100 end
+})
+
+Tabs.Defense:AddSlider("FullHPSlider", {
+    Title = "Umbral de Reanudación (% Vida)",
+    Default = 95,
+    Min = 50,
+    Max = 100,
+    Rounding = 0,
+    Callback = function(v) Config.FullHealthThreshold = v / 100 end
+})
+
+Tabs.Defense:AddSlider("RetreatDistSlider", {
+    Title = "Distancia de Retroceso hacia Base (Studs)",
+    Default = 30,
+    Min = 15,
+    Max = 65,
+    Rounding = 0,
+    Callback = function(v) Config.RetreatDistance = v end
+})
+
+-- PESTAÑA AUTO-EAT
+Tabs.AutoEat:AddSection("Consumo Inteligente de Zanahorias")
+
+local AutoEatToggleInstance = Tabs.AutoEat:AddToggle("AutoEatToggle", {
+    Title = "🥕 Activar Auto-Comer en Suelo",
+    Default = true,
+    Callback = function(v) Config.AutoEatEnabled = v end
+})
+
+local EatStatusParagraph = Tabs.AutoEat:AddParagraph({
+    Title = "Estado del Auto-Eat",
+    Content = "Monitoreando comida y salud..."
+})
+
+Tabs.AutoEat:AddSlider("EatHpSlider", {
+    Title = "Vida Baja (%): Comer SOLO DORADAS ✨",
+    Default = 60,
+    Min = 10,
+    Max = 95,
+    Rounding = 0,
+    Callback = function(v) Config.EatHealthThreshold = v end
+})
+
+Tabs.AutoEat:AddSlider("EatHungerSlider", {
+    Title = "Hambre Baja (%): Comer CUALQUIERA 🥕",
+    Default = 50,
+    Min = 10,
+    Max = 90,
+    Rounding = 0,
+    Callback = function(v) Config.EatHungerThreshold = v end
+})
+
+Tabs.AutoEat:AddSlider("EatRadiusSlider", {
+    Title = "Radio de Absorción al Conducir (Studs)",
+    Default = 24,
+    Min = 10,
+    Max = 45,
+    Rounding = 0,
+    Callback = function(v) Config.EatScanRadius = v end
+})
+
+Tabs.AutoEat:AddButton({
+    Title = "✨ Forzar Comer Zanahoria Dorada",
+    Callback = function() eatGroundFood(true) end
+})
+
+Tabs.AutoEat:AddButton({
+    Title = "🥕 Forzar Comer Cualquier Zanahoria",
+    Callback = function() eatGroundFood(false) end
+})
+
+-- PESTAÑA RESCATES
+Tabs.Rescue:AddSection("Auto-Rescate Terrestre (2 Saltos cada 2.5s)")
+
+Tabs.Rescue:AddToggle("ManualRescueToggle", {
+    Title = "🚗 Auto-Rescate en Conducción MANUAL",
+    Description = "Te rescata si manejas tú mismo y te expulsan",
+    Default = false,
+    Callback = function(v) Config.ManualDriveAutoRescue = v end
+})
+
+Tabs.Rescue:AddToggle("CombatRescueToggle", {
+    Title = "🤖 Auto-Rescate en Modo Combate",
+    Default = true,
+    Callback = function(v) Config.CombatAutoRescue = v end
+})
+
+Tabs.Rescue:AddSlider("SprintSpeedSlider", {
+    Title = "Velocidad de Carrera al Auto",
+    Default = 34,
+    Min = 20,
+    Max = 55,
+    Rounding = 0,
+    Callback = function(v) Config.SprintSpeed = v end
+})
+
+Tabs.Rescue:AddButton({
+    Title = "🏃 Forzar Rescate Inmediato (Tecla 'V')",
+    Callback = function() executeGroundRescue() end
+})
+
+-- PESTAÑA RADAR
+local HordeStatusParagraph = Tabs.Horde:AddParagraph({
+    Title = "Frente Dominante",
+    Content = "Escaneando..."
+})
+
+-- ==============================================================================
+-- 11. WIDGETS FLOTANTES
+-- ==============================================================================
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ZombieHubMasterFloatV175"
+ScreenGui.ResetOnSpawn = false
+if gethui then ScreenGui.Parent = gethui() else ScreenGui.Parent = lp:WaitForChild("PlayerGui") end
+
+local FloatBtn = Instance.new("ImageButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
-FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(220, 140, 20)
-FloatBtn.Text = "📦\nROAM"
-FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-FloatBtn.TextSize = 10
-FloatBtn.Font = Enum.Font.GothamBold
+FloatBtn.Position = UDim2.new(0.04, 0, 0.72, 0)
+FloatBtn.BackgroundColor3 = Color3.fromRGB(180, 25, 35)
+FloatBtn.Image = "rbxassetid://10723415903"
 FloatBtn.Active = true
 FloatBtn.Draggable = true
 FloatBtn.Parent = ScreenGui
 
-local FloatCorner = Instance.new("UICorner")
-FloatCorner.CornerRadius = UDim.new(1, 0)
-FloatCorner.Parent = FloatBtn
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(1, 0)
+UICorner.Parent = FloatBtn
 
+local isWindowOpen = true
 FloatBtn.MouseButton1Click:Connect(function()
-    MainFrame.Visible = not MainFrame.Visible
+    isWindowOpen = not isWindowOpen
+    Window.Root.Visible = isWindowOpen
 end)
 
--- Botón Flotante Rápido: Volver a Base y Apagar
-local QuickBaseBtn = Instance.new("TextButton")
-QuickBaseBtn.Size = UDim2.new(0, 48, 0, 48)
-QuickBaseBtn.Position = UDim2.new(0.04, 0, 0.49, 0)
-QuickBaseBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 70)
-QuickBaseBtn.Text = "🏠\nBASE"
-QuickBaseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-QuickBaseBtn.TextSize = 10
-QuickBaseBtn.Font = Enum.Font.GothamBold
-QuickBaseBtn.Active = true
-QuickBaseBtn.Draggable = true
-QuickBaseBtn.Parent = ScreenGui
+local AutoPilotBtn = Instance.new("TextButton")
+AutoPilotBtn.Size = UDim2.new(0, 48, 0, 48)
+AutoPilotBtn.Position = UDim2.new(0.04, 0, 0.64, 0)
+AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
+AutoPilotBtn.Text = "⚡\nOFF"
+AutoPilotBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoPilotBtn.TextSize = 11
+AutoPilotBtn.Font = Enum.Font.GothamBold
+AutoPilotBtn.Active = true
+AutoPilotBtn.Draggable = true
+AutoPilotBtn.Parent = ScreenGui
 
-local QuickBaseCorner = Instance.new("UICorner")
-QuickBaseCorner.CornerRadius = UDim.new(1, 0)
-QuickBaseCorner.Parent = QuickBaseBtn
+local AutoPilotCorner = Instance.new("UICorner")
+AutoPilotCorner.CornerRadius = UDim.new(1, 0)
+AutoPilotCorner.Parent = AutoPilotBtn
 
-QuickBaseBtn.MouseButton1Click:Connect(executeReturnToBaseAndShutdown)
+local function toggleAutoPilot()
+    if Config.ZigZagEnabled then
+        Config.ZigZagEnabled = false
+        pcall(function() ZigZagToggleInstance:SetValue(false) end)
+        TransitState.Active = false
+        applyBrake(1.0)
 
--- ==============================================================================
--- 7. BUCLE PRINCIPAL DE NAVEGACIÓN
--- ==============================================================================
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
+        AutoPilotBtn.Text = "⚡\nOFF"
 
-local function getNearestUnvisitedChestNearby(currentPos, maxDist)
-    local best = nil
-    local shortest = maxDist
-
-    for inst, data in pairs(KnownChests) do
-        if inst and inst.Parent and not VisitedChests[inst] then
-            if isChestModel(inst) then
-                local part = data.Part
-                if part and part.Parent then
-                    local d = (part.Position - currentPos).Magnitude
-                    if d <= shortest then
-                        shortest = d
-                        best = {
-                            Instance = inst,
-                            Part = part,
-                            Pos = part.Position,
-                            Name = data.Name,
-                            Dist = d
-                        }
-                    end
-                else
-                    KnownChests[inst] = nil
-                end
-            else
-                VisitedChests[inst] = true
-            end
+        Fluent:Notify({
+            Title = "⏹ AUTO-PILOTO OFF",
+            Content = "Auto-movimiento apagado y frenado.",
+            Duration = 2
+        })
+    else
+        local isBanditRaid = workspace:GetAttribute("BanditRaid") == true
+        if Config.FleeToCornerOnBandits and isBanditRaid then
+            Fluent:Notify({
+                Title = "🤠 NOCHE DE ASALTANTES",
+                Content = "No se puede iniciar el ataque en noche de asaltantes.",
+                Duration = 3
+            })
+            return
         end
-    end
 
-    return best
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 70)
+        AutoPilotBtn.Text = "⚡\nON"
+
+        executeGroundRescue(function()
+            Config.ZigZagEnabled = true
+            pcall(function() ZigZagToggleInstance:SetValue(true) end)
+            startDynamicSectorTransition(CurrentActiveSector)
+        end)
+    end
 end
 
+AutoPilotBtn.MouseButton1Click:Connect(toggleAutoPilot)
+Tabs.Combat:AddButton({ Title = "⚡ TOGGLE AUTO-PILOTO (ON / OFF)", Callback = toggleAutoPilot })
+
+-- Teclado
+local function getCompleteObject(target)
+    if not target then return nil end
+    local current = target
+    while current and current.Parent and current.Parent ~= workspace do
+        if current:IsA("Model") and not current:FindFirstChildOfClass("Humanoid") then
+            return current
+        end
+        current = current.Parent
+    end
+    return target
+end
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+
+    if input.KeyCode == Enum.KeyCode.T then
+        local raw = mouse.Target
+        if raw then
+            local chosen = getCompleteObject(raw)
+            if chosen then
+                CurrentTarget = chosen
+                applyHighlight(chosen)
+                Config.ZigZagEnabled = true
+                pcall(function() ZigZagToggleInstance:SetValue(true) end)
+                AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 70)
+                AutoPilotBtn.Text = "⚡\nON"
+            end
+        end
+    end
+
+    if input.KeyCode == Enum.KeyCode.Nine or input.KeyCode == Enum.KeyCode.KeypadNine then
+        Config.ZigZagEnabled = false
+        pcall(function() ZigZagToggleInstance:SetValue(false) end)
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
+        AutoPilotBtn.Text = "⚡\nOFF"
+        applyBrake(1.0)
+    end
+
+    if input.KeyCode == Enum.KeyCode.Zero or input.KeyCode == Enum.KeyCode.KeypadZero then
+        CurrentTarget = nil
+        clearHighlight()
+        Config.ZigZagEnabled = false
+        pcall(function() ZigZagToggleInstance:SetValue(false) end)
+        AutoPilotBtn.BackgroundColor3 = Color3.fromRGB(160, 25, 35)
+        AutoPilotBtn.Text = "⚡\nOFF"
+        applyBrake(1.0)
+    end
+
+    if input.KeyCode == Enum.KeyCode.V then
+        executeGroundRescue()
+    end
+end)
+
+-- Monitor de textos en tiempo real
 task.spawn(function()
     while true do
-        task.wait(0.3)
+        task.wait(0.5)
+        local isNight = workspace:GetAttribute("Night")
+        if isNight == nil then
+            isNight = (Lighting.ClockTime >= 18.0 or Lighting.ClockTime <= 6.0)
+        end
+        local isBanditRaid = workspace:GetAttribute("BanditRaid") == true
+        local dayText = isBanditRaid and "🤠 ASALTANTES (EN ESQUINA)" or (isNight and "🌙 NOCHE (COMBATE)" or "☀️ DÍA (PAUSA)")
 
-        if State.Running and not State.Paused and not State.ReturningToBase then
-            if not State.NoclipEnabled then
-                task.wait(0.3)
-                continue
-            end
+        DefenseStatusParagraph:SetDesc(string.format(
+            "Vida: %.0f/%.0f (%.0f%%) [%s]\nWatchdog: %s | Desatascos: %d\nFase: %s\nModo: %s",
+            DefenseState.CurrentHP, DefenseState.MaxHP, DefenseState.HPRatio * 100, DefenseState.Source,
+            WatchdogState.Status, WatchdogState.TotalUnstucks,
+            dayText,
+            DayCycleState.IsFleeingToCorner and "🏃 Refugiándose en Esquina" or (DefenseState.IsRetreating and "🛡️ Retirada (-30 studs)" or (TransitState.Active and "🚗 Enrutando Pistas" or "⚔️ " .. Config.AttackMode))
+        ))
 
-            local root = getRootPart()
-            local myPos = root and root.Position or BaseCenter
+        HordeStatusParagraph:SetDesc(string.format(
+            "Frente Activo: %s\nIncomingPosition Raw: %s\nZombies Restantes: %d",
+            CurrentActiveSector,
+            tostring(workspace:GetAttribute("IncomingPosition") or "N/A"),
+            workspace:GetAttribute("RemainingMobs") or 0
+        ))
 
-            -- MODO FUEL
-            if State.FuelOnlyMode then
-                local fuelTarget = getNearestBaseFuelCan(myPos)
-                if fuelTarget then
-                    State.CurrentStatus = string.format("⛽ Yendo a galón (%d studs)...", math.floor(fuelTarget.Dist))
-                    flyMoveTo3D(fuelTarget.Pos, State.FlySpeed, 2.8)
+        local pHP, pHunger = getPlayerStats()
+        EatStatusParagraph:SetDesc(string.format(
+            "Tu Vida: %d%% | Hambre: %d%%\nEstado Auto-Eat: %s\nModo Activo: %s",
+            pHP, pHunger,
+            Config.AutoEatEnabled and "🟢 ON" or "🔴 OFF",
+            AutoEatState.Status
+        ))
+    end
+end)
 
-                    if PickUpRemote and fuelTarget.Instance and fuelTarget.Instance.Parent then
-                        pcall(function() PickUpRemote:FireServer(fuelTarget.Instance) end)
+-- ==============================================================================
+-- 12. MOTOR CINÉTICO ZERO-LAG
+-- ==============================================================================
+
+local depredadorDir = 1
+local lastDepredadorSwitch = tick()
+
+RunService.Heartbeat:Connect(function()
+    if IsInContingency then return end
+
+    local _, root, hum = getCharacterParts()
+    if not root or not hum or hum.Health <= 0 then return end
+    if not hum.SeatPart or not hum.SeatPart:IsA("VehicleSeat") then return end
+
+    -- === MANIOBRA: CONDUCIR HACIA LA ESQUINA SEGURA EN NOCHE DE ASALTANTES ===
+    if DayCycleState.IsFleeingToCorner and DayCycleState.TargetCornerPos then
+        local diffCorner = DayCycleState.TargetCornerPos - root.Position
+        local horizCorner = Vector3.new(diffCorner.X, 0, diffCorner.Z)
+
+        if horizCorner.Magnitude <= 10.0 then
+            DayCycleState.ReachedSafeCorner = true
+            root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y, 0)
+            root.AssemblyAngularVelocity = Vector3.zero
+        else
+            local cornerDir = horizCorner.Unit
+            root.AssemblyLinearVelocity = Vector3.new(cornerDir.X * (Config.MoveSpeed * 0.9), root.AssemblyLinearVelocity.Y, cornerDir.Z * (Config.MoveSpeed * 0.9))
+        end
+        return
+    end
+
+    if not Config.ZigZagEnabled then return end
+
+    if TransitState.Active then
+        local wp = TransitState.Waypoints[TransitState.Index]
+        if wp then
+            local diff = wp - root.Position
+            local horiz = Vector3.new(diff.X, 0, diff.Z)
+
+            if horiz.Magnitude <= 22.0 then
+                TransitState.Index = TransitState.Index + 1
+                if TransitState.Index > #TransitState.Waypoints then
+                    TransitState.Active = false
+                    CurrentActiveSector = TransitState.TargetSector
+
+                    local road = getCombatStraightRoad(CurrentActiveSector)
+                    if road then
+                        CurrentTarget = road
+                        applyHighlight(road)
                     end
-
-                    PassedItemsCooldown[fuelTarget.Instance] = tick() + 10
-                    State.TotalItemsCollected = State.TotalItemsCollected + 1
-                else
-                    State.CurrentStatus = string.format("⛽ Sin galones en radio de %d studs.", State.FuelScanRadius)
-                    task.wait(1.0)
                 end
-
-            -- MODO EXPEDICIÓN
             else
-                scanLoadedChestsAroundPlayer()
+                local mDir = horiz.Unit
+                root.AssemblyLinearVelocity = Vector3.new(mDir.X * Config.MoveSpeed, root.AssemblyLinearVelocity.Y, mDir.Z * Config.MoveSpeed)
+            end
+        else
+            TransitState.Active = false
+        end
+        return
+    end
 
-                local nearbyChest = getNearestUnvisitedChestNearby(myPos, State.NearbyRadarRadius)
+    local targetPos = nil
+    local targetSize = Vector3.new(60, 10, 60)
 
-                if nearbyChest then
-                    State.CurrentStatus = string.format("📦 Cofre CERRADO a %d studs: '%s'", math.floor(nearbyChest.Dist), nearbyChest.Name)
-                    flyMoveTo3D(nearbyChest.Pos, State.FlySpeed, 3.5)
+    if CurrentTarget then
+        targetPos = CurrentTarget:IsA("BasePart") and CurrentTarget.Position or select(1, CurrentTarget:GetBoundingBox()).Position
+        targetSize = CurrentTarget:IsA("BasePart") and CurrentTarget.Size or select(2, CurrentTarget:GetBoundingBox())
+    elseif SECTOR_ROUTES[CurrentActiveSector] then
+        targetPos = SECTOR_ROUTES[CurrentActiveSector].Combat
+    end
 
-                    if State.Running and not State.Paused and not State.ReturningToBase then
-                        State.CurrentStatus = string.format("Rebuscando '%s' (1s)...", nearbyChest.Name)
-                        task.wait(State.ChestWaitTime)
-                        VisitedChests[nearbyChest.Instance] = true
-                        State.TotalChestsLooted = State.TotalChestsLooted + 1
-                    end
+    if targetPos then
+        local destination = targetPos
+        local d = Config.LateralDist
+        local speed = Config.MoveSpeed
 
-                elseif State.CollectDroppedItems and getNearestLootItem(myPos, State.ItemRadarRadius) then
-                    local loot = getNearestLootItem(myPos, State.ItemRadarRadius)
-                    if loot then
-                        State.CurrentStatus = string.format("⚡ Pasando por: '%s' (0s)...", loot.Name)
-                        flyMoveTo3D(loot.Pos, State.FlySpeed, 2.8)
+        local toRoad = Vector3.new(targetPos.X - BaseCenter.X, 0, targetPos.Z - BaseCenter.Z)
+        local roadLen = toRoad.Magnitude > 0 and toRoad.Unit or Vector3.new(0, 0, 1)
+        local roadWid = Vector3.new(-roadLen.Z, 0, roadLen.X)
 
-                        if PickUpRemote and loot.Instance and loot.Instance.Parent then
-                            pcall(function() PickUpRemote:FireServer(loot.Instance) end)
-                        end
+        if DefenseState.IsRetreating then
+            speed = Config.RetreatSpeed
+            local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
+            local anchor = targetPos - (roadLen * (hLen + Config.RetreatDistance))
+            destination = anchor + (roadWid * (math.sin(tick() * 4.0) * d))
 
-                        PassedItemsCooldown[loot.Instance] = tick() + 15
-                        State.TotalItemsCollected = State.TotalItemsCollected + 1
-                    end
+        elseif Config.AttackMode == "Depredador" then
+            local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
+            local reachAway = hLen + Config.DepredadorFarOvershoot
+            local reachBase = hLen + Config.DepredadorBaseOvershoot
 
-                else
-                    local waypoints = buildExplorationWaypoints()
-                    if #waypoints > 0 then
-                        if State.PatrolStep > #waypoints then
-                            if State.LoopAll then
-                                State.PatrolStep = 1
-                            else
-                                executeReturnToBaseAndShutdown()
-                                continue
-                            end
-                        end
+            local carAlong = (root.Position - targetPos):Dot(roadLen)
 
-                        local targetWp = waypoints[State.PatrolStep]
-                        local distToWp = (Vector3.new(targetWp.X, 0, targetWp.Z) - Vector3.new(myPos.X, 0, myPos.Z)).Magnitude
+            if depredadorDir == 1 and carAlong >= (reachAway - 3.5) then
+                depredadorDir = -1
+                lastDepredadorSwitch = tick()
+            elseif depredadorDir == -1 and carAlong <= -(reachBase - 3.5) then
+                depredadorDir = 1
+                lastDepredadorSwitch = tick()
+            end
 
-                        State.CurrentStatus = string.format("🚀 Explorando hacia Punto #%d/%d (%d studs)...", State.PatrolStep, #waypoints, math.floor(distToWp))
-                        local reached = flyMoveTo3D(targetWp, State.FlySpeed, 25.0)
-                        if reached or distToWp <= 28.0 then
-                            State.PatrolStep = State.PatrolStep + 1
-                        end
-                    end
+            if tick() - lastDepredadorSwitch >= 3.2 then
+                depredadorDir = -depredadorDir
+                lastDepredadorSwitch = tick()
+            end
+
+            local tDist = (depredadorDir == 1) and reachAway or -reachBase
+            local weaveWave = math.sin(tick() * 5.5) * d
+            local totalLateral = math.clamp(weaveWave + CachedHordeClusterOffset, -d, d)
+
+            destination = targetPos + (roadLen * tDist) + (roadWid * totalLateral)
+
+        elseif Config.AttackMode == "Torbellino" then
+            local hLen = math.max(25, math.max(targetSize.X, targetSize.Z) * 0.45)
+            local reachAway = hLen + Config.DepredadorFarOvershoot
+            local reachBase = hLen + Config.DepredadorBaseOvershoot
+
+            local carAlong = (root.Position - targetPos):Dot(roadLen)
+            if depredadorDir == 1 and carAlong >= (reachAway - 3.5) then
+                depredadorDir = -1
+            elseif depredadorDir == -1 and carAlong <= -(reachBase - 3.5) then
+                depredadorDir = 1
+            end
+
+            local tDist = (depredadorDir == 1) and reachAway or -reachBase
+            destination = targetPos + (roadLen * tDist) + (roadWid * (math.sin(tick() * 7.5) * d))
+        end
+
+        if Config.EvadeBloaters and #CachedBloaterDangers > 0 then
+            for _, bPos in ipairs(CachedBloaterDangers) do
+                if (root.Position - bPos).Magnitude <= Config.BloaterDangerDist then
+                    local aDir = (root.Position - bPos).Unit
+                    destination = destination + Vector3.new(aDir.X, 0, aDir.Z) * 26
                 end
             end
-        elseif not State.Running then
-            removePhysicsHelpers()
+        end
+
+        local dir = (destination - root.Position)
+        local hDir = Vector3.new(dir.X, 0, dir.Z)
+
+        if hDir.Magnitude > 1.2 then
+            local vel = hDir.Unit * speed
+            root.AssemblyLinearVelocity = Vector3.new(vel.X, root.AssemblyLinearVelocity.Y, vel.Z)
         end
     end
 end)
 
--- Monitor de texto en vivo
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        StatusBox.Text = string.format(
-            "ESTADO: %s\n" ..
-            "Modo Fuel Base: %s (Radio: %d studs)\n" ..
-            "Cofres Cerrados Saqueados: %d\n" ..
-            "Ítems / Balas Recogidas al Vuelo: %d",
-            State.CurrentStatus,
-            State.FuelOnlyMode and "ACTIVADO" or "DESACTIVADO",
-            State.FuelScanRadius,
-            State.TotalChestsLooted,
-            State.TotalItemsCollected
-        )
-    end
-end)
+Fluent:Notify({
+    Title = "ZOMBIE HUB MASTER V17.5",
+    Content = "Watchdog, refugio en esquinas de asaltantes y rescate calibrado.",
+    Duration = 4
+})
+
+Window:SelectTab(1)
