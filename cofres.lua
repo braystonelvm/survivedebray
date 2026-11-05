@@ -1,5 +1,5 @@
 -- ==============================================================================
--- CHEST & LOOT ROAMER V5 (OMISIÓN DE BASE + STOP LIMPIO + FUEL CONFIGURABLE)
+-- CHEST & LOOT ROAMER V5.2 (FILTRO DE BASURA DESACTIVABLE + BASE EXCLUIDA)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -11,7 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local lp = Players.LocalPlayer
 
 local BaseCenter = Vector3.new(0, 0, 0)
-local BASE_SAFE_RADIUS = 145 -- Radio de la base donde NO tocará nada (cofres, ítems ni gasolinas)
+local BASE_SAFE_RADIUS = 145 -- Radio de la base donde NO tocará nada
 
 -- Eliminar desenfoques previos
 pcall(function()
@@ -37,10 +37,75 @@ local State = {
     PatrolStep = 1,
     ReturningToBase = false,
 
+    -- FILTRO DE BASURA (ACTIVADO POR DEFECTO)
+    FilterBlacklist = true,
+
     -- MODO FUEL
     FuelOnlyMode = false,
     FuelScanRadius = 500
 }
+
+-- LISTA NEGRA DE LOS 25 ELEMENTOS A OMITIR EN EXPEDICIÓN
+local BLACKLIST_ITEMS = {
+    ["ac"] = true,
+    ["bat"] = true,
+    ["battery"] = true,
+    ["battery pack"] = true,
+    ["beans"] = true,
+    ["bloxiade"] = true,
+    ["bloxy cola"] = true,
+    ["bucket"] = true,
+    ["carrot"] = true,
+    ["chainsaw"] = true,
+    ["chips"] = true,
+    ["food"] = true,
+    ["fuel"] = true,
+    ["gas mask"] = true,
+    ["mre"] = true,
+    ["refined fuel"] = true,
+    ["refined metal"] = true,
+    ["satellite dish"] = true,
+    ["scrap"] = true,
+    ["screws"] = true,
+    ["spatula"] = true,
+    ["spear"] = true,
+    ["tv"] = true,
+    ["watch"] = true,
+    ["wrench"] = true
+}
+
+-- Palabras cortas con coincidencia estricta de límites de palabra
+local SHORT_EXACT_WORDS = {
+    ["ac"] = true,
+    ["bat"] = true,
+    ["tv"] = true,
+    ["mre"] = true
+}
+
+local function isBlacklisted(nameLower, typeLower)
+    if not State.FilterBlacklist then return false end
+
+    if BLACKLIST_ITEMS[nameLower] or (typeLower and BLACKLIST_ITEMS[typeLower]) then
+        return true
+    end
+
+    for targetName, _ in pairs(BLACKLIST_ITEMS) do
+        if SHORT_EXACT_WORDS[targetName] then
+            if nameLower == targetName 
+               or nameLower:find("^" .. targetName .. "[%s%-_]") 
+               or nameLower:find("[%s%-_]" .. targetName .. "$") 
+               or nameLower:find("[%s%-_]" .. targetName .. "[%s%-_]") then
+                return true
+            end
+        else
+            if nameLower:find(targetName, 1, true) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
 
 local KnownChests = {}
 local VisitedChests = {}
@@ -79,12 +144,10 @@ local function restoreCollisions()
     end
 end
 
--- Limpieza exhaustiva de todas las modificaciones y restricciones de vuelo/altura
 local function removeAllModifications()
     local root = getRootPart()
     local char = lp.Character
 
-    -- 1. Destruir helpers de vuelo propios y de scripts anteriores
     if root then
         for _, obj in ipairs(root:GetChildren()) do
             if obj.Name:find("BP") or obj.Name:find("BG") or obj:IsA("BodyPosition") or obj:IsA("BodyGyro") or obj:IsA("BodyVelocity") then
@@ -103,7 +166,6 @@ local function removeAllModifications()
         end
     end
 
-    -- 2. Restaurar colisiones en todas las partes del personaje
     restoreCollisions()
 end
 
@@ -215,13 +277,11 @@ local function isChestModel(obj)
     if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
     if obj == lp.Character or obj:IsDescendantOf(lp.Character) then return false end
 
-    -- 1. FILTRO: DESCARTAR COFRES DENTRO DE LA BASE
     local part = obj:IsA("BasePart") and obj or (obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart"))
     if part and isInsideBase(part.Position) then
         return false
     end
 
-    -- 2. FILTRO: DESCARTAR COFRES YA ABIERTOS O SAQUEADOS
     if obj:GetAttribute("Open") == true 
        or obj:GetAttribute("Opened") == true 
        or obj:GetAttribute("Looted") == true 
@@ -297,7 +357,7 @@ local function scanLoadedChestsAroundPlayer()
 end
 
 -- ==============================================================================
--- 3. DETECCIÓN DE ÍTEMS Y GALONES (OMITE LA BASE)
+-- 3. DETECCIÓN DE ÍTEMS Y GALONES (CON FILTRO DE BASURA)
 -- ==============================================================================
 
 local function isCollectableDroppedItem(item)
@@ -312,6 +372,11 @@ local function isCollectableDroppedItem(item)
     local n = item.Name:lower()
     local itemType = tostring(item:GetAttribute("ItemType") or ""):lower()
     local toolType = tostring(item:GetAttribute("ToolType") or ""):lower()
+
+    -- Comprobar si está en la lista negra
+    if isBlacklisted(n, itemType) then
+        return false
+    end
 
     if itemType == "food" or n:find("carrot") then
         return false
@@ -331,7 +396,6 @@ local function isCollectableDroppedItem(item)
        or n:find("gun") 
        or n:find("shotgun") 
        or n:find("rifle") 
-       or n:find("gas") 
        or n:find("grenade") 
        or n:find("molotov") then
         return true
@@ -372,7 +436,7 @@ local function getNearestLootItem(currentPos, maxDist)
     return best
 end
 
--- Selector de galones: entre el límite de la base y el radio configurado
+-- Selector exclusivo de combustible en base (se mantiene intacto sin filtro)
 local function getNearestBaseFuelCan(currentPos)
     local dropped = workspace:FindFirstChild("DroppedItems")
     if not dropped then return nil end
@@ -390,7 +454,6 @@ local function getNearestBaseFuelCan(currentPos)
                 if part then
                     local distFromBase = (Vector3.new(part.Position.X, 0, part.Position.Z) - Vector3.new(BaseCenter.X, 0, BaseCenter.Z)).Magnitude
 
-                    -- Excluir los que ya están dentro de la base (<= 145 studs) y respetar el límite exterior configurado
                     if distFromBase > BASE_SAFE_RADIUS and distFromBase <= State.FuelScanRadius then
                         local d = (part.Position - currentPos).Magnitude
                         if d < shortest then
@@ -453,7 +516,6 @@ end
 -- 5. ACCIONES DE APAGADO Y RETORNO
 -- ==============================================================================
 
--- 1. Detener en seco y dejar el personaje como nuevo
 local function executeImmediateStopAndClean()
     State.Running = false
     State.Paused = false
@@ -464,7 +526,6 @@ local function executeImmediateStopAndClean()
     State.CurrentStatus = "Detenido. Modificaciones eliminadas (Personaje normal)."
 end
 
--- 2. Ir a la base primero y luego apagar absolutamente todo
 local function executeReturnToBaseAndShutdown()
     if not State.Running then
         State.Running = true
@@ -477,7 +538,6 @@ local function executeReturnToBaseAndShutdown()
 
     flyMoveTo3D(BaseCenter + Vector3.new(0, 3.5, 0), State.FlySpeed, 4.0)
 
-    -- APAGAR TOTALMENTE AL LLEGAR
     executeImmediateStopAndClean()
     State.CurrentStatus = "🟢 En Base: Todas las modificaciones apagadas."
 end
@@ -488,13 +548,13 @@ end
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "ChestRoamerCleanGuiV5"
+ScreenGui.Name = "ChestRoamerCleanGuiV52"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 440, 0, 360)
-MainFrame.Position = UDim2.new(0.5, -220, 0.5, -180)
+MainFrame.Size = UDim2.new(0, 440, 0, 395)
+MainFrame.Position = UDim2.new(0.5, -220, 0.5, -197)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 17, 23)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -507,7 +567,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-TitleBar.Text = "  📦 CHEST & LOOT ROAMER V5 (BASE EXCLUIDA)"
+TitleBar.Text = "  📦 CHEST & LOOT ROAMER V5.2 (FILTRO BASURA)"
 TitleBar.TextColor3 = Color3.fromRGB(255, 170, 0)
 TitleBar.TextSize = 11
 TitleBar.Font = Enum.Font.GothamBold
@@ -574,7 +634,7 @@ createBtn("▶ INICIAR EXPEDICIÓN", Color3.fromRGB(30, 150, 70), UDim2.new(0, 1
         end
         if State.Running then
             State.NoclipEnabled = true
-            State.CurrentStatus = State.FuelOnlyMode and "Modo Fuel Base activo..." or "Explorando mapa (Base excluida)..."
+            State.CurrentStatus = State.FuelOnlyMode and "Modo Fuel Base activo..." or "Explorando mapa (Filtros activos)..."
         end
     end)
 end)
@@ -607,17 +667,30 @@ createBtn("⏸ PAUSA / REANUDAR", Color3.fromRGB(60, 65, 80), UDim2.new(0.52, 0,
 end)
 
 -- Botón 6: Configurar Radio de Fuel (+/- 100)
-createBtn("➖ RADIO FUEL (-100)", Color3.fromRGB(35, 40, 50), UDim2.new(0, 10, 0, 262), UDim2.new(0.48, -5, 0, 28), function()
+createBtn("➖ RADIO FUEL (-100)", Color3.fromRGB(35, 40, 50), UDim2.new(0, 10, 0, 260), UDim2.new(0.48, -5, 0, 28), function()
     State.FuelScanRadius = math.max(BASE_SAFE_RADIUS + 50, State.FuelScanRadius - 100)
     if State.FuelOnlyMode then
         FuelBtn.Text = string.format("⛽ SOLO FUEL: ON (%d-%d STUDS)", BASE_SAFE_RADIUS, State.FuelScanRadius)
     end
 end)
 
-createBtn("➕ RADIO FUEL (+100)", Color3.fromRGB(35, 40, 50), UDim2.new(0.52, 0, 0, 262), UDim2.new(0.48, -10, 0, 28), function()
+createBtn("➕ RADIO FUEL (+100)", Color3.fromRGB(35, 40, 50), UDim2.new(0.52, 0, 0, 260), UDim2.new(0.48, -10, 0, 28), function()
     State.FuelScanRadius = math.min(1500, State.FuelScanRadius + 100)
     if State.FuelOnlyMode then
         FuelBtn.Text = string.format("⛽ SOLO FUEL: ON (%d-%d STUDS)", BASE_SAFE_RADIUS, State.FuelScanRadius)
+    end
+end)
+
+-- Botón 7: TOGGLE FILTRO DE BASURA (25 ÍTEMS)
+local FilterBtn
+FilterBtn = createBtn("🚫 OMITIR BASURA (25 ÍTEMS): ON", Color3.fromRGB(180, 45, 55), UDim2.new(0, 10, 0, 296), UDim2.new(1, -20, 0, 34), function()
+    State.FilterBlacklist = not State.FilterBlacklist
+    if State.FilterBlacklist then
+        FilterBtn.BackgroundColor3 = Color3.fromRGB(180, 45, 55)
+        FilterBtn.Text = "🚫 OMITIR BASURA (25 ÍTEMS): ON"
+    else
+        FilterBtn.BackgroundColor3 = Color3.fromRGB(45, 50, 65)
+        FilterBtn.Text = "⚪ OMITIR BASURA: OFF (RECOGE TODO)"
     end
 end)
 
@@ -794,14 +867,14 @@ task.spawn(function()
         task.wait(0.3)
         StatusBox.Text = string.format(
             "ESTADO: %s\n" ..
+            "Filtro de Basura (25 ítems): %s\n" ..
             "Modo Fuel Exterior: %s (%d-%d studs)\n" ..
-            "Base Protegida (Omitida): %d studs del centro\n" ..
             "Cofres Cerrados Saqueados: %d | Ítems: %d",
             State.CurrentStatus,
+            State.FilterBlacklist and "ACTIVADO" or "DESACTIVADO",
             State.FuelOnlyMode and "ACTIVADO" or "DESACTIVADO",
             BASE_SAFE_RADIUS,
             State.FuelScanRadius,
-            BASE_SAFE_RADIUS,
             State.TotalChestsLooted,
             State.TotalItemsCollected
         )
