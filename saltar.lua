@@ -905,12 +905,13 @@ local function executeGroundRescue(onBoardCallback)
         -- Control de saltos
         if Config.BunnyHop then
             local now = tick()
-            if (now - jumpWindowStart) >= 2.5 then
-                jumpWindowStart = now
-                jumpsInWindow = 0
-            end
 
-            if jumpsInWindow < 2 and (now - lastJumpTick >= 0.45) then
+            if jumpsInWindow >= 3 then
+                -- Espera exactamente 1.0 segundo después de terminar los 3 saltos
+                if (now - lastJumpTick) >= 1.0 then
+                    jumpsInWindow = 0
+                end
+            elseif (now - lastJumpTick) >= 0.40 then
                 hum.Jump = true
                 lastJumpTick = now
                 jumpsInWindow = jumpsInWindow + 1
