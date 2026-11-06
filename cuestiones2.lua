@@ -1,6 +1,6 @@
 -- ==============================================================================
--- BASE DEFENDER & TOWER WATCHDOG V3.0 (SUPER UNLOCKED - NATIVO ROBLOX)
--- Físicas Libres + Salida de Torre Elevada + Mapeo BackpackGui + 9 Modos de Paseo
+-- BASE DEFENDER & TOWER WATCHDOG V3.5 (NATIVO ROBLOX - 0% LIBRERÍAS EXTERNAS)
+-- Fijación Slot 2 / Swap 2⇄3 (50s) + Torre Plato Anti-Flotar + Paseo 20s
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -26,43 +26,44 @@ local Config = {
     FlySpeed = 70,
     Day90Threshold = 90,
 
-    -- Comida
+    -- Alimentación de día
     EatScanRadius = 100,
     FullHungerTarget = 95,
     EatCooldown = 0.9,
 
-    -- Armas (Slots basados en BackpackGui)
+    -- Control de Armas
     AutoEquipWeapon = true,
-    PrimarySlot = 2,           -- Slot 2 por defecto (ej. LMG)
-    SecondarySlot = 3,         -- Slot 3 por defecto (ej. Bat)
-    SwapWeaponsEnabled = false,
-    SwapInterval = 30,
+    SwapWeaponsEnabled = false, -- Por defecto FALSE: Solo mantiene el Slot 2 fijo sin cambiar
+    SwapInterval = 50,          -- 50 segundos exactos si se activa el Swap
 
-    -- Movimiento Matutino
-    MovementPattern = "Aleatorio Total", -- Modo de paseo por defecto
-    PatternSwitchInterval = 15,         -- Tiempo de rotación si está en Aleatorio Total
-    JumpInterval = 12                   -- Salto ocasional cada 12 segundos
+    -- Paseo matutino (20 segundos por cada movimiento aleatorio)
+    MovementPattern = "Aleatorio Total",
+    PatternSwitchInterval = 20, -- 20 segundos por cada patrón
+    JumpInterval = 12           -- Salto independiente cada 12 segundos
 }
 
 local State = {
     CurrentDay = 0,
     Status = "Iniciando...",
-    CurrentSlot = 2,
+    ActiveSlot = 2,             -- 2 (Primario) o 3 (Secundario)
     LastSwapTick = tick(),
     IsEating = false,
     LastEatTick = 0,
     Day90Enforced = false,
+
+    -- Torre dinámica
     CurrentTowerName = "Buscando...",
     TowerTopPos = nil,
     IsLandedOnTower = false,
-    LastPeriodicJump = tick(),
+    IsExitingTower = false,
 
-    -- Variables de patrones de paseo
+    -- Patrones de movimiento
     PatternTick = tick(),
     CurrentActivePattern = "Zigzag",
     PatternStep = 1,
     WanderTarget = nil,
-    CircleAngle = 0
+    CircleAngle = 0,
+    LastPeriodicJump = tick()
 }
 
 local PickUpRemote = nil
@@ -75,7 +76,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 1. FÍSICAS TOTALMENTE LIBERADAS (ANTI-PESADEZ / ANTI-TRABAS)
+-- 1. FÍSICAS DESBLOQUEADAS (ANTI-PESADEZ / LIBERTAD TOTAL DE SALTO)
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -85,8 +86,9 @@ local function getCharacterParts()
     return char, root, hum
 end
 
+-- Destruye cualquier fuerza física residual para que el personaje se mueva y salte libremente
 local function unlockCharacterPhysics()
-    local char, root, hum = getCharacterParts()
+    local _, root, hum = getCharacterParts()
     if root then
         for _, obj in ipairs(root:GetChildren()) do
             if obj:IsA("BodyPosition") or obj:IsA("BodyGyro") or obj:IsA("BodyVelocity") or obj.Name:find("TowerFlight") then
@@ -148,7 +150,7 @@ local function flyToPoint(targetPos, speed, stopDist)
 end
 
 -- ==============================================================================
--- 2. DETECCIÓN DE TORRE DINÁMICA & SALIDA ELEVADA (PLATO)
+-- 2. DETECCIÓN DE TORRE, ATERRIZAJE DE PIE Y SALIDA ELEVADA (PLATO)
 -- ==============================================================================
 
 local function findNearestWatchtower(myPos)
@@ -196,41 +198,59 @@ local function findNearestWatchtower(myPos)
     return nil, nil, nil
 end
 
--- Descenso inteligente para salir del plato de la torre
+-- Salida elevada: sube 10 studs para librar las barandillas de la torre plato y avanza afuera
 local function exitDishTowerSafely(towerPos)
+    if State.IsExitingTower then return end
+    State.IsExitingTower = true
+
     local _, root, _ = getCharacterParts()
-    if not root then return end
+    if root then
+        -- 1. Subir verticalmente para superar el borde de la torre plato
+        local upPos = root.Position + Vector3.new(0, 10.0, 0)
+        flyToPoint(upPos, Config.FlySpeed, 2.0)
 
-    -- 1. Elevarse 9 studs sobre la barandilla
-    local upPos = root.Position + Vector3.new(0, 9.0, 0)
-    flyToPoint(upPos, Config.FlySpeed, 2.0)
+        -- 2. Moverse horizontalmente hacia el exterior
+        local outwardDir = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(towerPos.X, 0, towerPos.Z)).Unit
+        if outwardDir.Magnitude < 0.1 then outwardDir = Vector3.new(1, 0, 0) end
+        local clearEdgePos = upPos + (outwardDir * 18.0)
+        flyToPoint(clearEdgePos, Config.FlySpeed, 2.0)
 
-    -- 2. Desplazarse horizontalmente hacia afuera de la torre
-    local outwardDir = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(towerPos.X, 0, towerPos.Z)).Unit
-    if outwardDir.Magnitude < 0.1 then outwardDir = Vector3.new(1, 0, 0) end
-    local clearEdgePos = upPos + (outwardDir * 16.0)
-    flyToPoint(clearEdgePos, Config.FlySpeed, 2.0)
+        -- 3. Liberar físicas completamente para que caiga y camine sin ataduras
+        unlockCharacterPhysics()
+    end
 
-    -- 3. Soltar físicas limpiamente para descender a pie
-    unlockCharacterPhysics()
+    State.IsExitingTower = false
 end
 
 -- ==============================================================================
--- 3. SELECTOR PRECISO DE ARMAS VÍA BACKPACKGUI (SIN CONFUSIONES)
+-- 3. MOTOR EXACTO DE ARMAS (BACKPACKGUI: SLOT 2 FIJO / SWAP 2 ⇄ 3)
 -- ==============================================================================
 
-local function getToolNameFromSlot(slotNum)
-    local slotStr = (slotNum == 10) and "0" or tostring(slotNum)
+-- Extrae el nombre exacto asignado al Slot 2 o 3 dentro de PlayerGui.BackpackGui
+local function getHotbarToolName(slotNum)
+    local slotStr = tostring(slotNum)
     local pg = lp:FindFirstChild("PlayerGui")
     local bpg = pg and pg:FindFirstChild("BackpackGui")
 
     if bpg then
+        -- 1. Buscar directamente por el nombre del Frame ("2", "3")
+        local slotFrame = bpg:FindFirstChild(slotStr, true)
+        if slotFrame and slotFrame:IsA("GuiObject") then
+            for _, child in ipairs(slotFrame:GetChildren()) do
+                if child:IsA("TextLabel") and child.Text ~= "" and child.Text ~= slotStr and not child.Text:match("^%d+$") then
+                    return child.Text
+                elseif child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
+                    return child.Value.Name
+                end
+            end
+        end
+
+        -- 2. Buscar por el texto de la casilla en BackpackGui
         for _, desc in ipairs(bpg:GetDescendants()) do
-            if desc:IsA("TextLabel") and desc.Visible then
-                local txt = desc.Text:gsub("%s+", "")
-                if txt == slotStr then
-                    local frame = desc.Parent
-                    for _, child in ipairs(frame:GetChildren()) do
+            if desc:IsA("TextLabel") and desc.Visible and desc.Text:gsub("%s+", "") == slotStr then
+                local parent = desc.Parent
+                if parent then
+                    for _, child in ipairs(parent:GetChildren()) do
                         if child:IsA("TextLabel") and child ~= desc and child.Text ~= "" and not child.Text:match("^%d+$") then
                             return child.Text
                         elseif child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
@@ -242,79 +262,73 @@ local function getToolNameFromSlot(slotNum)
         end
     end
 
-    -- Si no detectó por BackpackGui, buscar en la lista indexada
-    local char = lp.Character
-    local bp = lp:FindFirstChild("Backpack")
-    local pool = {}
-    if char then
-        for _, t in ipairs(char:GetChildren()) do
-            if t:IsA("Tool") then table.insert(pool, t.Name) end
-        end
-    end
-    if bp then
-        for _, t in ipairs(bp:GetChildren()) do
-            if t:IsA("Tool") then table.insert(pool, t.Name) end
-        end
-    end
+    -- Respaldo según tu reporte forense
+    if slotNum == 2 then return "LMG" end
+    if slotNum == 3 then return "Bat" end
 
-    return pool[slotNum]
+    return nil
 end
 
-local function equipToolByName(toolName)
-    if not toolName or toolName == "" then return end
+-- Mantiene en mano el arma seleccionada sin desequiparla repetidamente
+local function enforceEquippedWeapon(targetToolName)
+    if not targetToolName or targetToolName == "" then return end
     local char, _, hum = getCharacterParts()
     if not hum or hum.Health <= 0 then return end
 
     local currentTool = char:FindFirstChildOfClass("Tool")
-    if currentTool and currentTool.Name == toolName then
-        return -- Ya la tiene en mano
+
+    -- Si la herramienta en mano ya es la correcta, NO TOCAR NADA (evita que se guarde sola)
+    if currentTool and currentTool.Name == targetToolName then
+        return
+    end
+
+    -- Si tiene equipada otra cosa (como la Candy Bag o comida), desequiparla primero
+    if currentTool and currentTool.Name ~= targetToolName then
+        hum:UnequipTools()
+        task.wait(0.06)
     end
 
     local bp = lp:FindFirstChild("Backpack")
-    local found = bp and bp:FindFirstChild(toolName)
+    local toolToEquip = bp and bp:FindFirstChild(targetToolName)
 
-    if found and found:IsA("Tool") then
-        if currentTool then
-            hum:UnequipTools()
-            task.wait(0.05)
-        end
-        hum:EquipTool(found)
+    if toolToEquip and toolToEquip:IsA("Tool") then
+        hum:EquipTool(toolToEquip)
     end
 end
 
-local function syncWeaponSlot(slotNum)
-    local toolName = getToolNameFromSlot(slotNum)
-    if toolName then
-        equipToolByName(toolName)
-    end
-end
-
--- Bucle de armas cada 5 segundos y alternador (Swap)
+-- Bucle de verificación de arma cada 5 segundos
 task.spawn(function()
     while true do
         task.wait(5.0)
-        if Config.Active and Config.AutoEquipWeapon then
+
+        if Config.Active and Config.AutoEquipWeapon and not State.IsEating then
             local _, _, hum = getCharacterParts()
             if hum and hum.Health > 0 then
+                -- LÓGICA DE SELECCIÓN:
                 if Config.SwapWeaponsEnabled then
+                    -- Intercambia estrictamente entre Slot 2 y Slot 3 cada 50 segundos
                     if (tick() - State.LastSwapTick) >= Config.SwapInterval then
-                        State.CurrentSlot = (State.CurrentSlot == Config.PrimarySlot) and Config.SecondarySlot or Config.PrimarySlot
+                        State.ActiveSlot = (State.ActiveSlot == 2) and 3 or 2
                         State.LastSwapTick = tick()
                     end
                 else
-                    State.CurrentSlot = Config.PrimarySlot
+                    -- Modo normal: FIJO EN SLOT 2
+                    State.ActiveSlot = 2
                 end
-                syncWeaponSlot(State.CurrentSlot)
+
+                local targetWeaponName = getHotbarToolName(State.ActiveSlot)
+                enforceEquippedWeapon(targetWeaponName)
             end
         end
     end
 end)
 
--- Re-equipar inmediatamente al revivir
+-- Re-equipar automáticamente al revivir
 lp.CharacterAdded:Connect(function()
     task.wait(1.5)
     if Config.Active and Config.AutoEquipWeapon then
-        syncWeaponSlot(State.CurrentSlot)
+        local targetWeaponName = getHotbarToolName(State.ActiveSlot)
+        enforceEquippedWeapon(targetWeaponName)
     end
 end)
 
@@ -398,12 +412,16 @@ local function eatFood(foodItem)
         task.wait(0.20)
     end
 
+    -- Re-equipar arma de inmediato tras comer
+    local targetWeaponName = getHotbarToolName(State.ActiveSlot)
+    enforceEquippedWeapon(targetWeaponName)
+
     State.LastEatTick = tick()
     State.IsEating = false
 end
 
 -- ==============================================================================
--- 5. MOTOR DE MOVIMIENTOS MATUTINOS (9 MODOS CONFIGURABLES)
+-- 5. PASEO MATUTINO (20 SEGUNDOS POR MOVIMIENTO + SALTO CADA 12s)
 -- ==============================================================================
 
 local PATTERNS = {
@@ -439,13 +457,13 @@ end
 local function executeMorningMovement(char, root, hum)
     local now = tick()
 
-    -- 1. Salto ocasional independiente cada 12 segundos
+    -- Salto ocasional cada 12 segundos
     if now - State.LastPeriodicJump >= Config.JumpInterval then
         hum.Jump = true
         State.LastPeriodicJump = now
     end
 
-    -- 2. Rotación si está en "Aleatorio Total"
+    -- Rotación cada 20 segundos si está en 'Aleatorio Total'
     local activeMode = Config.MovementPattern
     if Config.MovementPattern == "Aleatorio Total" then
         if now - State.PatternTick >= Config.PatternSwitchInterval then
@@ -457,7 +475,7 @@ local function executeMorningMovement(char, root, hum)
         activeMode = State.CurrentActivePattern
     end
 
-    -- 3. Ejecución del patrón activo
+    -- Ejecución de patrones
     if activeMode == "Zigzag" then
         if not State.WanderTarget or (root.Position - State.WanderTarget).Magnitude <= 4 then
             local randAngle = math.random() * math.pi * 2
@@ -521,7 +539,7 @@ local function executeMorningMovement(char, root, hum)
         if not State.BurstJumping then
             State.BurstJumping = true
             task.spawn(function()
-                for i = 1, 5 do
+                for _ = 1, 5 do
                     local _, _, h = getCharacterParts()
                     if h then h.Jump = true end
                     task.wait(0.45)
@@ -540,7 +558,7 @@ local function executeMorningMovement(char, root, hum)
 end
 
 -- ==============================================================================
--- 6. BUCLE PRINCIPAL DE ESTADOS (TORRE, DÍA 90+ Y PASEO)
+-- 6. BUCLE PRINCIPAL DE ESTADOS
 -- ==============================================================================
 
 local function isNightTime()
@@ -579,20 +597,20 @@ task.spawn(function()
         local night = isNightTime()
         local _, hungerPct = getPlayerStats()
 
-        -- CASO 1: DÍA 90 O SUPERIOR (GUARDIA FIJA EN Vector3.new(0.1, 0.9, -8))
+        -- CASO 1: DÍA 90 O SUPERIOR (GUARDIA EN Vector3.new(0.1, 0.9, -8))
         if currentDay >= Config.Day90Threshold then
             State.Day90Enforced = true
             unlockCharacterPhysics()
 
             local distTo90 = (root.Position - DAY_90_TARGET_POS).Magnitude
             if distTo90 > 2.5 then
-                State.Status = string.format("⚠️ Día %d >= 90: Yendo a (0.1, 0.9, -8)", currentDay)
+                State.Status = string.format("⚠️ Día %d >= 90: Yendo a guardia (0.1, 0.9, -8)", currentDay)
                 hum:MoveTo(DAY_90_TARGET_POS)
             else
                 State.Status = string.format("🛡️ Día %d: En guardia fija en (0.1, 0.9, -8)", currentDay)
             end
 
-        -- CASO 2: NOCHE (BUSCA CUALQUIER TORRE, SUBE Y SUELTA EL VUELO ARRIBA)
+        -- CASO 2: NOCHE (BUSCA TORRE, VUELA, SE POSA DE PIE SIN FLOTAR)
         elseif night then
             State.Day90Enforced = false
             local towerTop, towerName, towerDist = findNearestWatchtower(root.Position)
@@ -602,37 +620,36 @@ task.spawn(function()
                 State.TowerTopPos = towerTop
                 local distToTop = (root.Position - towerTop).Magnitude
 
-                -- Si está lejos de la cima, volar
                 if distToTop > 4.5 then
                     State.IsLandedOnTower = false
-                    State.Status = string.format("🌙 Volando a la cima de '%s'...", towerName)
+                    State.Status = string.format("🌙 Volando a la torre '%s'...", towerName)
                     flyToPoint(towerTop, Config.FlySpeed, 2.5)
                 else
-                    -- REQUISITO: Soltar el vuelo arriba para posarse de pie y no quedarse flotando
+                    -- SOLTAR VUELO: Se posa de pie en el piso de la torre sin flotar
                     if not State.IsLandedOnTower then
                         unlockCharacterPhysics()
                         State.IsLandedOnTower = true
                     end
 
-                    -- Vigilante anticaídas: si cae de la plataforma, reactiva vuelo
+                    -- Si cae de la torre, reactivar vuelo y volver a subir
                     if root.Position.Y < (towerTop.Y - 5.0) then
                         State.IsLandedOnTower = false
                         flyToPoint(towerTop, Config.FlySpeed, 2.0)
                     else
-                        State.Status = string.format("🌙 Posado de pie en la torre '%s'", towerName)
+                        State.Status = string.format("🌙 Posado en plataforma de '%s'", towerName)
                     end
                 end
             else
                 State.Status = "⚠️ Noche: Buscando torre..."
             end
 
-        -- CASO 3: MAÑANA / DÍA (SALIDA ELEVADA DE LA TORRE + COMIDA + PASEO RANDOM)
+        -- CASO 3: DÍA / MAÑANA (SALIDA POR ARRIBA DEL PLATO + COMIDA + PASEO)
         else
             State.Day90Enforced = false
 
-            -- Si amanece y sigue arriba de la torre, realizar la salida elevada sobre el borde plato
-            if State.TowerTopPos and (root.Position - State.TowerTopPos).Magnitude <= 12 then
-                State.Status = "☀️ Saliendo por arriba del borde de la torre..."
+            -- Si amanece arriba de la torre, subir por arriba del plato y salir
+            if State.TowerTopPos and (root.Position - State.TowerTopPos).Magnitude <= 14 then
+                State.Status = "☀️ Saliendo por arriba de la torre plato..."
                 exitDishTowerSafely(State.TowerTopPos)
                 State.TowerTopPos = nil
                 State.IsLandedOnTower = false
@@ -640,7 +657,7 @@ task.spawn(function()
 
             unlockCharacterPhysics()
 
-            -- Comer si el hambre < 95%
+            -- Comer si hambre < 95%
             if hungerPct < Config.FullHungerTarget then
                 local foodTarget = findGroundFoodInBase(Config.EatScanRadius)
                 if foodTarget then
@@ -654,9 +671,10 @@ task.spawn(function()
                     executeMorningMovement(char, root, hum)
                 end
             else
-                -- Paseo activo con los modos configurados
+                -- Paseo matutino activo (20s por movimiento)
                 executeMorningMovement(char, root, hum)
-                State.Status = string.format("☀️ Paseo: %s (Hambre: %d%%)", (Config.MovementPattern == "Aleatorio Total") and State.CurrentActivePattern or Config.MovementPattern, hungerPct)
+                local curPatternName = (Config.MovementPattern == "Aleatorio Total") and State.CurrentActivePattern or Config.MovementPattern
+                State.Status = string.format("☀️ Paseo: %s (Hambre: %d%%)", curPatternName, hungerPct)
             end
         end
     end
@@ -676,11 +694,11 @@ local function getSafeGuiParent()
 end
 
 local GuiParent = getSafeGuiParent()
-local existing = GuiParent:FindFirstChild("BaseDefenderUnlockedGuiV30")
+local existing = GuiParent:FindFirstChild("BaseDefenderUniversalGuiV35")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "BaseDefenderUnlockedGuiV30"
+ScreenGui.Name = "BaseDefenderUniversalGuiV35"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -699,7 +717,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-TitleBar.Text = "   🏰 BASE DEFENDER V3.0 (SUPER UNLOCKED)"
+TitleBar.Text = "   🏰 BASE DEFENDER V3.5 (SLOT 2 FIJO / SWAP 50s)"
 TitleBar.TextColor3 = Color3.fromRGB(255, 170, 0)
 TitleBar.TextSize = 11
 TitleBar.Font = Enum.Font.GothamBold
@@ -759,12 +777,43 @@ ToggleBtn = createBtn("🟢 SCRIPT ACTIVO: ON", Color3.fromRGB(30, 150, 70), UDi
     end
 end)
 
--- Botón 2: Liberar Físicas / Saltar Inmediato
-createBtn("🔓 DESBLOQUEAR FÍSICAS (NORMAL)", Color3.fromRGB(45, 100, 180), UDim2.new(0.52, 0, 0, 150), UDim2.new(0.48, -10, 0, 36), function()
+-- Botón 2: Desbloquear Físicas
+createBtn("🔓 LIBERAR FÍSICAS (PESADEZ 0%)", Color3.fromRGB(45, 100, 180), UDim2.new(0.52, 0, 0, 150), UDim2.new(0.48, -10, 0, 36), function()
     unlockCharacterPhysics()
 end)
 
--- Botón 3: Selector de Modos de Paseo Matutino
+-- Botón 3: Control de Armas (SLOT 2 FIJO vs SWAP 2 ⇄ 3 CADA 50s)
+local SwapBtn
+SwapBtn = createBtn("🔫 MODO ARMA: SOLO SLOT 2 (FIJO)", Color3.fromRGB(40, 130, 80), UDim2.new(0, 10, 0, 192), UDim2.new(1, -20, 0, 34), function()
+    Config.SwapWeaponsEnabled = not Config.SwapWeaponsEnabled
+    if Config.SwapWeaponsEnabled then
+        SwapBtn.BackgroundColor3 = Color3.fromRGB(140, 45, 160)
+        SwapBtn.Text = string.format("🔄 SWAP ACTIVO: SLOT 2 ⇄ 3 (CADA %ds)", Config.SwapInterval)
+    else
+        SwapBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 80)
+        SwapBtn.Text = "🔫 MODO ARMA: SOLO SLOT 2 (FIJO)"
+        State.ActiveSlot = 2
+        local weaponName = getHotbarToolName(2)
+        enforceEquippedWeapon(weaponName)
+    end
+end)
+
+-- Botones 4 y 5: Ajuste de tiempo de Swap (+5s / -5s)
+createBtn("➖ TIEMPO SWAP (-5s)", Color3.fromRGB(35, 40, 55), UDim2.new(0, 10, 0, 232), UDim2.new(0.48, -5, 0, 30), function()
+    Config.SwapInterval = math.max(10, Config.SwapInterval - 5)
+    if Config.SwapWeaponsEnabled then
+        SwapBtn.Text = string.format("🔄 SWAP ACTIVO: SLOT 2 ⇄ 3 (CADA %ds)", Config.SwapInterval)
+    end
+end)
+
+createBtn("➕ TIEMPO SWAP (+5s)", Color3.fromRGB(35, 40, 55), UDim2.new(0.52, 0, 0, 232), UDim2.new(0.48, -10, 0, 30), function()
+    Config.SwapInterval = math.min(180, Config.SwapInterval + 5)
+    if Config.SwapWeaponsEnabled then
+        SwapBtn.Text = string.format("🔄 SWAP ACTIVO: SLOT 2 ⇄ 3 (CADA %ds)", Config.SwapInterval)
+    end
+end)
+
+-- Botón 6: Selector de Modos de Paseo
 local PatternList = {
     "Aleatorio Total",
     "Zigzag",
@@ -779,75 +828,40 @@ local PatternList = {
 local curPatternIdx = 1
 
 local PatternBtn
-PatternBtn = createBtn("PASEO: " .. Config.MovementPattern, Color3.fromRGB(190, 120, 20), UDim2.new(0, 10, 0, 192), UDim2.new(1, -20, 0, 34), function()
+PatternBtn = createBtn(string.format("PASEO: %s (%ds)", Config.MovementPattern, Config.PatternSwitchInterval), Color3.fromRGB(190, 120, 20), UDim2.new(0, 10, 0, 268), UDim2.new(1, -20, 0, 32), function()
     curPatternIdx = curPatternIdx + 1
     if curPatternIdx > #PatternList then curPatternIdx = 1 end
     Config.MovementPattern = PatternList[curPatternIdx]
-    PatternBtn.Text = "PASEO: " .. Config.MovementPattern
+    PatternBtn.Text = string.format("PASEO: %s (%ds)", Config.MovementPattern, Config.PatternSwitchInterval)
     State.WanderTarget = nil
     State.PatternStep = 1
 end)
 
--- Botón 4: Toggle Intercambio de Armas (Slot 2 ⇄ Slot 3)
-local SwapBtn
-SwapBtn = createBtn("🔄 SWAP ARMAS (SLOT 2 ⇄ 3): OFF", Color3.fromRGB(50, 55, 70), UDim2.new(0, 10, 0, 232), UDim2.new(1, -20, 0, 32), function()
-    Config.SwapWeaponsEnabled = not Config.SwapWeaponsEnabled
-    if Config.SwapWeaponsEnabled then
-        SwapBtn.BackgroundColor3 = Color3.fromRGB(140, 45, 160)
-        SwapBtn.Text = string.format("🔄 SWAP ARMAS: ON (CADA %ds)", Config.SwapInterval)
-    else
-        SwapBtn.BackgroundColor3 = Color3.fromRGB(50, 55, 70)
-        SwapBtn.Text = "⚪ SOLO ARMA SLOT 2 (FIJA)"
-        State.CurrentSlot = Config.PrimarySlot
-        syncWeaponSlot(Config.PrimarySlot)
-    end
+-- Botones 7 y 8: Ajuste tiempo de rotación de paseo (20s)
+createBtn("➖ TIEMPO PASEO (-5s)", Color3.fromRGB(35, 40, 55), UDim2.new(0, 10, 0, 304), UDim2.new(0.48, -5, 0, 28), function()
+    Config.PatternSwitchInterval = math.max(10, Config.PatternSwitchInterval - 5)
+    PatternBtn.Text = string.format("PASEO: %s (%ds)", Config.MovementPattern, Config.PatternSwitchInterval)
 end)
 
--- Botones 5 y 6: Ajustar Slot Primario (1 al 10)
-local SlotLabelBtn
-SlotLabelBtn = createBtn(string.format("SLOT PRIMARIO: #%d", Config.PrimarySlot), Color3.fromRGB(40, 45, 60), UDim2.new(0, 10, 0, 270), UDim2.new(0.48, -5, 0, 30), function()
-    Config.PrimarySlot = Config.PrimarySlot + 1
-    if Config.PrimarySlot > 10 then Config.PrimarySlot = 1 end
-    SlotLabelBtn.Text = string.format("SLOT PRIMARIO: #%d", Config.PrimarySlot)
-    State.CurrentSlot = Config.PrimarySlot
-    syncWeaponSlot(Config.PrimarySlot)
+createBtn("➕ TIEMPO PASEO (+5s)", Color3.fromRGB(35, 40, 55), UDim2.new(0.52, 0, 0, 304), UDim2.new(0.48, -10, 0, 28), function()
+    Config.PatternSwitchInterval = math.min(90, Config.PatternSwitchInterval + 5)
+    PatternBtn.Text = string.format("PASEO: %s (%ds)", Config.MovementPattern, Config.PatternSwitchInterval)
 end)
 
-local SecSlotLabelBtn
-SecSlotLabelBtn = createBtn(string.format("SLOT SWAP: #%d", Config.SecondarySlot), Color3.fromRGB(40, 45, 60), UDim2.new(0.52, 0, 0, 270), UDim2.new(0.48, -10, 0, 30), function()
-    Config.SecondarySlot = Config.SecondarySlot + 1
-    if Config.SecondarySlot > 10 then Config.SecondarySlot = 1 end
-    SecSlotLabelBtn.Text = string.format("SLOT SWAP: #%d", Config.SecondarySlot)
-end)
-
--- Botones 7 y 8: Ajuste de tiempos
-createBtn("➖ SWAP (-5s)", Color3.fromRGB(35, 40, 55), UDim2.new(0, 10, 0, 306), UDim2.new(0.48, -5, 0, 28), function()
-    Config.SwapInterval = math.max(5, Config.SwapInterval - 5)
-    if Config.SwapWeaponsEnabled then
-        SwapBtn.Text = string.format("🔄 SWAP ARMAS: ON (CADA %ds)", Config.SwapInterval)
-    end
-end)
-
-createBtn("➕ SWAP (+5s)", Color3.fromRGB(35, 40, 55), UDim2.new(0.52, 0, 0, 306), UDim2.new(0.48, -10, 0, 28), function()
-    Config.SwapInterval = math.min(120, Config.SwapInterval + 5)
-    if Config.SwapWeaponsEnabled then
-        SwapBtn.Text = string.format("🔄 SWAP ARMAS: ON (CADA %ds)", Config.SwapInterval)
-    end
-end)
-
--- Botón 9: Subir a Torre Manual y Salir Limpio
-createBtn("🗼 VOLAR A TORRE / POSARSE", Color3.fromRGB(30, 120, 90), UDim2.new(0, 10, 0, 340), UDim2.new(0.48, -5, 0, 34), function()
+-- Botones 9 y 10: Torre Manual y Salida del Plato
+createBtn("🗼 VOLAR Y POSARSE EN TORRE", Color3.fromRGB(30, 120, 90), UDim2.new(0, 10, 0, 338), UDim2.new(0.48, -5, 0, 34), function()
     local _, root, _ = getCharacterParts()
     if root then
-        local tTop, tName = findNearestWatchtower(root.Position)
+        local tTop, _ = findNearestWatchtower(root.Position)
         if tTop then
             flyToPoint(tTop, Config.FlySpeed, 2.5)
             unlockCharacterPhysics()
+            State.IsLandedOnTower = true
         end
     end
 end)
 
-createBtn("🚪 SALIR DEL PLATO DE TORRE", Color3.fromRGB(160, 45, 55), UDim2.new(0.52, 0, 0, 340), UDim2.new(0.48, -10, 0, 34), function()
+createBtn("🚪 SALIR DEL BORDE DE TORRE", Color3.fromRGB(160, 45, 55), UDim2.new(0.52, 0, 0, 338), UDim2.new(0.48, -10, 0, 34), function()
     local _, root, _ = getCharacterParts()
     if root and State.TowerTopPos then
         exitDishTowerSafely(State.TowerTopPos)
@@ -861,7 +875,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 20)
-FloatBtn.Text = "🏰\nV3.0"
+FloatBtn.Text = "🏰\nV3.5"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -886,20 +900,26 @@ task.spawn(function()
         local night = isNightTime()
         local dayNum = getCurrentDay()
 
-        local toolPrimName = getToolNameFromSlot(Config.PrimarySlot) or "Vacío"
-        local toolSecName = getToolNameFromSlot(Config.SecondarySlot) or "Vacío"
+        local tool2Name = getHotbarToolName(2) or "Vacío"
+        local tool3Name = getHotbarToolName(3) or "Vacío"
+        local activeToolName = (State.ActiveSlot == 2) and tool2Name or tool3Name
+
+        local weaponModeText = Config.SwapWeaponsEnabled and string.format("Swap Activo (%ds)", Config.SwapInterval) or "Fijo (Sin Swap)"
 
         StatusBox.Text = string.format(
             "ESTADO: %s\n" ..
             "Día: %d | Fase: %s | Salud: %d%% | Hambre: %d%%\n" ..
-            "Torre Activa: '%s' | Torre Plato: %s\n" ..
-            "Arma en Mano: Slot %d | Prim: '%s' | Sec: '%s'\n" ..
-            "Modo Paseo: %s (Salto c/12s)",
+            "Torre: '%s' | %s\n" ..
+            "Arma en Mano: Slot %d ['%s'] | Modo: %s\n" ..
+            "  • Slot 2: '%s' | Slot 3: '%s'\n" ..
+            "Paseo: %s (Rotación c/%ds | Salto c/12s)",
             State.Status,
             dayNum, night and "🌙 NOCHE" or "☀️ DÍA", pHP, pHunger,
-            State.CurrentTowerName, State.IsLandedOnTower and "Posado (Pie)" or "En Suelo",
-            State.CurrentSlot, toolPrimName, toolSecName,
-            (Config.MovementPattern == "Aleatorio Total") and ("Ciclo (" .. State.CurrentActivePattern .. ")") or Config.MovementPattern
+            State.CurrentTowerName, State.IsLandedOnTower and "Posado de Pie" or "En Movimiento",
+            State.ActiveSlot, activeToolName, weaponModeText,
+            tool2Name, tool3Name,
+            (Config.MovementPattern == "Aleatorio Total") and ("Ciclo (" .. State.CurrentActivePattern .. ")") or Config.MovementPattern,
+            Config.PatternSwitchInterval
         )
     end
 end)
