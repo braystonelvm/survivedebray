@@ -1,6 +1,6 @@
 -- ==============================================================================
--- BASE DEFENDER & TOWER WATCHDOG V3.5 (NATIVO ROBLOX - 0% LIBRERÍAS EXTERNAS)
--- Fijación Slot 2 / Swap 2⇄3 (50s) + Torre Plato Anti-Flotar + Paseo 20s
+-- BASE DEFENDER & TOWER WATCHDOG V4.0 (INTERFAZ NATIVA - 0% LIBRERÍAS EXTERNAS)
+-- Prioridad Comida Mañana + Evasión Obstáculos + Slot 2 Fijo / Swap 50s + Evasión Zombies
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -11,6 +11,7 @@ local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local lp = Players.LocalPlayer
 
+-- Mantener cursor visible
 RunService.RenderStepped:Connect(function()
     pcall(function()
         UserInputService.MouseIconEnabled = true
@@ -19,33 +20,36 @@ end)
 
 local BaseCenter = Vector3.new(0, 0, 0)
 local DAY_90_TARGET_POS = Vector3.new(0.1, 0.9, -8.0)
-local BASE_WANDER_RADIUS = 80
+local BASE_WANDER_RADIUS = 85
 
 local Config = {
     Active = true,
     FlySpeed = 70,
     Day90Threshold = 90,
 
-    -- Alimentación de día
-    EatScanRadius = 100,
-    FullHungerTarget = 95,
+    -- Alimentación matutina prioritaria
+    EatScanRadius = 100,        -- Radio para buscar comida en la base
+    FullHungerTarget = 95,      -- Come hasta tener 95%+ antes de pasear
     EatCooldown = 0.9,
 
     -- Control de Armas
     AutoEquipWeapon = true,
-    SwapWeaponsEnabled = false, -- Por defecto FALSE: Solo mantiene el Slot 2 fijo sin cambiar
-    SwapInterval = 50,          -- 50 segundos exactos si se activa el Swap
+    SwapWeaponsEnabled = false, -- FALSE = Solo Slot 2 fijo. TRUE = Intercambia con Slot 3
+    SwapInterval = 50,          -- 50 segundos exactos entre Slot 2 y 3
 
     -- Paseo matutino (20 segundos por cada movimiento aleatorio)
     MovementPattern = "Aleatorio Total",
-    PatternSwitchInterval = 20, -- 20 segundos por cada patrón
-    JumpInterval = 12           -- Salto independiente cada 12 segundos
+    PatternSwitchInterval = 20, -- 20 segundos por patrón
+    JumpInterval = 12,          -- Salto ocasional cada 12 segundos
+
+    -- Evasión de Zombies
+    ZombieEvadeDist = 15        -- Esquiva zombies si están a menos de 15 studs (en tierra)
 }
 
 local State = {
     CurrentDay = 0,
     Status = "Iniciando...",
-    ActiveSlot = 2,             -- 2 (Primario) o 3 (Secundario)
+    ActiveSlot = 2,
     LastSwapTick = tick(),
     IsEating = false,
     LastEatTick = 0,
@@ -57,13 +61,15 @@ local State = {
     IsLandedOnTower = false,
     IsExitingTower = false,
 
-    -- Patrones de movimiento
+    -- Estados de paseo y comida matutina
+    MorningEatingDone = false,
     PatternTick = tick(),
     CurrentActivePattern = "Zigzag",
     PatternStep = 1,
     WanderTarget = nil,
     CircleAngle = 0,
-    LastPeriodicJump = tick()
+    LastPeriodicJump = tick(),
+    BurstJumping = false
 }
 
 local PickUpRemote = nil
@@ -86,7 +92,6 @@ local function getCharacterParts()
     return char, root, hum
 end
 
--- Destruye cualquier fuerza física residual para que el personaje se mueva y salte libremente
 local function unlockCharacterPhysics()
     local _, root, hum = getCharacterParts()
     if root then
@@ -198,24 +203,23 @@ local function findNearestWatchtower(myPos)
     return nil, nil, nil
 end
 
--- Salida elevada: sube 10 studs para librar las barandillas de la torre plato y avanza afuera
 local function exitDishTowerSafely(towerPos)
     if State.IsExitingTower then return end
     State.IsExitingTower = true
 
     local _, root, _ = getCharacterParts()
     if root then
-        -- 1. Subir verticalmente para superar el borde de la torre plato
+        -- 1. Subir verticalmente 10 studs para librar los bordes altos del plato
         local upPos = root.Position + Vector3.new(0, 10.0, 0)
         flyToPoint(upPos, Config.FlySpeed, 2.0)
 
-        -- 2. Moverse horizontalmente hacia el exterior
+        -- 2. Avanzar horizontalmente hacia afuera de la torre
         local outwardDir = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(towerPos.X, 0, towerPos.Z)).Unit
         if outwardDir.Magnitude < 0.1 then outwardDir = Vector3.new(1, 0, 0) end
         local clearEdgePos = upPos + (outwardDir * 18.0)
         flyToPoint(clearEdgePos, Config.FlySpeed, 2.0)
 
-        -- 3. Liberar físicas completamente para que caiga y camine sin ataduras
+        -- 3. Liberar físicas completamente para caminar y saltar sin trabas
         unlockCharacterPhysics()
     end
 
@@ -223,34 +227,32 @@ local function exitDishTowerSafely(towerPos)
 end
 
 -- ==============================================================================
--- 3. MOTOR EXACTO DE ARMAS (BACKPACKGUI: SLOT 2 FIJO / SWAP 2 ⇄ 3)
+-- 3. CONTROL DE ARMAS ESTRICTO (SLOT 2 FIJO / SWAP 2 ⇄ 3 CADA 50s)
 -- ==============================================================================
 
--- Extrae el nombre exacto asignado al Slot 2 o 3 dentro de PlayerGui.BackpackGui
 local function getHotbarToolName(slotNum)
     local slotStr = tostring(slotNum)
     local pg = lp:FindFirstChild("PlayerGui")
     local bpg = pg and pg:FindFirstChild("BackpackGui")
 
     if bpg then
-        -- 1. Buscar directamente por el nombre del Frame ("2", "3")
-        local slotFrame = bpg:FindFirstChild(slotStr, true)
-        if slotFrame and slotFrame:IsA("GuiObject") then
-            for _, child in ipairs(slotFrame:GetChildren()) do
-                if child:IsA("TextLabel") and child.Text ~= "" and child.Text ~= slotStr and not child.Text:match("^%d+$") then
-                    return child.Text
-                elseif child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
-                    return child.Value.Name
+        for _, desc in ipairs(bpg:GetDescendants()) do
+            if (desc.Name == slotStr or desc.Name == "Slot" .. slotStr) and desc:IsA("GuiObject") then
+                for _, child in ipairs(desc:GetChildren()) do
+                    if child:IsA("TextLabel") and child.Text ~= "" and child.Text ~= slotStr and not child.Text:match("^%d+$") then
+                        return child.Text
+                    elseif child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
+                        return child.Value.Name
+                    end
                 end
             end
         end
 
-        -- 2. Buscar por el texto de la casilla en BackpackGui
         for _, desc in ipairs(bpg:GetDescendants()) do
             if desc:IsA("TextLabel") and desc.Visible and desc.Text:gsub("%s+", "") == slotStr then
-                local parent = desc.Parent
-                if parent then
-                    for _, child in ipairs(parent:GetChildren()) do
+                local p = desc.Parent
+                if p then
+                    for _, child in ipairs(p:GetChildren()) do
                         if child:IsA("TextLabel") and child ~= desc and child.Text ~= "" and not child.Text:match("^%d+$") then
                             return child.Text
                         elseif child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
@@ -262,30 +264,28 @@ local function getHotbarToolName(slotNum)
         end
     end
 
-    -- Respaldo según tu reporte forense
+    -- Respaldo exacto de tu inventario
     if slotNum == 2 then return "LMG" end
     if slotNum == 3 then return "Bat" end
-
     return nil
 end
 
--- Mantiene en mano el arma seleccionada sin desequiparla repetidamente
 local function enforceEquippedWeapon(targetToolName)
     if not targetToolName or targetToolName == "" then return end
     local char, _, hum = getCharacterParts()
     if not hum or hum.Health <= 0 then return end
 
-    local currentTool = char:FindFirstChildOfClass("Tool")
+    local inHand = char:FindFirstChildOfClass("Tool")
 
-    -- Si la herramienta en mano ya es la correcta, NO TOCAR NADA (evita que se guarde sola)
-    if currentTool and currentTool.Name == targetToolName then
+    -- Si ya la tiene en mano, NO tocar nada (evita desequipados involuntarios)
+    if inHand and inHand.Name == targetToolName then
         return
     end
 
-    -- Si tiene equipada otra cosa (como la Candy Bag o comida), desequiparla primero
-    if currentTool and currentTool.Name ~= targetToolName then
+    -- Si tiene un arma distinta (o comida/Candy Bag), desequipar solo esa
+    if inHand and inHand.Name ~= targetToolName then
         hum:UnequipTools()
-        task.wait(0.06)
+        task.wait(0.05)
     end
 
     local bp = lp:FindFirstChild("Backpack")
@@ -304,36 +304,33 @@ task.spawn(function()
         if Config.Active and Config.AutoEquipWeapon and not State.IsEating then
             local _, _, hum = getCharacterParts()
             if hum and hum.Health > 0 then
-                -- LÓGICA DE SELECCIÓN:
                 if Config.SwapWeaponsEnabled then
-                    -- Intercambia estrictamente entre Slot 2 y Slot 3 cada 50 segundos
                     if (tick() - State.LastSwapTick) >= Config.SwapInterval then
                         State.ActiveSlot = (State.ActiveSlot == 2) and 3 or 2
                         State.LastSwapTick = tick()
                     end
                 else
-                    -- Modo normal: FIJO EN SLOT 2
+                    -- Modo Fijo: SIEMPRE Slot 2
                     State.ActiveSlot = 2
                 end
 
-                local targetWeaponName = getHotbarToolName(State.ActiveSlot)
-                enforceEquippedWeapon(targetWeaponName)
+                local targetWeapon = getHotbarToolName(State.ActiveSlot)
+                enforceEquippedWeapon(targetWeapon)
             end
         end
     end
 end)
 
--- Re-equipar automáticamente al revivir
 lp.CharacterAdded:Connect(function()
     task.wait(1.5)
     if Config.Active and Config.AutoEquipWeapon then
-        local targetWeaponName = getHotbarToolName(State.ActiveSlot)
-        enforceEquippedWeapon(targetWeaponName)
+        local targetWeapon = getHotbarToolName(State.ActiveSlot)
+        enforceEquippedWeapon(targetWeapon)
     end
 end)
 
 -- ==============================================================================
--- 4. ALIMENTACIÓN AUTOMÁTICA EN BASE
+-- 4. ALIMENTACIÓN AUTOMÁTICA EN BASE (MECÁNICA ORIGINAL EXACTA)
 -- ==============================================================================
 
 local function getPlayerStats()
@@ -351,6 +348,7 @@ end
 local function findGroundFoodInBase(maxRadius)
     local _, root = getCharacterParts()
     if not root then return nil end
+
     local dropped = workspace:FindFirstChild("DroppedItems")
     if not dropped then return nil end
 
@@ -360,17 +358,17 @@ local function findGroundFoodInBase(maxRadius)
     for _, item in ipairs(dropped:GetChildren()) do
         local n = item.Name:lower()
         local itemType = tostring(item:GetAttribute("ItemType") or ""):lower()
-        local isFood = (itemType == "food") or n:find("carrot") or n:find("beans") or n:find("mre")
+        local isFood = (itemType == "food") or n:find("carrot") or n:find("beans") or n:find("mre") or n:find("chips")
 
         if isFood and item:GetAttribute("CanPickUp") ~= false then
             local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
             if part then
-                local distBase = (Vector3.new(part.Position.X, 0, part.Position.Z) - BaseCenter).Magnitude
-                if distBase <= maxRadius then
-                    local d = (part.Position - root.Position).Magnitude
-                    if d < shortest then
-                        shortest = d
-                        best = { Item = item, Part = part, Dist = d }
+                local distFromBase = (Vector3.new(part.Position.X, 0, part.Position.Z) - BaseCenter).Magnitude
+                if distFromBase <= maxRadius then
+                    local distToMe = (part.Position - root.Position).Magnitude
+                    if distToMe < shortest then
+                        shortest = distToMe
+                        best = { Item = item, Part = part, Dist = distToMe }
                     end
                 end
             end
@@ -387,6 +385,8 @@ local function eatFood(foodItem)
     if not hum or hum.Health <= 0 then return end
 
     State.IsEating = true
+    local previousTool = char:FindFirstChildOfClass("Tool")
+
     pcall(function() PickUpRemote:FireServer(foodItem) end)
 
     local foodTool = nil
@@ -407,21 +407,94 @@ local function eatFood(foodItem)
     end
 
     if foodTool then
-        if foodTool.Parent ~= char then hum:EquipTool(foodTool); task.wait(0.05) end
+        if foodTool.Parent ~= char then
+            hum:EquipTool(foodTool)
+            task.wait(0.05)
+        end
         pcall(function() foodTool:Activate() end)
+        local useRemote = foodTool:FindFirstChild("Use") or foodTool:FindFirstChild("Consume")
+        if useRemote and useRemote:IsA("RemoteEvent") then
+            pcall(function() useRemote:FireServer() end)
+        end
         task.wait(0.20)
     end
 
-    -- Re-equipar arma de inmediato tras comer
-    local targetWeaponName = getHotbarToolName(State.ActiveSlot)
-    enforceEquippedWeapon(targetWeaponName)
+    -- Re-equipar el arma configurada inmediatamente
+    local targetWeapon = getHotbarToolName(State.ActiveSlot)
+    enforceEquippedWeapon(targetWeapon)
 
     State.LastEatTick = tick()
     State.IsEating = false
 end
 
 -- ==============================================================================
--- 5. PASEO MATUTINO (20 SEGUNDOS POR MOVIMIENTO + SALTO CADA 12s)
+-- 5. EVASIÓN DE OBSTÁCULOS Y EVASIÓN DE ZOMBIES (15 STUDS)
+-- ==============================================================================
+
+-- Evasión de Zombies si está en el suelo (no en la torre)
+local function getZombieAvoidanceVector(rootPos, scanDist)
+    local avoidVec = Vector3.zero
+    local count = 0
+    local folder = workspace:FindFirstChild("Characters") or workspace
+
+    for _, ent in ipairs(folder:GetChildren()) do
+        if ent:IsA("Model") and ent ~= lp.Character and not Players:GetPlayerFromCharacter(ent) then
+            local hum = ent:FindFirstChildOfClass("Humanoid")
+            local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+            if hum and hum.Health > 0 and eRoot then
+                local diff = rootPos - eRoot.Position
+                local dist = Vector3.new(diff.X, 0, diff.Z).Magnitude
+                if dist <= scanDist and dist > 0.5 then
+                    local pushDir = Vector3.new(diff.X, 0, diff.Z).Unit
+                    local weight = (scanDist - dist) / scanDist
+                    avoidVec = avoidVec + (pushDir * weight * 22)
+                    count = count + 1
+                end
+            end
+        end
+    end
+    return avoidVec, count
+end
+
+-- Evasión de muros, cercas y cajas con Raycasting
+local function checkObstaclesAndSteer(root, moveDir)
+    if not root or moveDir.Magnitude < 0.1 then return moveDir end
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = RaycastFilterType.Exclude
+    if lp.Character then
+        rayParams.FilterDescendantsInstances = {lp.Character}
+    end
+
+    local forwardHit = workspace:Raycast(root.Position, moveDir * 6.0, rayParams)
+    if forwardHit and forwardHit.Instance and forwardHit.Instance.CanCollide then
+        -- Comprobar si es un obstáculo bajo saltando
+        local highHit = workspace:Raycast(root.Position + Vector3.new(0, 3.2, 0), moveDir * 6.0, rayParams)
+        if not highHit then
+            local _, _, hum = getCharacterParts()
+            if hum then hum.Jump = true end
+            return moveDir
+        else
+            -- Muro alto: desviar a la derecha o izquierda
+            local rightVec = Vector3.new(-moveDir.Z, 0, moveDir.X)
+            local rightHit = workspace:Raycast(root.Position, rightVec * 6.5, rayParams)
+            local leftHit = workspace:Raycast(root.Position, (-rightVec) * 6.5, rayParams)
+
+            if not rightHit then
+                return (moveDir + rightVec * 1.6).Unit
+            elseif not leftHit then
+                return (moveDir - rightVec * 1.6).Unit
+            else
+                return -moveDir -- Retorcer si está arrinconado
+            end
+        end
+    end
+
+    return moveDir
+end
+
+-- ==============================================================================
+-- 6. MOTOR DE PASEO MATUTINO (20 SEGUNDOS POR MOVIMIENTO + EVASIÓN)
 -- ==============================================================================
 
 local PATTERNS = {
@@ -457,13 +530,13 @@ end
 local function executeMorningMovement(char, root, hum)
     local now = tick()
 
-    -- Salto ocasional cada 12 segundos
+    -- Salto periódico independiente cada 12 segundos
     if now - State.LastPeriodicJump >= Config.JumpInterval then
         hum.Jump = true
         State.LastPeriodicJump = now
     end
 
-    -- Rotación cada 20 segundos si está en 'Aleatorio Total'
+    -- Rotación cada 20 segundos
     local activeMode = Config.MovementPattern
     if Config.MovementPattern == "Aleatorio Total" then
         if now - State.PatternTick >= Config.PatternSwitchInterval then
@@ -475,7 +548,8 @@ local function executeMorningMovement(char, root, hum)
         activeMode = State.CurrentActivePattern
     end
 
-    -- Ejecución de patrones
+    local rawMoveDir = Vector3.zero
+
     if activeMode == "Zigzag" then
         if not State.WanderTarget or (root.Position - State.WanderTarget).Magnitude <= 4 then
             local randAngle = math.random() * math.pi * 2
@@ -485,13 +559,13 @@ local function executeMorningMovement(char, root, hum)
         local toDest = (State.WanderTarget - root.Position).Unit
         local perp = Vector3.new(-toDest.Z, 0, toDest.X)
         local wave = perp * (math.sin(now * 3.5) * 14)
-        hum:MoveTo(root.Position + (toDest * 12) + wave)
+        rawMoveDir = ((toDest * 12) + wave).Unit
 
     elseif activeMode == "Dando Vueltas" then
         State.CircleAngle = State.CircleAngle + 0.08
         local r = 28
         local circPos = BaseCenter + Vector3.new(math.cos(State.CircleAngle) * r, 0, math.sin(State.CircleAngle) * r)
-        hum:MoveTo(circPos)
+        rawMoveDir = (circPos - root.Position).Unit
 
     elseif activeMode == "En Cuadrado" then
         local size = 20
@@ -505,35 +579,31 @@ local function executeMorningMovement(char, root, hum)
         if (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(currentCorner.X, 0, currentCorner.Z)).Magnitude <= 4.5 then
             State.PatternStep = (State.PatternStep % 4) + 1
         end
-        hum:MoveTo(corners[State.PatternStep])
+        rawMoveDir = (corners[State.PatternStep] - root.Position).Unit
 
     elseif activeMode == "Siguiendo Compañeros" then
         local mate = getNearestTeammate(root.Position)
         if mate then
             local dist = (Vector3.new(mate.Position.X, 0, mate.Position.Z) - Vector3.new(root.Position.X, 0, root.Position.Z)).Magnitude
             if dist > 8 then
-                hum:MoveTo(mate.Position)
-            else
-                hum:MoveTo(root.Position)
+                rawMoveDir = (mate.Position - root.Position).Unit
             end
         else
-            hum:MoveTo(BaseCenter)
+            rawMoveDir = (BaseCenter - root.Position).Unit
         end
 
     elseif activeMode == "Solo Saltando" then
-        if now % 0.8 < 0.2 then
-            hum.Jump = true
-        end
+        if now % 0.8 < 0.25 then hum.Jump = true end
         if not State.WanderTarget or (root.Position - State.WanderTarget).Magnitude <= 3 then
             local r = math.random(5, 18)
             local ang = math.random() * math.pi * 2
             State.WanderTarget = BaseCenter + Vector3.new(math.cos(ang) * r, 0, math.sin(ang) * r)
         end
-        hum:MoveTo(State.WanderTarget)
+        rawMoveDir = (State.WanderTarget - root.Position).Unit
 
     elseif activeMode == "Zigzag en el Mismo Lugar" then
         local offset = math.sin(now * 5.0) * 8.0
-        hum:MoveTo(BaseCenter + Vector3.new(offset, 0, 0))
+        rawMoveDir = (BaseCenter + Vector3.new(offset, 0, 0) - root.Position).Unit
 
     elseif activeMode == "Salto 5 Veces" then
         if not State.BurstJumping then
@@ -548,17 +618,25 @@ local function executeMorningMovement(char, root, hum)
                 State.BurstJumping = false
             end)
         end
-        hum:MoveTo(BaseCenter)
+        rawMoveDir = (BaseCenter - root.Position).Unit
 
     elseif activeMode == "Dando Vueltas sobre Sí Mismo" then
         local spinDir = Vector3.new(math.cos(now * 8), 0, math.sin(now * 8))
         root.CFrame = CFrame.lookAt(root.Position, root.Position + spinDir)
-        hum:MoveTo(root.Position)
+        return
+    end
+
+    -- Integrar Evasión de Obstáculos activa
+    local steeredDir = checkObstaclesAndSteer(root, rawMoveDir)
+
+    -- Mover
+    if steeredDir.Magnitude > 0.1 then
+        hum:MoveTo(root.Position + (steeredDir * 10))
     end
 end
 
 -- ==============================================================================
--- 6. BUCLE PRINCIPAL DE ESTADOS
+-- 7. BUCLE PRINCIPAL DE ESTADOS (TORRE, DÍA 90+, COMIDA Y PASEO)
 -- ==============================================================================
 
 local function isNightTime()
@@ -597,59 +675,81 @@ task.spawn(function()
         local night = isNightTime()
         local _, hungerPct = getPlayerStats()
 
+        -- ======================================================================
         -- CASO 1: DÍA 90 O SUPERIOR (GUARDIA EN Vector3.new(0.1, 0.9, -8))
+        -- ======================================================================
         if currentDay >= Config.Day90Threshold then
             State.Day90Enforced = true
             unlockCharacterPhysics()
 
             local distTo90 = (root.Position - DAY_90_TARGET_POS).Magnitude
             if distTo90 > 2.5 then
-                State.Status = string.format("⚠️ Día %d >= 90: Yendo a guardia (0.1, 0.9, -8)", currentDay)
+                State.Status = string.format("⚠️ Día %d >= 90: Yendo a (0.1, 0.9, -8)", currentDay)
                 hum:MoveTo(DAY_90_TARGET_POS)
             else
                 State.Status = string.format("🛡️ Día %d: En guardia fija en (0.1, 0.9, -8)", currentDay)
             end
 
-        -- CASO 2: NOCHE (BUSCA TORRE, VUELA, SE POSA DE PIE SIN FLOTAR)
+        -- ======================================================================
+        -- CASO 2: NOCHE (TORRE / RESGUARDO / EVASIÓN DE ZOMBIES SI ESTÁ ABAJO)
+        -- ======================================================================
         elseif night then
             State.Day90Enforced = false
-            local towerTop, towerName, towerDist = findNearestWatchtower(root.Position)
+            State.MorningEatingDone = false -- Reiniciar ciclo de comida para la siguiente mañana
+
+            local towerTop, towerName = findNearestWatchtower(root.Position)
 
             if towerTop then
                 State.CurrentTowerName = towerName
                 State.TowerTopPos = towerTop
                 local distToTop = (root.Position - towerTop).Magnitude
 
+                -- Volar hacia la torre
                 if distToTop > 4.5 then
                     State.IsLandedOnTower = false
-                    State.Status = string.format("🌙 Volando a la torre '%s'...", towerName)
+                    State.Status = string.format("🌙 Volando a la cima de '%s'...", towerName)
                     flyToPoint(towerTop, Config.FlySpeed, 2.5)
                 else
-                    -- SOLTAR VUELO: Se posa de pie en el piso de la torre sin flotar
+                    -- ATERRIZAJE: Suelta el vuelo y se para de pie
                     if not State.IsLandedOnTower then
                         unlockCharacterPhysics()
                         State.IsLandedOnTower = true
                     end
 
-                    -- Si cae de la torre, reactivar vuelo y volver a subir
+                    -- Vigilante anticaídas de la torre
                     if root.Position.Y < (towerTop.Y - 5.0) then
                         State.IsLandedOnTower = false
                         flyToPoint(towerTop, Config.FlySpeed, 2.0)
                     else
-                        State.Status = string.format("🌙 Posado en plataforma de '%s'", towerName)
+                        -- EN LA TORRE: No esquiva zombies, se queda quieto
+                        State.Status = string.format("🌙 En la torre '%s' (Protegido)", towerName)
                     end
                 end
             else
-                State.Status = "⚠️ Noche: Buscando torre..."
+                -- SI NO HAY TORRE Y ESTÁ EN EL SUELO DE NOCHE: Esquivar zombies a 15 studs
+                State.IsLandedOnTower = false
+                unlockCharacterPhysics()
+
+                local avoidVec, count = getZombieAvoidanceVector(root.Position, Config.ZombieEvadeDist)
+                if count > 0 then
+                    State.Status = string.format("⚠️ Noche sin torre: Esquivando %d zombies...", count)
+                    local safeDir = checkObstaclesAndSteer(root, avoidVec.Unit)
+                    hum:MoveTo(root.Position + (safeDir * 15))
+                else
+                    State.Status = "🌙 Noche sin torre: Buscando refugio..."
+                    hum:MoveTo(BaseCenter)
+                end
             end
 
-        -- CASO 3: DÍA / MAÑANA (SALIDA POR ARRIBA DEL PLATO + COMIDA + PASEO)
+        -- ======================================================================
+        -- CASO 3: MAÑANA / DÍA (1° COMIDA HASTA 95%+ -> 2° PASEO RANDOM CON EVASIÓN)
+        -- ======================================================================
         else
             State.Day90Enforced = false
 
-            -- Si amanece arriba de la torre, subir por arriba del plato y salir
+            -- Si amanece arriba de la torre, salir volando por arriba del plato
             if State.TowerTopPos and (root.Position - State.TowerTopPos).Magnitude <= 14 then
-                State.Status = "☀️ Saliendo por arriba de la torre plato..."
+                State.Status = "☀️ Saliendo por arriba del plato de la torre..."
                 exitDishTowerSafely(State.TowerTopPos)
                 State.TowerTopPos = nil
                 State.IsLandedOnTower = false
@@ -657,31 +757,46 @@ task.spawn(function()
 
             unlockCharacterPhysics()
 
-            -- Comer si hambre < 95%
-            if hungerPct < Config.FullHungerTarget then
+            -- Comprobar si hay zombies cerca en el suelo durante el día
+            local avoidVec, count = getZombieAvoidanceVector(root.Position, Config.ZombieEvadeDist)
+            if count > 0 then
+                State.Status = string.format("🏃 Esquivando %d zombies cerca (15m)...", count)
+                local safeDir = checkObstaclesAndSteer(root, avoidVec.Unit)
+                hum:MoveTo(root.Position + (safeDir * 14))
+                continue
+            end
+
+            -- PASO 1: PRIMERO BUSCAR COMIDA EN LA MAÑANA HASTA SACIARSE (>= 95%)
+            if hungerPct < Config.FullHungerTarget and not State.MorningEatingDone then
                 local foodTarget = findGroundFoodInBase(Config.EatScanRadius)
                 if foodTarget then
-                    State.Status = string.format("☀️ Comiendo en base (Hambre: %d%%)", hungerPct)
+                    State.Status = string.format("☀️ 1° Comiendo en base (Hambre: %d%%)", hungerPct)
                     if foodTarget.Dist > 5.0 then
-                        hum:MoveTo(foodTarget.Part.Position)
+                        local toFood = (foodTarget.Part.Position - root.Position).Unit
+                        local steeredDir = checkObstaclesAndSteer(root, toFood)
+                        hum:MoveTo(root.Position + (steeredDir * 10))
                     else
                         eatFood(foodTarget.Item)
                     end
                 else
-                    executeMorningMovement(char, root, hum)
+                    State.Status = string.format("☀️ Buscando comida en base... (Hambre: %d%%)", hungerPct)
+                    local wanderDir = checkObstaclesAndSteer(root, (BaseCenter - root.Position).Unit)
+                    hum:MoveTo(root.Position + (wanderDir * 10))
                 end
+
+            -- PASO 2: UNA VEZ LLENO, INICIAR PASEO CON MOVIMIENTOS RANDOM (20s C/U)
             else
-                -- Paseo matutino activo (20s por movimiento)
+                State.MorningEatingDone = true
                 executeMorningMovement(char, root, hum)
                 local curPatternName = (Config.MovementPattern == "Aleatorio Total") and State.CurrentActivePattern or Config.MovementPattern
-                State.Status = string.format("☀️ Paseo: %s (Hambre: %d%%)", curPatternName, hungerPct)
+                State.Status = string.format("☀️ 2° Paseando: %s (Hambre: %d%%)", curPatternName, hungerPct)
             end
         end
     end
 end)
 
 -- ==============================================================================
--- 7. INTERFAZ GRÁFICA NATIVA ROBLOX (SCREENGUI)
+-- 8. INTERFAZ GRÁFICA NATIVA ROBLOX (SCREENGUI)
 -- ==============================================================================
 
 local function getSafeGuiParent()
@@ -694,11 +809,11 @@ local function getSafeGuiParent()
 end
 
 local GuiParent = getSafeGuiParent()
-local existing = GuiParent:FindFirstChild("BaseDefenderUniversalGuiV35")
+local existing = GuiParent:FindFirstChild("BaseDefenderUniversalGuiV40")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "BaseDefenderUniversalGuiV35"
+ScreenGui.Name = "BaseDefenderUniversalGuiV40"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -717,7 +832,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-TitleBar.Text = "   🏰 BASE DEFENDER V3.5 (SLOT 2 FIJO / SWAP 50s)"
+TitleBar.Text = "   🏰 BASE DEFENDER V4.0 (COMIDA 1° + SLOT 2 FIJO)"
 TitleBar.TextColor3 = Color3.fromRGB(255, 170, 0)
 TitleBar.TextSize = 11
 TitleBar.Font = Enum.Font.GothamBold
@@ -763,7 +878,7 @@ local function createBtn(text, color, pos, size, callback)
     return btn
 end
 
--- Botón 1: Encender / Apagar
+-- Botón 1: Activar/Pausar
 local ToggleBtn
 ToggleBtn = createBtn("🟢 SCRIPT ACTIVO: ON", Color3.fromRGB(30, 150, 70), UDim2.new(0, 10, 0, 150), UDim2.new(0.48, -5, 0, 36), function()
     Config.Active = not Config.Active
@@ -777,12 +892,12 @@ ToggleBtn = createBtn("🟢 SCRIPT ACTIVO: ON", Color3.fromRGB(30, 150, 70), UDi
     end
 end)
 
--- Botón 2: Desbloquear Físicas
-createBtn("🔓 LIBERAR FÍSICAS (PESADEZ 0%)", Color3.fromRGB(45, 100, 180), UDim2.new(0.52, 0, 0, 150), UDim2.new(0.48, -10, 0, 36), function()
+-- Botón 2: Liberar Físicas
+createBtn("🔓 LIBERAR FÍSICAS (0% PESADEZ)", Color3.fromRGB(45, 100, 180), UDim2.new(0.52, 0, 0, 150), UDim2.new(0.48, -10, 0, 36), function()
     unlockCharacterPhysics()
 end)
 
--- Botón 3: Control de Armas (SLOT 2 FIJO vs SWAP 2 ⇄ 3 CADA 50s)
+-- Botón 3: Control de Arma (Slot 2 Fijo vs Swap 50s)
 local SwapBtn
 SwapBtn = createBtn("🔫 MODO ARMA: SOLO SLOT 2 (FIJO)", Color3.fromRGB(40, 130, 80), UDim2.new(0, 10, 0, 192), UDim2.new(1, -20, 0, 34), function()
     Config.SwapWeaponsEnabled = not Config.SwapWeaponsEnabled
@@ -798,7 +913,7 @@ SwapBtn = createBtn("🔫 MODO ARMA: SOLO SLOT 2 (FIJO)", Color3.fromRGB(40, 130
     end
 end)
 
--- Botones 4 y 5: Ajuste de tiempo de Swap (+5s / -5s)
+-- Botones 4 y 5: Ajuste tiempo de Swap (+5s / -5s)
 createBtn("➖ TIEMPO SWAP (-5s)", Color3.fromRGB(35, 40, 55), UDim2.new(0, 10, 0, 232), UDim2.new(0.48, -5, 0, 30), function()
     Config.SwapInterval = math.max(10, Config.SwapInterval - 5)
     if Config.SwapWeaponsEnabled then
@@ -813,7 +928,7 @@ createBtn("➕ TIEMPO SWAP (+5s)", Color3.fromRGB(35, 40, 55), UDim2.new(0.52, 0
     end
 end)
 
--- Botón 6: Selector de Modos de Paseo
+-- Botón 6: Selector de Modos de Paseo (20s)
 local PatternList = {
     "Aleatorio Total",
     "Zigzag",
@@ -837,7 +952,7 @@ PatternBtn = createBtn(string.format("PASEO: %s (%ds)", Config.MovementPattern, 
     State.PatternStep = 1
 end)
 
--- Botones 7 y 8: Ajuste tiempo de rotación de paseo (20s)
+-- Botones 7 y 8: Ajuste tiempo de paseo
 createBtn("➖ TIEMPO PASEO (-5s)", Color3.fromRGB(35, 40, 55), UDim2.new(0, 10, 0, 304), UDim2.new(0.48, -5, 0, 28), function()
     Config.PatternSwitchInterval = math.max(10, Config.PatternSwitchInterval - 5)
     PatternBtn.Text = string.format("PASEO: %s (%ds)", Config.MovementPattern, Config.PatternSwitchInterval)
@@ -875,7 +990,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 20)
-FloatBtn.Text = "🏰\nV3.5"
+FloatBtn.Text = "🏰\nV4.0"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -912,14 +1027,12 @@ task.spawn(function()
             "Torre: '%s' | %s\n" ..
             "Arma en Mano: Slot %d ['%s'] | Modo: %s\n" ..
             "  • Slot 2: '%s' | Slot 3: '%s'\n" ..
-            "Paseo: %s (Rotación c/%ds | Salto c/12s)",
+            "Evasión: Zombies (15m) + Muros/Cercas activos",
             State.Status,
             dayNum, night and "🌙 NOCHE" or "☀️ DÍA", pHP, pHunger,
             State.CurrentTowerName, State.IsLandedOnTower and "Posado de Pie" or "En Movimiento",
             State.ActiveSlot, activeToolName, weaponModeText,
-            tool2Name, tool3Name,
-            (Config.MovementPattern == "Aleatorio Total") and ("Ciclo (" .. State.CurrentActivePattern .. ")") or Config.MovementPattern,
-            Config.PatternSwitchInterval
+            tool2Name, tool3Name
         )
     end
 end)
