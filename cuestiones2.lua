@@ -1,6 +1,7 @@
 -- ==============================================================================
--- BASE DEFENDER & TOWER WATCHDOG V4.0 (INTERFAZ NATIVA - 0% LIBRERÍAS EXTERNAS)
--- Prioridad Comida Mañana + Evasión Obstáculos + Slot 2 Fijo / Swap 50s + Evasión Zombies
+-- BASE DEFENDER & TOWER WATCHDOG V4.5 (NATIVO ROBLOX - 0% LIBRERÍAS EXTERNAS)
+-- 1° Comida Matutina Obligatoria + Evasión Obstáculos 3D + Slot 2 Fijo / Swap 50s
+-- Torre Plato (Vuelo, Posado de Pie y Salida Elevada) + Evasión Zombies 15m
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -20,14 +21,14 @@ end)
 
 local BaseCenter = Vector3.new(0, 0, 0)
 local DAY_90_TARGET_POS = Vector3.new(0.1, 0.9, -8.0)
-local BASE_WANDER_RADIUS = 85
+local BASE_WANDER_RADIUS = 80
 
 local Config = {
     Active = true,
     FlySpeed = 70,
     Day90Threshold = 90,
 
-    -- Alimentación matutina prioritaria
+    -- Alimentación matutina prioritaria (1° come, 2° pasea)
     EatScanRadius = 100,        -- Radio para buscar comida en la base
     FullHungerTarget = 95,      -- Come hasta tener 95%+ antes de pasear
     EatCooldown = 0.9,
@@ -49,7 +50,7 @@ local Config = {
 local State = {
     CurrentDay = 0,
     Status = "Iniciando...",
-    ActiveSlot = 2,
+    ActiveSlot = 2,             -- 2 (Fijo) o alternado con 3
     LastSwapTick = tick(),
     IsEating = false,
     LastEatTick = 0,
@@ -61,8 +62,8 @@ local State = {
     IsLandedOnTower = false,
     IsExitingTower = false,
 
-    -- Estados de paseo y comida matutina
-    MorningEatingDone = false,
+    -- Estados de mañana
+    MorningEatingComplete = false,
     PatternTick = tick(),
     CurrentActivePattern = "Zigzag",
     PatternStep = 1,
@@ -82,7 +83,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 1. FÍSICAS DESBLOQUEADAS (ANTI-PESADEZ / LIBERTAD TOTAL DE SALTO)
+-- 1. FÍSICAS DESBLOQUEADAS (ANTI-PESADEZ / 100% LIBERTAD DE SALTO)
 -- ==============================================================================
 
 local function getCharacterParts()
@@ -155,7 +156,7 @@ local function flyToPoint(targetPos, speed, stopDist)
 end
 
 -- ==============================================================================
--- 2. DETECCIÓN DE TORRE, ATERRIZAJE DE PIE Y SALIDA ELEVADA (PLATO)
+-- 2. DETECCIÓN DE CUALQUIER TORRE, ATERRIZAJE Y SALIDA ELEVADA (PLATO)
 -- ==============================================================================
 
 local function findNearestWatchtower(myPos)
@@ -227,80 +228,80 @@ local function exitDishTowerSafely(towerPos)
 end
 
 -- ==============================================================================
--- 3. CONTROL DE ARMAS ESTRICTO (SLOT 2 FIJO / SWAP 2 ⇄ 3 CADA 50s)
+-- 3. SISTEMA DE ARMAS BLINDADO (SLOT 2 FIJO / SWAP 2 ⇄ 3 CADA 50s)
 -- ==============================================================================
 
-local function getHotbarToolName(slotNum)
+local function getToolInstanceForSlot(slotNum)
     local slotStr = tostring(slotNum)
     local pg = lp:FindFirstChild("PlayerGui")
     local bpg = pg and pg:FindFirstChild("BackpackGui")
+    local toolNameFound = nil
 
     if bpg then
         for _, desc in ipairs(bpg:GetDescendants()) do
-            if (desc.Name == slotStr or desc.Name == "Slot" .. slotStr) and desc:IsA("GuiObject") then
+            if desc.Name == slotStr and desc:IsA("GuiObject") then
                 for _, child in ipairs(desc:GetChildren()) do
-                    if child:IsA("TextLabel") and child.Text ~= "" and child.Text ~= slotStr and not child.Text:match("^%d+$") then
-                        return child.Text
-                    elseif child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
-                        return child.Value.Name
-                    end
-                end
-            end
-        end
-
-        for _, desc in ipairs(bpg:GetDescendants()) do
-            if desc:IsA("TextLabel") and desc.Visible and desc.Text:gsub("%s+", "") == slotStr then
-                local p = desc.Parent
-                if p then
-                    for _, child in ipairs(p:GetChildren()) do
-                        if child:IsA("TextLabel") and child ~= desc and child.Text ~= "" and not child.Text:match("^%d+$") then
-                            return child.Text
-                        elseif child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
-                            return child.Value.Name
-                        end
+                    if child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
+                        return child.Value
+                    elseif child:IsA("TextLabel") and child.Text ~= "" and child.Text ~= slotStr and not child.Text:match("^%d+$") then
+                        toolNameFound = child.Text
+                        break
                     end
                 end
             end
         end
     end
 
-    -- Respaldo exacto de tu inventario
-    if slotNum == 2 then return "LMG" end
-    if slotNum == 3 then return "Bat" end
+    -- Respaldos fijos de tu inventario si el GUI aún no ha cargado el texto
+    if not toolNameFound then
+        if slotNum == 2 then toolNameFound = "LMG" end
+        if slotNum == 3 then toolNameFound = "Bat" end
+    end
+
+    if toolNameFound then
+        local char = lp.Character
+        if char then
+            local t = char:FindFirstChild(toolNameFound)
+            if t and t:IsA("Tool") then return t end
+        end
+        local bp = lp:FindFirstChild("Backpack")
+        if bp then
+            local t = bp:FindFirstChild(toolNameFound)
+            if t and t:IsA("Tool") then return t end
+        end
+    end
+
     return nil
 end
 
-local function enforceEquippedWeapon(targetToolName)
-    if not targetToolName or targetToolName == "" then return end
+local function ensureWeaponEquipped(slotNum)
+    if State.IsEating then return end
     local char, _, hum = getCharacterParts()
-    if not hum or hum.Health <= 0 then return end
+    if not char or not hum or hum.Health <= 0 then return end
 
-    local inHand = char:FindFirstChildOfClass("Tool")
+    local targetTool = getToolInstanceForSlot(slotNum)
+    if not targetTool then return end
 
-    -- Si ya la tiene en mano, NO tocar nada (evita desequipados involuntarios)
-    if inHand and inHand.Name == targetToolName then
+    local currentTool = char:FindFirstChildOfClass("Tool")
+
+    -- Si el arma correcta ya está en la mano, NO TOCAR NADA (evita parpadeos o desarmados)
+    if currentTool == targetTool then
         return
     end
 
-    -- Si tiene un arma distinta (o comida/Candy Bag), desequipar solo esa
-    if inHand and inHand.Name ~= targetToolName then
+    -- Si tiene un arma distinta o comida en mano, guardarla primero
+    if currentTool and currentTool ~= targetTool then
         hum:UnequipTools()
-        task.wait(0.05)
+        task.wait(0.04)
     end
 
-    local bp = lp:FindFirstChild("Backpack")
-    local toolToEquip = bp and bp:FindFirstChild(targetToolName)
-
-    if toolToEquip and toolToEquip:IsA("Tool") then
-        hum:EquipTool(toolToEquip)
-    end
+    hum:EquipTool(targetTool)
 end
 
--- Bucle de verificación de arma cada 5 segundos
+-- Bucle de verificación de arma cada 5 segundos y Swap
 task.spawn(function()
     while true do
         task.wait(5.0)
-
         if Config.Active and Config.AutoEquipWeapon and not State.IsEating then
             local _, _, hum = getCharacterParts()
             if hum and hum.Health > 0 then
@@ -310,12 +311,10 @@ task.spawn(function()
                         State.LastSwapTick = tick()
                     end
                 else
-                    -- Modo Fijo: SIEMPRE Slot 2
                     State.ActiveSlot = 2
                 end
 
-                local targetWeapon = getHotbarToolName(State.ActiveSlot)
-                enforceEquippedWeapon(targetWeapon)
+                ensureWeaponEquipped(State.ActiveSlot)
             end
         end
     end
@@ -324,13 +323,12 @@ end)
 lp.CharacterAdded:Connect(function()
     task.wait(1.5)
     if Config.Active and Config.AutoEquipWeapon then
-        local targetWeapon = getHotbarToolName(State.ActiveSlot)
-        enforceEquippedWeapon(targetWeapon)
+        ensureWeaponEquipped(State.ActiveSlot)
     end
 end)
 
 -- ==============================================================================
--- 4. ALIMENTACIÓN AUTOMÁTICA EN BASE (MECÁNICA ORIGINAL EXACTA)
+-- 4. ALIMENTACIÓN MATUTINA ROBUSTA (LECTURA INT/NUMBER/ATTR + USE REMOTE)
 -- ==============================================================================
 
 local function getPlayerStats()
@@ -338,9 +336,20 @@ local function getPlayerStats()
     if not hum then return 100, 100 end
 
     local hpPct = math.floor((hum.Health / math.max(hum.MaxHealth, 1)) * 100)
-    local hunger = char:GetAttribute("Hunger") or lp:GetAttribute("Hunger") or 100
-    local maxHunger = char:GetAttribute("MaxHunger") or lp:GetAttribute("MaxHunger") or 100
-    local hungerPct = math.floor((hunger / maxHunger) * 100)
+    local hunger = char and char:GetAttribute("Hunger") or lp:GetAttribute("Hunger")
+    local maxHunger = char and char:GetAttribute("MaxHunger") or lp:GetAttribute("MaxHunger") or 100
+
+    local hungerPct = 100
+    if type(hunger) == "number" then
+        hungerPct = math.floor((hunger / maxHunger) * 100)
+    else
+        local hVal = char and (char:FindFirstChild("Hunger") or lp:FindFirstChild("Hunger"))
+        if hVal and (hVal:IsA("NumberValue") or hVal:IsA("IntValue")) then
+            local maxHVal = char and (char:FindFirstChild("MaxHunger") or lp:FindFirstChild("MaxHunger"))
+            local maxV = maxHVal and maxHVal.Value or 100
+            hungerPct = math.floor((hVal.Value / maxV) * 100)
+        end
+    end
 
     return hpPct, hungerPct
 end
@@ -363,12 +372,12 @@ local function findGroundFoodInBase(maxRadius)
         if isFood and item:GetAttribute("CanPickUp") ~= false then
             local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
             if part then
-                local distFromBase = (Vector3.new(part.Position.X, 0, part.Position.Z) - BaseCenter).Magnitude
-                if distFromBase <= maxRadius then
-                    local distToMe = (part.Position - root.Position).Magnitude
-                    if distToMe < shortest then
-                        shortest = distToMe
-                        best = { Item = item, Part = part, Dist = distToMe }
+                local distBase = (Vector3.new(part.Position.X, 0, part.Position.Z) - BaseCenter).Magnitude
+                if distBase <= maxRadius then
+                    local d = (part.Position - root.Position).Magnitude
+                    if d < shortest then
+                        shortest = d
+                        best = { Item = item, Part = part, Dist = d }
                     end
                 end
             end
@@ -385,8 +394,6 @@ local function eatFood(foodItem)
     if not hum or hum.Health <= 0 then return end
 
     State.IsEating = true
-    local previousTool = char:FindFirstChildOfClass("Tool")
-
     pcall(function() PickUpRemote:FireServer(foodItem) end)
 
     local foodTool = nil
@@ -395,7 +402,7 @@ local function eatFood(foodItem)
         for _, cont in ipairs({char, lp:FindFirstChild("Backpack")}) do
             if cont then
                 for _, item in ipairs(cont:GetChildren()) do
-                    if item:IsA("Tool") and (item:GetAttribute("ItemType") == "Food" or item.Name:lower():find("carrot") or item.Name:lower():find("beans")) then
+                    if item:IsA("Tool") and (item:GetAttribute("ItemType") == "Food" or item.Name:lower():find("carrot") or item.Name:lower():find("beans") or item.Name:lower():find("mre") or item.Name:lower():find("chips")) then
                         foodTool = item
                         break
                     end
@@ -412,6 +419,7 @@ local function eatFood(foodItem)
             task.wait(0.05)
         end
         pcall(function() foodTool:Activate() end)
+
         local useRemote = foodTool:FindFirstChild("Use") or foodTool:FindFirstChild("Consume")
         if useRemote and useRemote:IsA("RemoteEvent") then
             pcall(function() useRemote:FireServer() end)
@@ -419,82 +427,118 @@ local function eatFood(foodItem)
         task.wait(0.20)
     end
 
-    -- Re-equipar el arma configurada inmediatamente
-    local targetWeapon = getHotbarToolName(State.ActiveSlot)
-    enforceEquippedWeapon(targetWeapon)
+    -- Re-equipar arma configurada inmediatamente
+    ensureWeaponEquipped(State.ActiveSlot)
 
     State.LastEatTick = tick()
     State.IsEating = false
 end
 
 -- ==============================================================================
--- 5. EVASIÓN DE OBSTÁCULOS Y EVASIÓN DE ZOMBIES (15 STUDS)
+-- 5. EVASIÓN ACTIVA DE OBSTÁCULOS (RAYCAST 3D) Y EVASIÓN DE ZOMBIES (15M)
 -- ==============================================================================
 
--- Evasión de Zombies si está en el suelo (no en la torre)
+local function isValidZombie(entity)
+    if not entity or not entity:IsA("Model") or entity == lp.Character or Players:GetPlayerFromCharacter(entity) then
+        return false
+    end
+    local name = entity.Name:lower()
+    if name:find("dropped") or name:find("bag") or name:find("loot") or name:find("item")
+       or name:find("crate") or name:find("debris") or name:find("corpse") or name:find("ragdoll")
+       or name:find("car") or name:find("fence") or name:find("door") then
+        return false
+    end
+    local hum = entity:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    local root = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity.PrimaryPart
+    return root ~= nil, root
+end
+
 local function getZombieAvoidanceVector(rootPos, scanDist)
     local avoidVec = Vector3.zero
     local count = 0
     local folder = workspace:FindFirstChild("Characters") or workspace
 
     for _, ent in ipairs(folder:GetChildren()) do
-        if ent:IsA("Model") and ent ~= lp.Character and not Players:GetPlayerFromCharacter(ent) then
-            local hum = ent:FindFirstChildOfClass("Humanoid")
-            local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
-            if hum and hum.Health > 0 and eRoot then
-                local diff = rootPos - eRoot.Position
-                local dist = Vector3.new(diff.X, 0, diff.Z).Magnitude
-                if dist <= scanDist and dist > 0.5 then
-                    local pushDir = Vector3.new(diff.X, 0, diff.Z).Unit
-                    local weight = (scanDist - dist) / scanDist
-                    avoidVec = avoidVec + (pushDir * weight * 22)
-                    count = count + 1
-                end
+        local valid, eRoot = isValidZombie(ent)
+        if valid and eRoot then
+            local diff = rootPos - eRoot.Position
+            local dist = Vector3.new(diff.X, 0, diff.Z).Magnitude
+            if dist <= scanDist and dist > 0.5 then
+                local pushDir = Vector3.new(diff.X, 0, diff.Z).Unit
+                local weight = (scanDist - dist) / scanDist
+                avoidVec = avoidVec + (pushDir * weight * 25)
+                count = count + 1
             end
         end
     end
     return avoidVec, count
 end
 
--- Evasión de muros, cercas y cajas con Raycasting
+-- Evasión de muros, cajas, vallas con Raycast multidireccional + salto inteligente
 local function checkObstaclesAndSteer(root, moveDir)
     if not root or moveDir.Magnitude < 0.1 then return moveDir end
 
+    local char = lp.Character
     local rayParams = RaycastParams.new()
     rayParams.FilterType = RaycastFilterType.Exclude
-    if lp.Character then
-        rayParams.FilterDescendantsInstances = {lp.Character}
-    end
+    if char then rayParams.FilterDescendantsInstances = {char} end
 
-    local forwardHit = workspace:Raycast(root.Position, moveDir * 6.0, rayParams)
-    if forwardHit and forwardHit.Instance and forwardHit.Instance.CanCollide then
-        -- Comprobar si es un obstáculo bajo saltando
-        local highHit = workspace:Raycast(root.Position + Vector3.new(0, 3.2, 0), moveDir * 6.0, rayParams)
+    local forwardDir = Vector3.new(moveDir.X, 0, moveDir.Z).Unit
+    local origin = root.Position
+
+    -- 1. Raycast Frontal
+    local frontHit = workspace:Raycast(origin, forwardDir * 5.5, rayParams)
+    if frontHit and frontHit.Instance and frontHit.Instance.CanCollide then
+        -- Comprobar si es un obstáculo bajo (saltable como valla o caja pequeña)
+        local highHit = workspace:Raycast(origin + Vector3.new(0, 3.2, 0), forwardDir * 5.5, rayParams)
         if not highHit then
             local _, _, hum = getCharacterParts()
             if hum then hum.Jump = true end
-            return moveDir
+            return forwardDir
         else
-            -- Muro alto: desviar a la derecha o izquierda
-            local rightVec = Vector3.new(-moveDir.Z, 0, moveDir.X)
-            local rightHit = workspace:Raycast(root.Position, rightVec * 6.5, rayParams)
-            local leftHit = workspace:Raycast(root.Position, (-rightVec) * 6.5, rayParams)
+            -- Muro alto: desviar a la derecha o izquierda libre
+            local rightVec = Vector3.new(-forwardDir.Z, 0, forwardDir.X)
+            local rightHit = workspace:Raycast(origin, rightVec * 6.5, rayParams)
+            local leftHit = workspace:Raycast(origin, -rightVec * 6.5, rayParams)
 
             if not rightHit then
-                return (moveDir + rightVec * 1.6).Unit
+                return (forwardDir + rightVec * 1.8).Unit
             elseif not leftHit then
-                return (moveDir - rightVec * 1.6).Unit
+                return (forwardDir - rightVec * 1.8).Unit
             else
-                return -moveDir -- Retorcer si está arrinconado
+                return -forwardDir
             end
         end
     end
 
+    -- 2. Sensores laterales en ángulo (Whiskers)
+    local rightWhisker = (forwardDir + Vector3.new(-forwardDir.Z, 0, forwardDir.X) * 0.65).Unit
+    local leftWhisker = (forwardDir - Vector3.new(-forwardDir.Z, 0, forwardDir.X) * 0.65).Unit
+
+    local rHit = workspace:Raycast(origin, rightWhisker * 4.2, rayParams)
+    local lHit = workspace:Raycast(origin, leftWhisker * 4.2, rayParams)
+
+    if rHit and not lHit then
+        return leftWhisker
+    elseif lHit and not rHit then
+        return rightWhisker
+    end
+
+    return forwardDir
+end
+
+local function keepInsideBase(root, moveDir)
+    local pos = root.Position
+    local distBase = (Vector3.new(pos.X, 0, pos.Z) - BaseCenter).Magnitude
+    if distBase > (BASE_WANDER_RADIUS - 6) then
+        return (BaseCenter - pos).Unit
+    end
     return moveDir
 end
 
 -- ==============================================================================
--- 6. MOTOR DE PASEO MATUTINO (20 SEGUNDOS POR MOVIMIENTO + EVASIÓN)
+-- 6. MOTOR DE PASEO MATUTINO (20 SEGUNDOS POR MOVIMIENTO)
 -- ==============================================================================
 
 local PATTERNS = {
@@ -530,13 +574,13 @@ end
 local function executeMorningMovement(char, root, hum)
     local now = tick()
 
-    -- Salto periódico independiente cada 12 segundos
+    -- Salto ocasional cada 12 segundos
     if now - State.LastPeriodicJump >= Config.JumpInterval then
         hum.Jump = true
         State.LastPeriodicJump = now
     end
 
-    -- Rotación cada 20 segundos
+    -- Rotación de patrón cada 20 segundos
     local activeMode = Config.MovementPattern
     if Config.MovementPattern == "Aleatorio Total" then
         if now - State.PatternTick >= Config.PatternSwitchInterval then
@@ -626,17 +670,17 @@ local function executeMorningMovement(char, root, hum)
         return
     end
 
-    -- Integrar Evasión de Obstáculos activa
-    local steeredDir = checkObstaclesAndSteer(root, rawMoveDir)
+    -- Integrar evasión de límites y de obstáculos en 3D
+    local boundedDir = keepInsideBase(root, rawMoveDir)
+    local steeredDir = checkObstaclesAndSteer(root, boundedDir)
 
-    -- Mover
     if steeredDir.Magnitude > 0.1 then
         hum:MoveTo(root.Position + (steeredDir * 10))
     end
 end
 
 -- ==============================================================================
--- 7. BUCLE PRINCIPAL DE ESTADOS (TORRE, DÍA 90+, COMIDA Y PASEO)
+-- 7. BUCLE PRINCIPAL DE ESTADOS
 -- ==============================================================================
 
 local function isNightTime()
@@ -675,9 +719,7 @@ task.spawn(function()
         local night = isNightTime()
         local _, hungerPct = getPlayerStats()
 
-        -- ======================================================================
-        -- CASO 1: DÍA 90 O SUPERIOR (GUARDIA EN Vector3.new(0.1, 0.9, -8))
-        -- ======================================================================
+        -- CASO 1: DÍA 90 O SUPERIOR (GUARDIA FIJA EN Vector3.new(0.1, 0.9, -8))
         if currentDay >= Config.Day90Threshold then
             State.Day90Enforced = true
             unlockCharacterPhysics()
@@ -685,18 +727,17 @@ task.spawn(function()
             local distTo90 = (root.Position - DAY_90_TARGET_POS).Magnitude
             if distTo90 > 2.5 then
                 State.Status = string.format("⚠️ Día %d >= 90: Yendo a (0.1, 0.9, -8)", currentDay)
-                hum:MoveTo(DAY_90_TARGET_POS)
+                local dirTo90 = (DAY_90_TARGET_POS - root.Position).Unit
+                local steered = checkObstaclesAndSteer(root, dirTo90)
+                hum:MoveTo(root.Position + (steered * 8))
             else
                 State.Status = string.format("🛡️ Día %d: En guardia fija en (0.1, 0.9, -8)", currentDay)
             end
 
-        -- ======================================================================
-        -- CASO 2: NOCHE (TORRE / RESGUARDO / EVASIÓN DE ZOMBIES SI ESTÁ ABAJO)
-        -- ======================================================================
+        -- CASO 2: NOCHE (BUSCA TORRE, VUELA, SE POSA DE PIE SIN FLOTAR)
         elseif night then
             State.Day90Enforced = false
-            State.MorningEatingDone = false -- Reiniciar ciclo de comida para la siguiente mañana
-
+            State.MorningEatingComplete = false -- Reiniciar bandera de comida para el próximo amanecer
             local towerTop, towerName = findNearestWatchtower(root.Position)
 
             if towerTop then
@@ -704,7 +745,6 @@ task.spawn(function()
                 State.TowerTopPos = towerTop
                 local distToTop = (root.Position - towerTop).Magnitude
 
-                -- Volar hacia la torre
                 if distToTop > 4.5 then
                     State.IsLandedOnTower = false
                     State.Status = string.format("🌙 Volando a la cima de '%s'...", towerName)
@@ -737,13 +777,12 @@ task.spawn(function()
                     hum:MoveTo(root.Position + (safeDir * 15))
                 else
                     State.Status = "🌙 Noche sin torre: Buscando refugio..."
-                    hum:MoveTo(BaseCenter)
+                    local safeDir = checkObstaclesAndSteer(root, (BaseCenter - root.Position).Unit)
+                    hum:MoveTo(root.Position + (safeDir * 10))
                 end
             end
 
-        -- ======================================================================
-        -- CASO 3: MAÑANA / DÍA (1° COMIDA HASTA 95%+ -> 2° PASEO RANDOM CON EVASIÓN)
-        -- ======================================================================
+        -- CASO 3: MAÑANA / DÍA (1° COMIDA OBLIGATORIA HASTA 95%+ -> 2° PASEO RANDOM CON EVASIÓN)
         else
             State.Day90Enforced = false
 
@@ -757,7 +796,7 @@ task.spawn(function()
 
             unlockCharacterPhysics()
 
-            -- Comprobar si hay zombies cerca en el suelo durante el día
+            -- Evasión de zombies si merodean cerca en el suelo de día (15 studs)
             local avoidVec, count = getZombieAvoidanceVector(root.Position, Config.ZombieEvadeDist)
             if count > 0 then
                 State.Status = string.format("🏃 Esquivando %d zombies cerca (15m)...", count)
@@ -766,8 +805,8 @@ task.spawn(function()
                 continue
             end
 
-            -- PASO 1: PRIMERO BUSCAR COMIDA EN LA MAÑANA HASTA SACIARSE (>= 95%)
-            if hungerPct < Config.FullHungerTarget and not State.MorningEatingDone then
+            -- PASO 1: EN LAS MAÑANAS PRIMERO BUSCA COMIDA HASTA ESTAR LLENO (>= 95%)
+            if hungerPct < Config.FullHungerTarget and not State.MorningEatingComplete then
                 local foodTarget = findGroundFoodInBase(Config.EatScanRadius)
                 if foodTarget then
                     State.Status = string.format("☀️ 1° Comiendo en base (Hambre: %d%%)", hungerPct)
@@ -784,9 +823,9 @@ task.spawn(function()
                     hum:MoveTo(root.Position + (wanderDir * 10))
                 end
 
-            -- PASO 2: UNA VEZ LLENO, INICIAR PASEO CON MOVIMIENTOS RANDOM (20s C/U)
+            -- PASO 2: UNA VEZ SACIADO, PASA A PASEAR CON MOVIMIENTOS RANDOM (20s C/U) ESQUIVANDO OBSTÁCULOS
             else
-                State.MorningEatingDone = true
+                State.MorningEatingComplete = true
                 executeMorningMovement(char, root, hum)
                 local curPatternName = (Config.MovementPattern == "Aleatorio Total") and State.CurrentActivePattern or Config.MovementPattern
                 State.Status = string.format("☀️ 2° Paseando: %s (Hambre: %d%%)", curPatternName, hungerPct)
@@ -809,11 +848,11 @@ local function getSafeGuiParent()
 end
 
 local GuiParent = getSafeGuiParent()
-local existing = GuiParent:FindFirstChild("BaseDefenderUniversalGuiV40")
+local existing = GuiParent:FindFirstChild("BaseDefenderUniversalGuiV45")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "BaseDefenderUniversalGuiV40"
+ScreenGui.Name = "BaseDefenderUniversalGuiV45"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -832,7 +871,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 36)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
-TitleBar.Text = "   🏰 BASE DEFENDER V4.0 (COMIDA 1° + SLOT 2 FIJO)"
+TitleBar.Text = "   🏰 BASE DEFENDER V4.5 (COMIDA 1° + EVASIÓN 3D)"
 TitleBar.TextColor3 = Color3.fromRGB(255, 170, 0)
 TitleBar.TextSize = 11
 TitleBar.Font = Enum.Font.GothamBold
@@ -899,17 +938,16 @@ end)
 
 -- Botón 3: Control de Arma (Slot 2 Fijo vs Swap 50s)
 local SwapBtn
-SwapBtn = createBtn("🔫 MODO ARMA: SOLO SLOT 2 (FIJO)", Color3.fromRGB(40, 130, 80), UDim2.new(0, 10, 0, 192), UDim2.new(1, -20, 0, 34), function()
+SwapBtn = createBtn("🔫 ARMA: SOLO SLOT 2 (FIJO)", Color3.fromRGB(40, 130, 80), UDim2.new(0, 10, 0, 192), UDim2.new(1, -20, 0, 34), function()
     Config.SwapWeaponsEnabled = not Config.SwapWeaponsEnabled
     if Config.SwapWeaponsEnabled then
         SwapBtn.BackgroundColor3 = Color3.fromRGB(140, 45, 160)
         SwapBtn.Text = string.format("🔄 SWAP ACTIVO: SLOT 2 ⇄ 3 (CADA %ds)", Config.SwapInterval)
     else
         SwapBtn.BackgroundColor3 = Color3.fromRGB(40, 130, 80)
-        SwapBtn.Text = "🔫 MODO ARMA: SOLO SLOT 2 (FIJO)"
+        SwapBtn.Text = "🔫 ARMA: SOLO SLOT 2 (FIJO)"
         State.ActiveSlot = 2
-        local weaponName = getHotbarToolName(2)
-        enforceEquippedWeapon(weaponName)
+        ensureWeaponEquipped(2)
     end
 end)
 
@@ -990,7 +1028,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 48, 0, 48)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 20)
-FloatBtn.Text = "🏰\nV4.0"
+FloatBtn.Text = "🏰\nV4.5"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -1015,8 +1053,10 @@ task.spawn(function()
         local night = isNightTime()
         local dayNum = getCurrentDay()
 
-        local tool2Name = getHotbarToolName(2) or "Vacío"
-        local tool3Name = getHotbarToolName(3) or "Vacío"
+        local tool2 = getToolInstanceForSlot(2)
+        local tool3 = getToolInstanceForSlot(3)
+        local tool2Name = tool2 and tool2.Name or "LMG"
+        local tool3Name = tool3 and tool3.Name or "Bat"
         local activeToolName = (State.ActiveSlot == 2) and tool2Name or tool3Name
 
         local weaponModeText = Config.SwapWeaponsEnabled and string.format("Swap Activo (%ds)", Config.SwapInterval) or "Fijo (Sin Swap)"
@@ -1027,7 +1067,7 @@ task.spawn(function()
             "Torre: '%s' | %s\n" ..
             "Arma en Mano: Slot %d ['%s'] | Modo: %s\n" ..
             "  • Slot 2: '%s' | Slot 3: '%s'\n" ..
-            "Evasión: Zombies (15m) + Muros/Cercas activos",
+            "Evasión: Zombies (15m) + Muros/Cercas 3D",
             State.Status,
             dayNum, night and "🌙 NOCHE" or "☀️ DÍA", pHP, pHunger,
             State.CurrentTowerName, State.IsLandedOnTower and "Posado de Pie" or "En Movimiento",
