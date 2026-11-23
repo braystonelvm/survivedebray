@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V7.2 (LLEGADA ESTRICTA -> NOCLIP OFF -> 1s FLY OFF)
+-- EXPLORADOR FORENSE DE TERRENO V7.3 (DESCENSO AJUSTADO -2 STUDS + BEAM + COORDS)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -145,7 +145,7 @@ local function selectTargetPart(targetPart)
 end
 
 -- ==============================================================================
--- 2. SISTEMA DE FLY + NOCLIP PARA DESCENSO LENTO Y CONTROLADO (-2 STUDS)
+-- 2. SISTEMA DE FLY + NOCLIP PARA DESCENSO CONTROLADO (-2 STUDS)
 -- ==============================================================================
 
 RunService.Stepped:Connect(function()
@@ -208,7 +208,7 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
     local bp = Instance.new("BodyPosition")
     bp.Name = "DescentBP"
     bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-    bp.P = 20000
+    bp.P = 35000
     bp.D = 900
     bp.Position = root.Position
     bp.Parent = root
@@ -226,7 +226,7 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
         statusCallback("✈️ Fly + Noclip activos: Viajando al objetivo (-2 studs)...")
     end
 
-    local speed = 55
+    local speed = 95
     local reachedTarget = false
 
     -- Bucle estricto: No desactiva noclip hasta haber llegado al objetivo
@@ -385,7 +385,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V7.2 | FLY -2 STUDS & GUÍA"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V7.3 | FLY -2 STUDS & GUÍA"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -478,7 +478,7 @@ local InfoDetails = Instance.new("TextLabel")
 InfoDetails.Size = UDim2.new(1, -12, 0, 48)
 InfoDetails.Position = UDim2.new(0, 6, 0, 25)
 InfoDetails.BackgroundTransparency = 1
-InfoDetails.Text = "Toca una fila para seleccionarla (Azul + Línea) o presiona '⬇️ BAJAR' para descender lento con Fly+Noclip 2 studs debajo."
+InfoDetails.Text = "Toca una fila para seleccionarla (Azul + Línea) o presiona '⬇️ BAJAR' para descender con Fly+Noclip 2 studs debajo."
 InfoDetails.TextColor3 = Color3.fromRGB(200, 200, 200)
 InfoDetails.TextSize = 9
 InfoDetails.Font = Enum.Font.Code
