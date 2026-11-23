@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V7.3 (DESCENSO AJUSTADO -2 STUDS + BEAM + COORDS)
+-- EXPLORADOR FORENSE DE TERRENO V8.0 (CONFIG PANEL + CAMINAR AL PUNTO MÁS BAJO)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -9,14 +9,23 @@ local RunService = game:GetService("RunService")
 local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
+local Config = {
+    FlySpeed = 95,          -- Velocidad de bajada en vuelo
+    WalkSpeed = 24,         -- Velocidad al caminar hacia la roca
+    DescentStuds = 2.0,     -- Studs por debajo del punto más bajo
+    HoldSeconds = 1.0,      -- Segundos de espera tras quitar Noclip antes de quitar Fly
+    WalkFirst = true        -- Caminar hacia el punto más bajo antes de volar
+}
+
 local State = {
     ClickInspect = false,
     SelectedPart = nil,
-    HighlightMap = {},       -- [BasePart] = Highlight
-    ExtraHighlight = nil,    -- Para objetos seleccionados fuera del top 40
+    HighlightMap = {},
+    ExtraHighlight = nil,
     FilteredObjects = {},
 
-    -- Fly & Noclip controlado
+    -- Control de movimiento
+    IsWalkingToTarget = false,
     IsFlying = false,
     IsNoclip = false,
 
@@ -29,7 +38,6 @@ local State = {
 local COLOR_YELLOW = Color3.fromRGB(255, 220, 0)
 local COLOR_BLUE   = Color3.fromRGB(0, 145, 255)
 
--- Cursor siempre activo para dispositivos móviles/emuladores
 RunService.RenderStepped:Connect(function()
     pcall(function()
         UserInputService.MouseIconEnabled = true
@@ -37,7 +45,45 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ==============================================================================
--- 1. GESTIÓN DE HIGHLIGHTS Y LÍNEA GUÍA (BEAM 0% LAG)
+-- 1. CÁLCULO DEL PUNTO MÁS BAJO DE LA ROCA / PIEZA (VÉRTICES REALES EN 3D)
+-- ==============================================================================
+
+local function getLowestPointOfPart(part)
+    local cf = part.CFrame
+    local half = part.Size * 0.5
+    local lowestPoint = part.Position - Vector3.new(0, half.Y, 0)
+    local minY = math.huge
+
+    -- Evaluar los 8 vértices de la caja orientada para detectar la esquina más hundida
+    for _, sx in ipairs({-1, 1}) do
+        for _, sy in ipairs({-1, 1}) do
+            for _, sz in ipairs({-1, 1}) do
+                local worldCorner = cf:PointToWorldSpace(Vector3.new(half.X * sx, half.Y * sy, half.Z * sz))
+                if worldCorner.Y < minY then
+                    minY = worldCorner.Y
+                    lowestPoint = worldCorner
+                end
+            end
+        end
+    end
+
+    -- Promediar levemente X/Z hacia el centro para no quedar justo en el filo exterior
+    local approachXZ = Vector3.new(
+        lowestPoint.X * 0.75 + part.Position.X * 0.25,
+        lowestPoint.Y,
+        lowestPoint.Z * 0.75 + part.Position.Z * 0.25
+    )
+
+    return approachXZ, minY
+end
+
+local function getPartBottomDepth(part)
+    local _, minY = getLowestPointOfPart(part)
+    return minY
+end
+
+-- ==============================================================================
+-- 2. GESTIÓN DE HIGHLIGHTS Y LÍNEA GUÍA (BEAM 0% LAG)
 -- ==============================================================================
 
 local function clearGuideBeam()
@@ -145,7 +191,7 @@ local function selectTargetPart(targetPart)
 end
 
 -- ==============================================================================
--- 2. SISTEMA DE FLY + NOCLIP PARA DESCENSO CONTROLADO (-2 STUDS)
+-- 3. SISTEMA DE CAMINATA + FLY + NOCLIP CONTROLADO
 -- ==============================================================================
 
 RunService.Stepped:Connect(function()
@@ -162,6 +208,7 @@ RunService.Stepped:Connect(function()
 end)
 
 local function stopFlyAndNoclipImmediate()
+    State.IsWalkingToTarget = false
     State.IsNoclip = false
     State.IsFlying = false
 
@@ -201,6 +248,53 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
 
     stopFlyAndNoclipImmediate()
 
+    local lowestPoint, minY = getLowestPointOfPart(targetPart)
+
+    -- FASE 1: CAMINAR HACIA EL PUNTO MÁS BAJO DE LA ROCA
+    if Config.WalkFirst then
+        State.IsWalkingToTarget = true
+        local originalWalkSpeed = hum.WalkSpeed
+        hum.WalkSpeed = math.max(originalWalkSpeed, Config.WalkSpeed)
+
+        if statusCallback then
+            statusCallback("🚶 Caminando hacia la parte más baja de la roca...")
+        end
+
+        local walkTimeout = tick() + 18.0
+        local lastJump = 0
+
+        while State.IsWalkingToTarget and tick() < walkTimeout do
+            RunService.Heartbeat:Wait()
+            if not targetPart or not targetPart.Parent or not root or not root.Parent or hum.Health <= 0 then
+                break
+            end
+
+            lowestPoint, minY = getLowestPointOfPart(targetPart)
+            local horizDiff = Vector3.new(lowestPoint.X - root.Position.X, 0, lowestPoint.Z - root.Position.Z)
+            local horizDist = horizDiff.Magnitude
+
+            if horizDist <= 4.5 then
+                break
+            end
+
+            hum:MoveTo(Vector3.new(lowestPoint.X, root.Position.Y, lowestPoint.Z))
+
+            -- Saltar si choca con un borde o piedra baja mientras camina
+            if (tick() - lastJump) >= 0.7 and root.AssemblyLinearVelocity.Magnitude < (hum.WalkSpeed * 0.35) then
+                hum.Jump = true
+                lastJump = tick()
+            end
+        end
+
+        hum.WalkSpeed = originalWalkSpeed
+        if not State.IsWalkingToTarget then
+            -- Cancelado manualmente
+            return
+        end
+        State.IsWalkingToTarget = false
+    end
+
+    -- FASE 2: ACTIVAR FLY + NOCLIP Y DESCENDER DEBAJO DEL PUNTO MÁS BAJO
     State.IsNoclip = true
     State.IsFlying = true
     hum.PlatformStand = true
@@ -219,25 +313,23 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
     bg.CFrame = root.CFrame
     bg.Parent = root
 
-    local bottomY = targetPart.Position.Y - (targetPart.Size.Y * 0.5)
-    local destPos = Vector3.new(targetPart.Position.X, bottomY - 2.0, targetPart.Position.Z)
+    lowestPoint, minY = getLowestPointOfPart(targetPart)
+    local destPos = Vector3.new(lowestPoint.X, minY - Config.DescentStuds, lowestPoint.Z)
 
     if statusCallback then
-        statusCallback("✈️ Fly + Noclip activos: Viajando al objetivo (-2 studs)...")
+        statusCallback(string.format("✈️ Fly + Noclip activos: Bajando a -%.1f studs...", Config.DescentStuds))
     end
 
-    local speed = 95
     local reachedTarget = false
 
-    -- Bucle estricto: No desactiva noclip hasta haber llegado al objetivo
     while State.IsFlying do
         local dt = RunService.Heartbeat:Wait()
         if not targetPart or not targetPart.Parent or not root or not root.Parent then
             break
         end
 
-        bottomY = targetPart.Position.Y - (targetPart.Size.Y * 0.5)
-        destPos = Vector3.new(targetPart.Position.X, bottomY - 2.0, targetPart.Position.Z)
+        lowestPoint, minY = getLowestPointOfPart(targetPart)
+        destPos = Vector3.new(lowestPoint.X, minY - Config.DescentStuds, lowestPoint.Z)
 
         local diff = destPos - root.Position
         local dist = diff.Magnitude
@@ -248,13 +340,12 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
             break
         end
 
-        local step = math.min(dist, speed * dt)
+        local step = math.min(dist, Config.FlySpeed * dt)
         bp.Position = root.Position + (diff.Unit * step)
     end
 
-    -- Solo desactivar noclip y fly secuencialmente si llegó al objetivo
+    -- FASE 3: DESACTIVAR NOCLIP AL LLEGAR Y LUEGO FLY TRAS EL TIEMPO CONFIGURADO
     if reachedTarget and State.IsFlying then
-        -- 1. Primero desactivar Noclip al llegar al objetivo
         State.IsNoclip = false
         if char then
             for _, p in ipairs(char:GetDescendants()) do
@@ -265,29 +356,23 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
         end
 
         if statusCallback then
-            statusCallback("🛑 Objetivo alcanzado: Noclip OFF. Apagando Fly en 1s...")
+            statusCallback(string.format("🛑 Objetivo alcanzado: Noclip OFF. Apagando Fly en %.1fs...", Config.HoldSeconds))
         end
 
-        -- 2. Esperar 1 segundo sosteniendo posición y luego desactivar Fly
-        task.wait(1.0)
+        task.wait(Config.HoldSeconds)
         stopFlyAndNoclipImmediate()
 
         if statusCallback then
-            statusCallback("✅ Descenso completado (-2 studs debajo).")
+            statusCallback(string.format("✅ Descenso completado (-%.1f studs debajo).", Config.DescentStuds))
         end
     else
-        -- Si se canceló manualmente con 'CORTAR FLY' o desapareció el objeto
         stopFlyAndNoclipImmediate()
     end
 end
 
 -- ==============================================================================
--- 3. CLASIFICADOR Y RANKING DE PROFUNDIDAD
+-- 4. CLASIFICADOR Y RANKING DE PROFUNDIDAD
 -- ==============================================================================
-
-local function getPartBottomDepth(part)
-    return part.Position.Y - (part.Size.Y * 0.5)
-end
 
 local function scanAndRankTerrain(keyword)
     clearAllHighlights()
@@ -341,15 +426,15 @@ local function scanAndRankTerrain(keyword)
 end
 
 -- ==============================================================================
--- 4. INTERFAZ GRÁFICA FLOTANTE CON PESTAÑAS (EXPLORADOR + COORDENADAS)
+-- 5. INTERFAZ GRÁFICA FLOTANTE CON 3 PESTAÑAS (EXPLORADOR + CONFIG + COORDS)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV7")
+local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV8")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TerrainInspectorGuiV7"
+ScreenGui.Name = "TerrainInspectorGuiV8"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -364,55 +449,57 @@ FloatBtn.Font = Enum.Font.GothamBold
 FloatBtn.Active = true
 FloatBtn.Draggable = true
 FloatBtn.Parent = ScreenGui
-
-local FloatCorner = Instance.new("UICorner")
-FloatCorner.CornerRadius = UDim.new(1, 0)
-FloatCorner.Parent = FloatBtn
+Instance.new("UICorner", FloatBtn).CornerRadius = UDim.new(1, 0)
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 520, 0, 500)
-MainFrame.Position = UDim2.new(0.5, -260, 0.5, -250)
+MainFrame.Size = UDim2.new(0, 530, 0, 510)
+MainFrame.Position = UDim2.new(0.5, -265, 0.5, -255)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 18, 24)
 MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.Visible = true
 MainFrame.Parent = ScreenGui
-
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 10)
-MainCorner.Parent = MainFrame
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V7.3 | FLY -2 STUDS & GUÍA"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V8.0 | CAMINAR + FLY & CONFIG"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
 TitleBar.TextXAlignment = Enum.TextXAlignment.Left
 TitleBar.Parent = MainFrame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
-local TitleCorner = Instance.new("UICorner")
-TitleCorner.CornerRadius = UDim.new(0, 10)
-TitleCorner.Parent = TitleBar
-
--- Barra de Pestañas
+-- Barra de 3 Pestañas
 local TabExplorerBtn = Instance.new("TextButton")
-TabExplorerBtn.Size = UDim2.new(0.5, -12, 0, 28)
+TabExplorerBtn.Size = UDim2.new(0.34, -8, 0, 28)
 TabExplorerBtn.Position = UDim2.new(0, 10, 0, 40)
 TabExplorerBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
-TabExplorerBtn.Text = "📊 EXPLORADOR & LISTA"
+TabExplorerBtn.Text = "📊 EXPLORADOR"
 TabExplorerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 TabExplorerBtn.TextSize = 10
 TabExplorerBtn.Font = Enum.Font.GothamBold
 TabExplorerBtn.Parent = MainFrame
 Instance.new("UICorner", TabExplorerBtn).CornerRadius = UDim.new(0, 6)
 
+local TabConfigBtn = Instance.new("TextButton")
+TabConfigBtn.Size = UDim2.new(0.33, -8, 0, 28)
+TabConfigBtn.Position = UDim2.new(0.34, 4, 0, 40)
+TabConfigBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
+TabConfigBtn.Text = "⚙️ CONFIGURACIÓN"
+TabConfigBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+TabConfigBtn.TextSize = 10
+TabConfigBtn.Font = Enum.Font.GothamBold
+TabConfigBtn.Parent = MainFrame
+Instance.new("UICorner", TabConfigBtn).CornerRadius = UDim.new(0, 6)
+
 local TabCoordsBtn = Instance.new("TextButton")
-TabCoordsBtn.Size = UDim2.new(0.5, -12, 0, 28)
-TabCoordsBtn.Position = UDim2.new(0.5, 2, 0, 40)
+TabCoordsBtn.Size = UDim2.new(0.33, -8, 0, 28)
+TabCoordsBtn.Position = UDim2.new(0.67, 0, 0, 40)
 TabCoordsBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
-TabCoordsBtn.Text = "📍 MIS COORDENADAS"
+TabCoordsBtn.Text = "📍 COORDENADAS"
 TabCoordsBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 TabCoordsBtn.TextSize = 10
 TabCoordsBtn.Font = Enum.Font.GothamBold
@@ -427,6 +514,13 @@ ExplorerPage.BackgroundTransparency = 1
 ExplorerPage.Visible = true
 ExplorerPage.Parent = MainFrame
 
+local ConfigPage = Instance.new("Frame")
+ConfigPage.Size = UDim2.new(1, 0, 1, -74)
+ConfigPage.Position = UDim2.new(0, 0, 0, 74)
+ConfigPage.BackgroundTransparency = 1
+ConfigPage.Visible = false
+ConfigPage.Parent = MainFrame
+
 local CoordsPage = Instance.new("Frame")
 CoordsPage.Size = UDim2.new(1, 0, 1, -74)
 CoordsPage.Position = UDim2.new(0, 0, 0, 74)
@@ -434,26 +528,28 @@ CoordsPage.BackgroundTransparency = 1
 CoordsPage.Visible = false
 CoordsPage.Parent = MainFrame
 
-TabExplorerBtn.MouseButton1Click:Connect(function()
-    ExplorerPage.Visible = true
-    CoordsPage.Visible = false
-    TabExplorerBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
-    TabExplorerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    TabCoordsBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
-    TabCoordsBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-end)
+local function switchTab(activeBtn, activePage)
+    ExplorerPage.Visible = (activePage == ExplorerPage)
+    ConfigPage.Visible   = (activePage == ConfigPage)
+    CoordsPage.Visible   = (activePage == CoordsPage)
 
-TabCoordsBtn.MouseButton1Click:Connect(function()
-    ExplorerPage.Visible = false
-    CoordsPage.Visible = true
-    TabCoordsBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
-    TabCoordsBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    TabExplorerBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
-    TabExplorerBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-end)
+    for _, btn in ipairs({TabExplorerBtn, TabConfigBtn, TabCoordsBtn}) do
+        if btn == activeBtn then
+            btn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
+            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        else
+            btn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
+            btn.TextColor3 = Color3.fromRGB(200, 200, 200)
+        end
+    end
+end
+
+TabExplorerBtn.MouseButton1Click:Connect(function() switchTab(TabExplorerBtn, ExplorerPage) end)
+TabConfigBtn.MouseButton1Click:Connect(function() switchTab(TabConfigBtn, ConfigPage) end)
+TabCoordsBtn.MouseButton1Click:Connect(function() switchTab(TabCoordsBtn, CoordsPage) end)
 
 -- ==============================================================================
--- 5. CONTENIDO PESTAÑA 1: EXPLORADOR
+-- 6. PESTAÑA 1: EXPLORADOR
 -- ==============================================================================
 
 local InfoCard = Instance.new("Frame")
@@ -478,7 +574,7 @@ local InfoDetails = Instance.new("TextLabel")
 InfoDetails.Size = UDim2.new(1, -12, 0, 48)
 InfoDetails.Position = UDim2.new(0, 6, 0, 25)
 InfoDetails.BackgroundTransparency = 1
-InfoDetails.Text = "Toca una fila para seleccionarla (Azul + Línea) o presiona '⬇️ BAJAR' para descender con Fly+Noclip 2 studs debajo."
+InfoDetails.Text = "Toca una fila para seleccionarla o pulsa '⬇️ BAJAR' para caminar a su punto más bajo y descender."
 InfoDetails.TextColor3 = Color3.fromRGB(200, 200, 200)
 InfoDetails.TextSize = 9
 InfoDetails.Font = Enum.Font.Code
@@ -513,7 +609,7 @@ local StopFlyBtn = Instance.new("TextButton")
 StopFlyBtn.Size = UDim2.new(0.33, -8, 0, 30)
 StopFlyBtn.Position = UDim2.new(0.67, 0, 0, 88)
 StopFlyBtn.BackgroundColor3 = Color3.fromRGB(180, 90, 20)
-StopFlyBtn.Text = "🛑 CORTAR FLY"
+StopFlyBtn.Text = "🛑 DETENER TODO"
 StopFlyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 StopFlyBtn.TextSize = 9
 StopFlyBtn.Font = Enum.Font.GothamBold
@@ -559,7 +655,122 @@ UIListLayout.Padding = UDim.new(0, 4)
 UIListLayout.Parent = ScrollFrame
 
 -- ==============================================================================
--- 6. CONTENIDO PESTAÑA 2: COORDENADAS EN TIEMPO REAL
+-- 7. PESTAÑA 2: PANEL DE CONFIGURACIÓN
+-- ==============================================================================
+
+local function createStepperControl(parent, yPos, titleText, getValText, onMinus, onPlus)
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -20, 0, 56)
+    row.Position = UDim2.new(0, 10, 0, yPos)
+    row.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
+    row.Parent = parent
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(0.58, -10, 1, 0)
+    lbl.Position = UDim2.new(0, 12, 0, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = titleText .. "\n" .. getValText()
+    lbl.TextColor3 = Color3.fromRGB(230, 235, 245)
+    lbl.TextSize = 10
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = row
+
+    local minusBtn = Instance.new("TextButton")
+    minusBtn.Size = UDim2.new(0, 56, 0, 38)
+    minusBtn.Position = UDim2.new(1, -126, 0, 9)
+    minusBtn.BackgroundColor3 = Color3.fromRGB(160, 45, 55)
+    minusBtn.Text = "➖"
+    minusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    minusBtn.TextSize = 14
+    minusBtn.Font = Enum.Font.GothamBold
+    minusBtn.Parent = row
+    Instance.new("UICorner", minusBtn).CornerRadius = UDim.new(0, 6)
+
+    local plusBtn = Instance.new("TextButton")
+    plusBtn.Size = UDim2.new(0, 56, 0, 38)
+    plusBtn.Position = UDim2.new(1, -64, 0, 9)
+    plusBtn.BackgroundColor3 = Color3.fromRGB(30, 145, 80)
+    plusBtn.Text = "➕"
+    plusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    plusBtn.TextSize = 14
+    plusBtn.Font = Enum.Font.GothamBold
+    plusBtn.Parent = row
+    Instance.new("UICorner", plusBtn).CornerRadius = UDim.new(0, 6)
+
+    minusBtn.MouseButton1Click:Connect(function()
+        onMinus()
+        lbl.Text = titleText .. "\n" .. getValText()
+    end)
+
+    plusBtn.MouseButton1Click:Connect(function()
+        onPlus()
+        lbl.Text = titleText .. "\n" .. getValText()
+    end)
+end
+
+-- Control 1: Velocidad de Bajada (Fly)
+createStepperControl(
+    ConfigPage, 10,
+    "✈️ VELOCIDAD DE BAJADA (FLY)",
+    function() return string.format("Actual: %d studs/s", Config.FlySpeed) end,
+    function() Config.FlySpeed = math.max(20, Config.FlySpeed - 10) end,
+    function() Config.FlySpeed = math.min(250, Config.FlySpeed + 10) end
+)
+
+-- Control 2: Profundidad de Bajado (Studs debajo)
+createStepperControl(
+    ConfigPage, 74,
+    "⬇️ PROFUNDIDAD DE BAJADO (STUDS)",
+    function() return string.format("Actual: -%.1f studs debajo del punto más bajo", Config.DescentStuds) end,
+    function() Config.DescentStuds = math.max(0.0, Config.DescentStuds - 0.5) end,
+    function() Config.DescentStuds = math.min(25.0, Config.DescentStuds + 0.5) end
+)
+
+-- Control 3: Velocidad al Caminar hacia la roca
+createStepperControl(
+    ConfigPage, 138,
+    "🚶 VELOCIDAD AL CAMINAR A LA ROCA",
+    function() return string.format("Actual: %d WalkSpeed", Config.WalkSpeed) end,
+    function() Config.WalkSpeed = math.max(16, Config.WalkSpeed - 4) end,
+    function() Config.WalkSpeed = math.min(80, Config.WalkSpeed + 4) end
+)
+
+-- Control 4: Tiempo de espera antes de apagar Fly
+createStepperControl(
+    ConfigPage, 202,
+    "⏱️ ESPERA ANTES DE APAGAR FLY",
+    function() return string.format("Actual: %.1f segundos tras quitar Noclip", Config.HoldSeconds) end,
+    function() Config.HoldSeconds = math.max(0.2, Config.HoldSeconds - 0.2) end,
+    function() Config.HoldSeconds = math.min(5.0, Config.HoldSeconds + 0.2) end
+)
+
+-- Control 5: Toggle Caminar Primero
+local WalkFirstToggle = Instance.new("TextButton")
+WalkFirstToggle.Size = UDim2.new(1, -20, 0, 44)
+WalkFirstToggle.Position = UDim2.new(0, 10, 0, 268)
+WalkFirstToggle.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
+WalkFirstToggle.Text = "🚶 CAMINAR AL PUNTO MÁS BAJO PRIMERO: ON"
+WalkFirstToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+WalkFirstToggle.TextSize = 10
+WalkFirstToggle.Font = Enum.Font.GothamBold
+WalkFirstToggle.Parent = ConfigPage
+Instance.new("UICorner", WalkFirstToggle).CornerRadius = UDim.new(0, 8)
+
+WalkFirstToggle.MouseButton1Click:Connect(function()
+    Config.WalkFirst = not Config.WalkFirst
+    if Config.WalkFirst then
+        WalkFirstToggle.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
+        WalkFirstToggle.Text = "🚶 CAMINAR AL PUNTO MÁS BAJO PRIMERO: ON"
+    else
+        WalkFirstToggle.BackgroundColor3 = Color3.fromRGB(65, 70, 85)
+        WalkFirstToggle.Text = "✈️ VOLAR DIRECTO SIN CAMINAR: OFF"
+    end
+end)
+
+-- ==============================================================================
+-- 8. PESTAÑA 3: COORDENADAS EN TIEMPO REAL
 -- ==============================================================================
 
 local CoordCard = Instance.new("Frame")
@@ -631,7 +842,7 @@ CopyVecBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 7. RENDERIZADO DE LISTA SELECCIONABLE + BOTÓN DE DESCENSO EN CADA FILA
+-- 9. RENDERIZADO DE LISTA SELECCIONABLE + BOTÓN DE DESCENSO EN CADA FILA
 -- ==============================================================================
 
 local RowButtons = {}
@@ -699,7 +910,7 @@ local function updateScrollList()
 
             task.spawn(function()
                 flyDescendBelowTarget(obj.Part, function(statusMsg)
-                    InfoDetails.Text = statusMsg .. string.format("\nBase Y: %.2f | Objetivo Y: %.2f", obj.BottomY, obj.BottomY - 2.0)
+                    InfoDetails.Text = statusMsg .. string.format("\nBase Y: %.2f | Objetivo Y: %.2f", obj.BottomY, obj.BottomY - Config.DescentStuds)
                 end)
             end)
         end)
@@ -709,7 +920,7 @@ local function updateScrollList()
 end
 
 -- ==============================================================================
--- 8. EVENTOS DE INTERFAZ Y INSPECCIÓN POR CLICK
+-- 10. EVENTOS DE INTERFAZ Y INSPECCIÓN POR CLICK
 -- ==============================================================================
 
 local function handleWorldClick()
@@ -759,7 +970,7 @@ end)
 
 StopFlyBtn.MouseButton1Click:Connect(function()
     stopFlyAndNoclipImmediate()
-    InfoDetails.Text = "🛑 Fly y Noclip detenidos manualmente."
+    InfoDetails.Text = "🛑 Movimiento, Fly y Noclip detenidos."
 end)
 
 FilterBtn.MouseButton1Click:Connect(function()
