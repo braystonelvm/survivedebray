@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V7 (FLY/NOCLIP DESCENT + BEAM + COORDENADAS)
+-- EXPLORADOR FORENSE DE TERRENO V7.1 (DESCENSO SUAVE -7 STUDS + BEAM + COORDENADAS)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -113,7 +113,6 @@ local function applyHighlightStyle(hl, isSelected)
 end
 
 local function selectTargetPart(targetPart)
-    -- Restaurar el anterior seleccionado a amarillo (o quitar si era extra)
     if State.SelectedPart then
         local prevHl = State.HighlightMap[State.SelectedPart]
         if prevHl then
@@ -147,7 +146,7 @@ local function selectTargetPart(targetPart)
 end
 
 -- ==============================================================================
--- 2. SISTEMA DE FLY + NOCLIP PARA DESCENSO CONTROLADO (-4 STUDS)
+-- 2. SISTEMA DE FLY + NOCLIP PARA DESCENSO LENTO Y CONTROLADO (-7 STUDS)
 -- ==============================================================================
 
 RunService.Stepped:Connect(function()
@@ -201,7 +200,6 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not root or not hum then return end
 
-    -- Limpiar cualquier vuelo previo
     stopFlyAndNoclipImmediate()
 
     State.IsNoclip = true
@@ -211,8 +209,8 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
     local bp = Instance.new("BodyPosition")
     bp.Name = "DescentBP"
     bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-    bp.P = 25000
-    bp.D = 800
+    bp.P = 20000
+    bp.D = 900
     bp.Position = root.Position
     bp.Parent = root
 
@@ -222,37 +220,36 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
     bg.CFrame = root.CFrame
     bg.Parent = root
 
-    -- Destino: 4 studs por debajo de la base inferior de la roca/pieza
+    -- Destino: 7 studs por debajo de la base inferior de la roca/pieza
     local bottomY = targetPart.Position.Y - (targetPart.Size.Y * 0.5)
-    local destPos = Vector3.new(targetPart.Position.X, bottomY - 4.0, targetPart.Position.Z)
+    local destPos = Vector3.new(targetPart.Position.X, bottomY - 7.0, targetPart.Position.Z)
 
     if statusCallback then
-        statusCallback("✈️ Fly + Noclip activos: Bajando a -4 studs...")
+        statusCallback("✈️ Fly + Noclip activos: Bajando lento a -7 studs...")
     end
 
-    local speed = 130
-    local timeout = tick() + 18
+    local speed = 55 -- Velocidad reducida para descenso más lento y controlado
+    local timeout = tick() + 30
 
     while State.IsFlying and tick() < timeout do
         RunService.Heartbeat:Wait()
         if not targetPart or not targetPart.Parent then break end
 
-        -- Recalcular por si el objeto se movió
         bottomY = targetPart.Position.Y - (targetPart.Size.Y * 0.5)
-        destPos = Vector3.new(targetPart.Position.X, bottomY - 4.0, targetPart.Position.Z)
+        destPos = Vector3.new(targetPart.Position.X, bottomY - 7.0, targetPart.Position.Z)
 
         local diff = destPos - root.Position
         local dist = diff.Magnitude
 
-        if dist <= 2.2 then
+        if dist <= 1.8 then
             bp.Position = destPos
             break
         end
 
-        bp.Position = root.Position + (diff.Unit * (speed * 0.08))
+        bp.Position = root.Position + (diff.Unit * (speed * 0.05))
     end
 
-    -- 1. Desactivar Noclip al llegar
+    -- 1. Desactivar Noclip al llegar a -7 studs
     State.IsNoclip = false
     if char then
         for _, p in ipairs(char:GetDescendants()) do
@@ -263,7 +260,7 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
     end
 
     if statusCallback then
-        statusCallback("🛑 Noclip OFF. Apagando Fly en 1s...")
+        statusCallback("🛑 Noclip OFF (-7 studs). Apagando Fly en 1s...")
     end
 
     -- 2. Esperar 1 segundo sosteniendo la posición y luego desactivar Fly
@@ -271,7 +268,7 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
     stopFlyAndNoclipImmediate()
 
     if statusCallback then
-        statusCallback("✅ Descenso completado (-4 studs debajo).")
+        statusCallback("✅ Descenso completado (-7 studs debajo).")
     end
 end
 
@@ -318,7 +315,6 @@ local function scanAndRankTerrain(keyword)
         return a.BottomY < b.BottomY
     end)
 
-    -- Iluminar los primeros 40 en amarillo (o azul si ya estaba seleccionado)
     for i = 1, math.min(40, #State.FilteredObjects) do
         local obj = State.FilteredObjects[i]
         local hl = Instance.new("Highlight")
@@ -380,7 +376,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V7 | FLY -4 STUDS & GUÍA"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V7.1 | FLY -7 STUDS & GUÍA"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -473,7 +469,7 @@ local InfoDetails = Instance.new("TextLabel")
 InfoDetails.Size = UDim2.new(1, -12, 0, 48)
 InfoDetails.Position = UDim2.new(0, 6, 0, 25)
 InfoDetails.BackgroundTransparency = 1
-InfoDetails.Text = "Toca una fila para seleccionarla (Azul + Línea) o presiona '⬇️ BAJAR' para descender con Fly+Noclip 4 studs debajo."
+InfoDetails.Text = "Toca una fila para seleccionarla (Azul + Línea) o presiona '⬇️ BAJAR' para descender lento con Fly+Noclip 7 studs debajo."
 InfoDetails.TextColor3 = Color3.fromRGB(200, 200, 200)
 InfoDetails.TextSize = 9
 InfoDetails.Font = Enum.Font.Code
@@ -658,7 +654,6 @@ local function updateScrollList()
 
         RowButtons[obj.Part] = row
 
-        -- Botón izquierdo: Seleccionar (cambia highlight a azul + traza línea guía)
         local selectBtn = Instance.new("TextButton")
         selectBtn.Size = UDim2.new(1, -82, 1, 0)
         selectBtn.Position = UDim2.new(0, 6, 0, 0)
@@ -677,7 +672,6 @@ local function updateScrollList()
             InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)\nRuta: %s", obj.BottomY, obj.CenterY, obj.Size.X, obj.Size.Y, obj.Size.Z, obj.Part:GetFullName())
         end)
 
-        -- Botón derecho: Descender con Fly + Noclip 4 studs por debajo
         local goBtn = Instance.new("TextButton")
         goBtn.Size = UDim2.new(0, 72, 0, 28)
         goBtn.Position = UDim2.new(1, -76, 0, 4)
@@ -696,7 +690,7 @@ local function updateScrollList()
 
             task.spawn(function()
                 flyDescendBelowTarget(obj.Part, function(statusMsg)
-                    InfoDetails.Text = statusMsg .. string.format("\nBase Y: %.2f | Objetivo Y: %.2f", obj.BottomY, obj.BottomY - 4.0)
+                    InfoDetails.Text = statusMsg .. string.format("\nBase Y: %.2f | Objetivo Y: %.2f", obj.BottomY, obj.BottomY - 7.0)
                 end)
             end)
         end)
