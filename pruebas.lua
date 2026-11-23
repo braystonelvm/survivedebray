@@ -1,23 +1,38 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V9.6 (KEEP FLY + BAJAR AQUÍ + SUBIR Y SOLTAR)
+-- EXPLORADOR FORENSE DE TERRENO V10.0 (ANTI-BLOATER + PODER 5 + ZANAHORIAS + SLOT 2)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
 
 local Config = {
     Mode = "UnderSkin",         -- "UnderSkin" (Bajo piel) o "Bunker" (Dentro sobre suelo real)
-    KeepFly = true,             -- TRUE por defecto: No apaga el Fly al llegar para no caer/deslizar
-    GoToDeepestEdge = false,    -- FALSE por defecto: Baja recto (sin irse de lado a esquinas)
-    FlySpeed = 95,              -- Velocidad de bajada/subida en vuelo
-    WalkSpeed = 24,             -- Velocidad al caminar hacia la roca
-    SkinOffset = 1.2,           -- Ajuste fino en studs respecto a la piel inferior
-    HoldSeconds = 1.0,          -- Espera tras quitar Noclip (si KeepFly está en OFF)
-    WalkFirst = true            -- Caminar hacia la roca antes de activar Fly
+    KeepFly = true,             -- TRUE: Mantiene Fly al llegar
+    LockPositionBP = true,      -- FALSE: No te jala de vuelta si te mueves con otro script
+    GoToDeepestEdge = false,    -- FALSE: Baja recto (sin irse de lado)
+    FlySpeed = 95,
+    WalkSpeed = 24,
+    SkinOffset = 1.2,
+    HoldSeconds = 1.0,
+    WalkFirst = true,
+
+    -- Nuevas funciones V10.0
+    AutoEvadeBloaters = true,   -- ON por defecto: Baja si desaparecen 3+ Bloaters cercanos
+    BloaterDropStuds = 12,      -- Studs extra hacia abajo al esquivar explosión
+    BloaterThreshold = 3,       -- Cantidad de Bloaters desaparecidos para disparar evasión
+    BloaterScanRadius = 55,
+
+    AutoPower5OnTimeStop = true,-- Espera 30s cuando se detiene el tiempo y usa Slot 5
+    TimeStopDelay = 30,
+
+    AutoCarrotDash = false,     -- Opción activable: Ir rápido por zanahorias esquivando zombies
+    AutoEquipSlot2 = true       -- Mantiene siempre el Arma 2 equipada
 }
 
 local State = {
@@ -31,6 +46,8 @@ local State = {
     IsWalkingToTarget = false,
     IsFlying = false,
     IsNoclip = false,
+    IsDodgingBloater = false,
+    IsDashingCarrot = false,
     GhostRocks = {},
 
     -- Línea guía (Beam)
@@ -42,6 +59,15 @@ local State = {
 local COLOR_YELLOW = Color3.fromRGB(255, 220, 0)
 local COLOR_BLUE   = Color3.fromRGB(0, 145, 255)
 
+local PickUpRemote = nil
+task.spawn(function()
+    local rem = ReplicatedStorage:WaitForChild("Remotes", 5)
+    local inter = rem and rem:WaitForChild("Interaction", 5)
+    if inter then
+        PickUpRemote = inter:WaitForChild("PickUpItem", 5)
+    end
+end)
+
 RunService.RenderStepped:Connect(function()
     pcall(function()
         UserInputService.MouseIconEnabled = true
@@ -49,7 +75,92 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ==============================================================================
--- 1. DETECCIÓN EXACTA DE PIEL INFERIOR Y PUNTOS DE DESCENSO
+-- 1. GESTIÓN DE ARMAS (SLOT 2 PRINCIPAL Y SLOT 5 PODER VÍA BACKPACKGUI)
+-- ==============================================================================
+
+local function getToolInstanceForSlot(slotNum)
+    local slotStr = tostring(slotNum)
+    local pg = lp:FindFirstChild("PlayerGui")
+    local bpg = pg and pg:FindFirstChild("BackpackGui")
+    local toolNameFound = nil
+
+    if bpg then
+        for _, desc in ipairs(bpg:GetDescendants()) do
+            if (desc.Name == slotStr or desc.Name == "Slot" .. slotStr) and desc:IsA("GuiObject") then
+                for _, child in ipairs(desc:GetChildren()) do
+                    if child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
+                        return child.Value
+                    elseif child:IsA("TextLabel") and child.Text ~= "" and child.Text ~= slotStr and not child.Text:match("^%d+$") then
+                        toolNameFound = child.Text
+                        break
+                    end
+                end
+            end
+            if toolNameFound then break end
+        end
+    end
+
+    if not toolNameFound and slotNum == 2 then
+        toolNameFound = "LMG"
+    end
+
+    if toolNameFound then
+        local char = lp.Character
+        if char then
+            local t = char:FindFirstChild(toolNameFound)
+            if t and t:IsA("Tool") then return t end
+        end
+        local bp = lp:FindFirstChild("Backpack")
+        if bp then
+            local t = bp:FindFirstChild(toolNameFound)
+            if t and t:IsA("Tool") then return t end
+        end
+    end
+
+    return nil
+end
+
+local function equipSlotWeapon(slotNum)
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not char or not hum or hum.Health <= 0 then return nil end
+
+    local targetTool = getToolInstanceForSlot(slotNum)
+    if not targetTool then return nil end
+
+    local currentTool = char:FindFirstChildOfClass("Tool")
+    if currentTool == targetTool then return targetTool end
+
+    if currentTool and currentTool ~= targetTool then
+        hum:UnequipTools()
+        task.wait(0.04)
+    end
+    hum:EquipTool(targetTool)
+    return targetTool
+end
+
+local function activatePowerSlot5()
+    local tool5 = equipSlotWeapon(5)
+    if tool5 then
+        task.wait(0.1)
+        pcall(function() tool5:Activate() end)
+        for _, child in ipairs(tool5:GetChildren()) do
+            if child:IsA("RemoteEvent") then
+                local n = child.Name:lower()
+                if n:find("use") or n:find("mount") or n:find("cast") or n:find("ability") then
+                    pcall(function() child:FireServer() end)
+                end
+            end
+        end
+        task.wait(0.3)
+    end
+    if Config.AutoEquipSlot2 then
+        equipSlotWeapon(2)
+    end
+end
+
+-- ==============================================================================
+-- 2. DETECCIÓN EXACTA DE PIEL INFERIOR Y PUNTOS DE DESCENSO
 -- ==============================================================================
 
 local function getLowestCornerXZ(part)
@@ -110,16 +221,11 @@ local function getExactUndersideSkinPoint(part, customXZ)
     local rayOrigin = Vector3.new(targetXZ.X, bboxMinY - 15, targetXZ.Z)
     local rayDir = Vector3.new(0, part.Size.Y + 35, 0)
     local hit = workspace:Raycast(rayOrigin, rayDir, includeParams)
-
-    if hit then
-        return hit.Position
-    end
+    if hit then return hit.Position end
 
     local centerOrigin = Vector3.new(part.Position.X, bboxMinY - 15, part.Position.Z)
     local centerHit = workspace:Raycast(centerOrigin, Vector3.new(0, part.Size.Y + 35, 0), includeParams)
-    if centerHit then
-        return centerHit.Position
-    end
+    if centerHit then return centerHit.Position end
 
     return Vector3.new(targetXZ.X, bboxMinY, targetXZ.Z)
 end
@@ -147,7 +253,7 @@ local function getPartBottomDepth(part)
 end
 
 -- ==============================================================================
--- 2. GESTIÓN DE HIGHLIGHTS Y LÍNEA GUÍA (BEAM 0% LAG)
+-- 3. GESTIÓN DE HIGHLIGHTS Y LÍNEA GUÍA (BEAM 0% LAG)
 -- ==============================================================================
 
 local function clearGuideBeam()
@@ -190,9 +296,12 @@ local function updateGuideBeam(targetPart)
 end
 
 lp.CharacterAdded:Connect(function()
-    task.wait(0.5)
+    task.wait(0.8)
     if State.SelectedPart and State.SelectedPart.Parent then
         updateGuideBeam(State.SelectedPart)
+    end
+    if Config.AutoEquipSlot2 then
+        equipSlotWeapon(2)
     end
 end)
 
@@ -224,9 +333,7 @@ end
 local function selectTargetPart(targetPart)
     if State.SelectedPart then
         local prevHl = State.HighlightMap[State.SelectedPart]
-        if prevHl then
-            applyHighlightStyle(prevHl, false)
-        end
+        if prevHl then applyHighlightStyle(prevHl, false) end
     end
     if State.ExtraHighlight then
         State.ExtraHighlight:Destroy()
@@ -255,7 +362,7 @@ local function selectTargetPart(targetPart)
 end
 
 -- ==============================================================================
--- 3. SISTEMA DE CAMINATA + FLY + NOCLIP + SUBIR Y SOLTAR
+-- 4. CONTROL DE FÍSICAS, FLY, NOCLIP, SUBIR Y SOLTAR
 -- ==============================================================================
 
 RunService.Stepped:Connect(function()
@@ -280,6 +387,17 @@ local function restoreGhostRocks()
     State.GhostRocks = {}
 end
 
+local function clearFlightForcesOnly(root)
+    if not root then return end
+    for _, obj in ipairs(root:GetChildren()) do
+        if obj.Name == "DescentBP" or obj.Name == "DescentBG" then
+            obj:Destroy()
+        end
+    end
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+end
+
 local function stopFlyAndNoclipImmediate()
     State.IsWalkingToTarget = false
     State.IsNoclip = false
@@ -291,13 +409,7 @@ local function stopFlyAndNoclipImmediate()
 
     if root then
         root.Anchored = false
-        for _, obj in ipairs(root:GetChildren()) do
-            if obj.Name == "DescentBP" or obj.Name == "DescentBG" then
-                obj:Destroy()
-            end
-        end
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
+        clearFlightForcesOnly(root)
     end
 
     if char then
@@ -313,7 +425,6 @@ local function stopFlyAndNoclipImmediate()
     end
 end
 
--- Subir hacia la superficie libre por encima y soltar todo
 local function ascendAndReleaseAll(statusCallback)
     local char = lp.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -341,7 +452,6 @@ local function ascendAndReleaseAll(statusCallback)
     bg.CFrame = root.CFrame
     bg.Parent = root
 
-    -- Raycast desde el cielo hacia abajo en la X, Z actual para encontrar la superficie superior real
     local rayParams = RaycastParams.new()
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
     rayParams.FilterDescendantsInstances = {char}
@@ -366,7 +476,6 @@ local function ascendAndReleaseAll(statusCallback)
     while State.IsFlying and tick() < timeout do
         local dt = RunService.Heartbeat:Wait()
         if not root or not root.Parent then break end
-
         local diff = destPos - root.Position
         local dist = diff.Magnitude
         if dist <= 1.2 then
@@ -374,21 +483,14 @@ local function ascendAndReleaseAll(statusCallback)
             reached = true
             break
         end
-
-        local step = math.min(dist, Config.FlySpeed * dt)
-        bp.Position = root.Position + (diff.Unit * step)
+        bp.Position = root.Position + (diff.Unit * math.min(dist, Config.FlySpeed * dt))
     end
 
-    -- Soltar Noclip, Fly y restaurar colisiones al salir
     stopFlyAndNoclipImmediate()
     restoreGhostRocks()
 
     if statusCallback then
-        if reached then
-            statusCallback("✅ Superficie alcanzada: Fly y Noclip sueltos.")
-        else
-            statusCallback("🛑 Ascenso finalizado: Todo suelto.")
-        end
+        statusCallback(reached and "✅ Superficie alcanzada: Todo suelto." or "🛑 Ascenso finalizado.")
     end
 end
 
@@ -404,7 +506,6 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
 
     local approachPos = getTargetHorizontalPos(targetPart, root.Position)
 
-    -- FASE 1: CAMINAR HACIA LA ROCA
     if Config.WalkFirst and not skipWalk then
         local initialHoriz = Vector3.new(approachPos.X - root.Position.X, 0, approachPos.Z - root.Position.Z).Magnitude
         if initialHoriz > 5.0 then
@@ -412,27 +513,17 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
             local originalWalkSpeed = hum.WalkSpeed
             hum.WalkSpeed = math.max(originalWalkSpeed, Config.WalkSpeed)
 
-            if statusCallback then
-                statusCallback("🚶 Caminando hacia la posición de bajada...")
-            end
+            if statusCallback then statusCallback("🚶 Caminando hacia la posición de bajada...") end
 
             local walkTimeout = tick() + 18.0
             local lastJump = 0
-
             while State.IsWalkingToTarget and tick() < walkTimeout do
                 RunService.Heartbeat:Wait()
-                if not targetPart or not targetPart.Parent or not root or not root.Parent or hum.Health <= 0 then
-                    break
-                end
-
+                if not targetPart or not targetPart.Parent or not root or not root.Parent or hum.Health <= 0 then break end
                 approachPos = getTargetHorizontalPos(targetPart, root.Position)
                 local horizDiff = Vector3.new(approachPos.X - root.Position.X, 0, approachPos.Z - root.Position.Z)
-                if horizDiff.Magnitude <= 5.0 then
-                    break
-                end
-
+                if horizDiff.Magnitude <= 5.0 then break end
                 hum:MoveTo(Vector3.new(approachPos.X, root.Position.Y, approachPos.Z))
-
                 if (tick() - lastJump) >= 0.7 and root.AssemblyLinearVelocity.Magnitude < (hum.WalkSpeed * 0.35) then
                     hum.Jump = true
                     lastJump = tick()
@@ -446,77 +537,16 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
     end
 
     local finalXZ = getTargetHorizontalPos(targetPart, root.Position)
+    local targetDest = nil
 
-    -- OPCIÓN A: MODO BÚNKER DENTRO
     if Config.Mode == "Bunker" then
         State.GhostRocks[targetPart] = targetPart.CanCollide
         targetPart.CanCollide = false
-
-        local bunkerPos = getRealGroundInsideRock(targetPart, finalXZ)
-
-        State.IsNoclip = true
-        State.IsFlying = true
-        hum.PlatformStand = true
-
-        local bp = Instance.new("BodyPosition")
-        bp.Name = "DescentBP"
-        bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-        bp.P = 35000
-        bp.D = 900
-        bp.Position = root.Position
-        bp.Parent = root
-
-        local bg = Instance.new("BodyGyro")
-        bg.Name = "DescentBG"
-        bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-        bg.CFrame = root.CFrame
-        bg.Parent = root
-
-        if statusCallback then
-            statusCallback("🪨 Modo Búnker: Bajando al suelo firme dentro...")
-        end
-
-        local reached = false
-        while State.IsFlying do
-            local dt = RunService.Heartbeat:Wait()
-            if not targetPart or not targetPart.Parent or not root or not root.Parent then break end
-            local diff = bunkerPos - root.Position
-            if diff.Magnitude <= 1.2 then
-                bp.Position = bunkerPos
-                reached = true
-                break
-            end
-            bp.Position = root.Position + (diff.Unit * math.min(diff.Magnitude, Config.FlySpeed * dt))
-        end
-
-        if reached and State.IsFlying then
-            State.IsNoclip = false
-            if char then
-                for _, p in ipairs(char:GetDescendants()) do
-                    if p:IsA("BasePart") then p.CanCollide = true end
-                end
-            end
-
-            if Config.KeepFly then
-                if statusCallback then
-                    statusCallback("✅ Búnker listo: Noclip OFF | Fly MANTENIDO activo.")
-                end
-            else
-                task.wait(Config.HoldSeconds)
-                stopFlyAndNoclipImmediate()
-                if statusCallback then
-                    statusCallback("✅ Búnker listo: De pie sobre suelo firme (Fly OFF).")
-                end
-            end
-        else
-            stopFlyAndNoclipImmediate()
-        end
-        return
+        targetDest = getRealGroundInsideRock(targetPart, finalXZ)
+    else
+        local skinPoint = getExactUndersideSkinPoint(targetPart, finalXZ)
+        targetDest = Vector3.new(skinPoint.X, skinPoint.Y - Config.SkinOffset, skinPoint.Z)
     end
-
-    -- OPCIÓN B: MODO BAJO PIEL INFERIOR
-    local skinPoint = getExactUndersideSkinPoint(targetPart, finalXZ)
-    local targetDest = Vector3.new(skinPoint.X, skinPoint.Y - Config.SkinOffset, skinPoint.Z)
 
     State.IsNoclip = true
     State.IsFlying = true
@@ -537,44 +567,42 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
     bg.Parent = root
 
     if statusCallback then
-        statusCallback(string.format("🦇 Bajando recto a piel inferior (Y: %.1f)...", targetDest.Y))
+        statusCallback(string.format("⬇️ Bajando a Y: %.1f...", targetDest.Y))
     end
 
     local reachedTarget = false
-
     while State.IsFlying do
         local dt = RunService.Heartbeat:Wait()
-        if not targetPart or not targetPart.Parent or not root or not root.Parent then
-            break
-        end
-
+        if not targetPart or not targetPart.Parent or not root or not root.Parent then break end
         local diff = targetDest - root.Position
         local dist = diff.Magnitude
-
         if dist <= 1.0 then
             bp.Position = targetDest
             reachedTarget = true
             break
         end
-
-        local step = math.min(dist, Config.FlySpeed * dt)
-        bp.Position = root.Position + (diff.Unit * step)
+        bp.Position = root.Position + (diff.Unit * math.min(dist, Config.FlySpeed * dt))
     end
 
     if reachedTarget and State.IsFlying then
         State.IsNoclip = false
         if char then
             for _, p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") then
-                    p.CanCollide = true
-                end
+                if p:IsA("BasePart") then p.CanCollide = true end
             end
         end
 
-        if Config.KeepFly then
+        if Config.KeepFly and Config.LockPositionBP then
             bp.Position = targetDest
             if statusCallback then
-                statusCallback("🔒 Noclip OFF | ✈️ Fly MANTENIDO activo debajo de la piel.")
+                statusCallback("🔒 Noclip OFF | ✈️ Fly fijo activo.")
+            end
+        elseif Config.KeepFly and not Config.LockPositionBP then
+            -- Suelta el BodyPosition para no jalarte de vuelta si te mueves con otro script
+            clearFlightForcesOnly(root)
+            root.Anchored = true
+            if statusCallback then
+                statusCallback("⚓ Noclip OFF | Posición libre anclada (sin jalón).")
             end
         else
             if statusCallback then
@@ -583,8 +611,12 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
             task.wait(Config.HoldSeconds)
             stopFlyAndNoclipImmediate()
             if statusCallback then
-                statusCallback("✅ Enganchado bajo la piel (Fly OFF).")
+                statusCallback("✅ Posición alcanzada (Fly OFF).")
             end
+        end
+
+        if Config.AutoEquipSlot2 then
+            equipSlotWeapon(2)
         end
     else
         stopFlyAndNoclipImmediate()
@@ -605,18 +637,270 @@ local function descendBelowFeetObject(statusCallback)
         local floorPart = hit.Instance
         selectTargetPart(floorPart)
         if statusCallback then
-            statusCallback(string.format("👣 Detectado bajo tus pies: '%s'. Bajando...", floorPart.Name))
+            statusCallback(string.format("👣 Bajo tus pies: '%s'. Bajando...", floorPart.Name))
         end
         executeRefugeEntry(floorPart, statusCallback, true)
     else
         if statusCallback then
-            statusCallback("⚠️ No se detectó ningún objeto sólido debajo de tus pies.")
+            statusCallback("⚠️ No se detectó nada sólido debajo de tus pies.")
         end
     end
 end
 
 -- ==============================================================================
--- 4. CLASIFICADOR Y RANKING DE PROFUNDIDAD
+-- 5. SISTEMAS AUTOMÁTICOS: ANTI-BLOATER, PODER 5 (TIEMPO DETENIDO) Y ZANAHORIAS
+-- ==============================================================================
+
+local StatusDisplayCallback = nil -- Se conecta con InfoDetails al crear la GUI
+
+-- A. ANTI-EXPLOSIÓN DE BLOATERS (Detecta si 3+ desaparecen de la nada -> Baja y vuelve)
+local function triggerBloaterDodge()
+    if State.IsDodgingBloater then return end
+    local char = lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    State.IsDodgingBloater = true
+    local savedCF = root.CFrame
+    local wasAnchored = root.Anchored
+    local existingBP = root:FindFirstChild("DescentBP")
+    local savedBPPos = existingBP and existingBP.Position or savedCF.Position
+
+    if StatusDisplayCallback then
+        StatusDisplayCallback(string.format("💣 ¡%d+ Bloaters desaparecieron! Bajando -%d studs...", Config.BloaterThreshold, Config.BloaterDropStuds))
+    end
+
+    root.Anchored = false
+    State.IsNoclip = true
+
+    local dodgePos = savedBPPos - Vector3.new(0, Config.BloaterDropStuds, 0)
+    if existingBP then
+        existingBP.Position = dodgePos
+    else
+        root.CFrame = CFrame.new(dodgePos) * (savedCF - savedCF.Position)
+        root.Anchored = true
+    end
+
+    -- Esperar 3 segundos a que exploten arriba
+    task.wait(3.0)
+
+    -- Regresar a la posición segura original
+    if root and root.Parent then
+        if existingBP and existingBP.Parent then
+            existingBP.Position = savedBPPos
+        else
+            root.CFrame = savedCF
+            root.Anchored = wasAnchored
+        end
+    end
+    State.IsNoclip = false
+
+    if StatusDisplayCallback then
+        StatusDisplayCallback("✅ Explosión de Bloaters esquivada. De vuelta en refugio.")
+    end
+    State.IsDodgingBloater = false
+end
+
+task.spawn(function()
+    local trackedBloaters = {}
+    local recentDisappearances = {}
+
+    while true do
+        task.wait(0.25)
+        if not Config.AutoEvadeBloaters then
+            table.clear(trackedBloaters)
+            table.clear(recentDisappearances)
+            continue
+        end
+
+        local char = lp.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then continue end
+
+        local myPos = root.Position
+        local now = tick()
+        local currentAlive = {}
+        local folder = workspace:FindFirstChild("Characters") or workspace
+
+        for _, ent in ipairs(folder:GetChildren()) do
+            if ent:IsA("Model") and ent ~= char then
+                local n = ent.Name:lower()
+                if n:find("bloat") or n:find("boom") then
+                    local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+                    local eHum = ent:FindFirstChildOfClass("Humanoid")
+                    if eRoot and (eRoot.Position - myPos).Magnitude <= Config.BloaterScanRadius then
+                        if eHum and eHum.Health > 0 and ent:GetAttribute("Dead") ~= true then
+                            currentAlive[ent] = true
+                            trackedBloaters[ent] = true
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Comprobar cuáles de los Bloaters cercanos desaparecieron o murieron
+        for ent, _ in pairs(trackedBloaters) do
+            if not currentAlive[ent] then
+                trackedBloaters[ent] = nil
+                table.insert(recentDisappearances, now)
+            end
+        end
+
+        -- Limpiar desapariciones viejas (> 1.5s)
+        local validCount = 0
+        for i = #recentDisappearances, 1, -1 do
+            if (now - recentDisappearances[i]) > 1.5 then
+                table.remove(recentDisappearances, i)
+            else
+                validCount = validCount + 1
+            end
+        end
+
+        if validCount >= Config.BloaterThreshold and not State.IsDodgingBloater then
+            table.clear(recentDisappearances)
+            task.spawn(triggerBloaterDodge)
+        end
+    end
+end)
+
+-- B. DETECTOR DE TIEMPO DETENIDO -> ESPERA 30s -> PULSA 5TO PODER
+task.spawn(function()
+    local lastClockTime = Lighting.ClockTime
+    local frozenSeconds = 0
+    local powerUsedThisFreeze = false
+
+    while true do
+        task.wait(1.0)
+        if not Config.AutoPower5OnTimeStop then
+            frozenSeconds = 0
+            powerUsedThisFreeze = false
+            continue
+        end
+
+        local currentClock = Lighting.ClockTime
+        if math.abs(currentClock - lastClockTime) < 0.0001 then
+            frozenSeconds = frozenSeconds + 1
+            if frozenSeconds >= Config.TimeStopDelay and not powerUsedThisFreeze then
+                powerUsedThisFreeze = true
+                if StatusDisplayCallback then
+                    StatusDisplayCallback("⏱️ Tiempo detenido 30s: Activando 5to Poder y volviendo a Arma 2...")
+                end
+                activatePowerSlot5()
+            end
+        else
+            frozenSeconds = 0
+            powerUsedThisFreeze = false
+            lastClockTime = currentClock
+        end
+    end
+end)
+
+-- C. CARRERA RÁPIDA POR ZANAHORIAS (ESQUIVANDO ZOMBIES + EQUIPAR ARMA 2)
+local function findNearestCarrot()
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    local dropped = workspace:FindFirstChild("DroppedItems")
+    if not dropped then return nil end
+
+    local bestItem, bestPart = nil, nil
+    local shortest = 140
+
+    for _, item in ipairs(dropped:GetChildren()) do
+        local isCarrot = item.Name:lower():find("carrot") or item:GetAttribute("ItemType") == "Food"
+        if isCarrot and item:GetAttribute("CanPickUp") ~= false then
+            local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
+            if part then
+                local d = (part.Position - root.Position).Magnitude
+                if d < shortest then
+                    shortest = d
+                    bestItem = item
+                    bestPart = part
+                end
+            end
+        end
+    end
+    return bestItem, bestPart
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.3)
+        if Config.AutoCarrotDash and not State.IsDashingCarrot and not State.IsDodgingBloater then
+            local item, part = findNearestCarrot()
+            local char = lp.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+            if item and part and root and hum and hum.Health > 0 then
+                State.IsDashingCarrot = true
+                stopFlyAndNoclipImmediate()
+
+                if StatusDisplayCallback then
+                    StatusDisplayCallback("🥕 Yendo rápido por zanahoria esquivando zombies...")
+                end
+
+                local dashEnd = tick() + 1.4
+                while Config.AutoCarrotDash and tick() < dashEnd and part and part.Parent do
+                    RunService.Heartbeat:Wait()
+                    local toCarrot = part.Position - root.Position
+                    local horiz = Vector3.new(toCarrot.X, 0, toCarrot.Z)
+
+                    if horiz.Magnitude <= 5.5 then
+                        if PickUpRemote then
+                            pcall(function() PickUpRemote:FireServer(item) end)
+                        end
+                        break
+                    end
+
+                    -- Evasión rápida de zombies cercanos (15 studs)
+                    local avoidVec = Vector3.zero
+                    local folder = workspace:FindFirstChild("Characters") or workspace
+                    for _, ent in ipairs(folder:GetChildren()) do
+                        if ent:IsA("Model") and ent ~= char and not Players:GetPlayerFromCharacter(ent) then
+                            local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+                            if eRoot then
+                                local diff = root.Position - eRoot.Position
+                                local d = Vector3.new(diff.X, 0, diff.Z).Magnitude
+                                if d <= 15 and d > 0.5 then
+                                    avoidVec = avoidVec + (Vector3.new(diff.X, 0, diff.Z).Unit * (16 - d) * 1.6)
+                                end
+                            end
+                        end
+                    end
+
+                    local moveDir = (horiz.Unit + avoidVec).Unit
+                    root.AssemblyLinearVelocity = Vector3.new(moveDir.X * 36, root.AssemblyLinearVelocity.Y, moveDir.Z * 36)
+                    hum:MoveTo(root.Position + moveDir * 10)
+                end
+
+                -- Consumir si entró al inventario y re-equipar Arma 2
+                task.wait(0.15)
+                for _, cont in ipairs({char, lp:FindFirstChild("Backpack")}) do
+                    if cont then
+                        for _, t in ipairs(cont:GetChildren()) do
+                            if t:IsA("Tool") and (t.Name:lower():find("carrot") or t:GetAttribute("ItemType") == "Food") then
+                                hum:EquipTool(t)
+                                task.wait(0.05)
+                                pcall(function() t:Activate() end)
+                                task.wait(0.15)
+                                break
+                            end
+                        end
+                    end
+                end
+
+                if Config.AutoEquipSlot2 then
+                    equipSlotWeapon(2)
+                end
+                State.IsDashingCarrot = false
+                task.wait(1.0)
+            end
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 6. CLASIFICADOR Y RANKING DE PROFUNDIDAD
 -- ==============================================================================
 
 local function scanAndRankTerrain(keyword)
@@ -629,30 +913,21 @@ local function scanAndRankTerrain(keyword)
         if desc:IsA("BasePart") then
             local pos = desc.Position
             local dist = (pos - baseCenter).Magnitude
-
             if dist <= 350 then
                 local nLower = desc.Name:lower()
                 local isCharacterPart = lp.Character and desc:IsDescendantOf(lp.Character)
-
                 if not isCharacterPart and (keyword == "" or nLower:find(keyword, 1, true)) then
                     local bottomY = getPartBottomDepth(desc)
                     table.insert(State.FilteredObjects, {
-                        Part = desc,
-                        Name = desc.Name,
-                        Class = desc.ClassName,
-                        Pos = pos,
-                        Size = desc.Size,
-                        BottomY = bottomY,
-                        CenterY = pos.Y
+                        Part = desc, Name = desc.Name, Class = desc.ClassName,
+                        Pos = pos, Size = desc.Size, BottomY = bottomY, CenterY = pos.Y
                     })
                 end
             end
         end
     end
 
-    table.sort(State.FilteredObjects, function(a, b)
-        return a.BottomY < b.BottomY
-    end)
+    table.sort(State.FilteredObjects, function(a, b) return a.BottomY < b.BottomY end)
 
     for i = 1, math.min(40, #State.FilteredObjects) do
         local obj = State.FilteredObjects[i]
@@ -671,15 +946,15 @@ local function scanAndRankTerrain(keyword)
 end
 
 -- ==============================================================================
--- 5. INTERFAZ GRÁFICA FLOTANTE CON 3 PESTAÑAS (EXPLORADOR + CONFIG + COORDS)
+-- 7. INTERFAZ GRÁFICA FLOTANTE NATIVA (3 PESTAÑAS)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV96")
+local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV10")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TerrainInspectorGuiV96"
+ScreenGui.Name = "TerrainInspectorGuiV10"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -687,7 +962,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(25, 120, 110)
-FloatBtn.Text = "🔍\nTOOL"
+FloatBtn.Text = "🔍\nV10"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -709,7 +984,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V9.6 | SUBIR/BAJAR & KEEP FLY"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V10.0 | ANTI-BLOATER & AFK PRO"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -717,7 +992,6 @@ TitleBar.TextXAlignment = Enum.TextXAlignment.Left
 TitleBar.Parent = MainFrame
 Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
--- Barra de 3 Pestañas
 local TabExplorerBtn = Instance.new("TextButton")
 TabExplorerBtn.Size = UDim2.new(0.34, -8, 0, 28)
 TabExplorerBtn.Position = UDim2.new(0, 10, 0, 40)
@@ -758,10 +1032,13 @@ ExplorerPage.BackgroundTransparency = 1
 ExplorerPage.Visible = true
 ExplorerPage.Parent = MainFrame
 
-local ConfigPage = Instance.new("Frame")
+local ConfigPage = Instance.new("ScrollingFrame")
 ConfigPage.Size = UDim2.new(1, 0, 1, -74)
 ConfigPage.Position = UDim2.new(0, 0, 0, 74)
 ConfigPage.BackgroundTransparency = 1
+ConfigPage.BorderSizePixel = 0
+ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 580)
+ConfigPage.ScrollBarThickness = 5
 ConfigPage.Visible = false
 ConfigPage.Parent = MainFrame
 
@@ -793,7 +1070,7 @@ TabConfigBtn.MouseButton1Click:Connect(function() switchTab(TabConfigBtn, Config
 TabCoordsBtn.MouseButton1Click:Connect(function() switchTab(TabCoordsBtn, CoordsPage) end)
 
 -- ==============================================================================
--- 6. PESTAÑA 1: EXPLORADOR
+-- 8. PESTAÑA 1: EXPLORADOR
 -- ==============================================================================
 
 local InfoCard = Instance.new("Frame")
@@ -807,7 +1084,7 @@ local InfoTitle = Instance.new("TextLabel")
 InfoTitle.Size = UDim2.new(1, -12, 0, 20)
 InfoTitle.Position = UDim2.new(0, 6, 0, 4)
 InfoTitle.BackgroundTransparency = 1
-InfoTitle.Text = "📌 Seleccionado: (Ninguno) | Fly Fijo: ON"
+InfoTitle.Text = "📌 V10.0 | Anti-Bloater: ON | Poder 5 (30s): ON | Arma 2"
 InfoTitle.TextColor3 = Color3.fromRGB(90, 190, 255)
 InfoTitle.TextSize = 10
 InfoTitle.Font = Enum.Font.GothamBold
@@ -827,7 +1104,10 @@ InfoDetails.TextXAlignment = Enum.TextXAlignment.Left
 InfoDetails.TextYAlignment = Enum.TextYAlignment.Top
 InfoDetails.Parent = InfoCard
 
--- Fila 1 de acción rápida: Bajar Aquí (Izquierda) + Subir y Soltar Todo (Derecha)
+StatusDisplayCallback = function(msg)
+    InfoDetails.Text = msg
+end
+
 local DropHereBtn = Instance.new("TextButton")
 DropHereBtn.Size = UDim2.new(0.55, -12, 0, 32)
 DropHereBtn.Position = UDim2.new(0, 10, 0, 86)
@@ -840,11 +1120,7 @@ DropHereBtn.Parent = ExplorerPage
 Instance.new("UICorner", DropHereBtn).CornerRadius = UDim.new(0, 6)
 
 DropHereBtn.MouseButton1Click:Connect(function()
-    task.spawn(function()
-        descendBelowFeetObject(function(statusMsg)
-            InfoDetails.Text = statusMsg
-        end)
-    end)
+    task.spawn(function() descendBelowFeetObject(StatusDisplayCallback) end)
 end)
 
 local AscendReleaseBtn = Instance.new("TextButton")
@@ -859,14 +1135,9 @@ AscendReleaseBtn.Parent = ExplorerPage
 Instance.new("UICorner", AscendReleaseBtn).CornerRadius = UDim.new(0, 6)
 
 AscendReleaseBtn.MouseButton1Click:Connect(function()
-    task.spawn(function()
-        ascendAndReleaseAll(function(statusMsg)
-            InfoDetails.Text = statusMsg
-        end)
-    end)
+    task.spawn(function() ascendAndReleaseAll(StatusDisplayCallback) end)
 end)
 
--- Fila 2: Click Mode + Copiar Nombre + Soltar Fly/Todo
 local ClickModeBtn = Instance.new("TextButton")
 ClickModeBtn.Size = UDim2.new(0.33, -8, 0, 28)
 ClickModeBtn.Position = UDim2.new(0, 10, 0, 124)
@@ -900,7 +1171,6 @@ StopFlyBtn.Font = Enum.Font.GothamBold
 StopFlyBtn.Parent = ExplorerPage
 Instance.new("UICorner", StopFlyBtn).CornerRadius = UDim.new(0, 6)
 
--- Fila 3: Buscador y Ordenar
 local SearchBox = Instance.new("TextBox")
 SearchBox.Size = UDim2.new(0.55, -10, 0, 28)
 SearchBox.Position = UDim2.new(0, 10, 0, 158)
@@ -940,79 +1210,101 @@ UIListLayout.Padding = UDim.new(0, 4)
 UIListLayout.Parent = ScrollFrame
 
 -- ==============================================================================
--- 7. PESTAÑA 2: PANEL DE CONFIGURACIÓN
+-- 9. PESTAÑA 2: PANEL DE CONFIGURACIÓN (CON SCROLL)
 -- ==============================================================================
 
-local ModeSelectorBtn = Instance.new("TextButton")
-ModeSelectorBtn.Size = UDim2.new(1, -20, 0, 38)
-ModeSelectorBtn.Position = UDim2.new(0, 10, 0, 6)
-ModeSelectorBtn.BackgroundColor3 = Color3.fromRGB(115, 55, 175)
-ModeSelectorBtn.Text = "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)"
-ModeSelectorBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ModeSelectorBtn.TextSize = 10
-ModeSelectorBtn.Font = Enum.Font.GothamBold
-ModeSelectorBtn.Parent = ConfigPage
-Instance.new("UICorner", ModeSelectorBtn).CornerRadius = UDim.new(0, 8)
+local function createToggleBtn(yPos, text, color, onClick)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -24, 0, 34)
+    btn.Position = UDim2.new(0, 10, 0, yPos)
+    btn.BackgroundColor3 = color
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    btn.TextSize = 9
+    btn.Font = Enum.Font.GothamBold
+    btn.Parent = ConfigPage
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    btn.MouseButton1Click:Connect(function() onClick(btn) end)
+    return btn
+end
 
-ModeSelectorBtn.MouseButton1Click:Connect(function()
+-- 1. Anti-Explosión Bloaters (ON por defecto)
+createToggleBtn(6, "💣 ANTI-BLOATER (BAJAR SI DESAPARECEN 3+): ON", Color3.fromRGB(30, 145, 80), function(btn)
+    Config.AutoEvadeBloaters = not Config.AutoEvadeBloaters
+    btn.BackgroundColor3 = Config.AutoEvadeBloaters and Color3.fromRGB(30, 145, 80) or Color3.fromRGB(65, 70, 85)
+    btn.Text = Config.AutoEvadeBloaters and "💣 ANTI-BLOATER (BAJAR SI DESAPARECEN 3+): ON" or "💣 ANTI-BLOATER: OFF"
+end)
+
+-- 2. Poder 5 tras 30s de tiempo detenido
+createToggleBtn(46, "⏱️ PODER 5 TRAS 30s DE TIEMPO DETENIDO: ON", Color3.fromRGB(115, 55, 175), function(btn)
+    Config.AutoPower5OnTimeStop = not Config.AutoPower5OnTimeStop
+    btn.BackgroundColor3 = Config.AutoPower5OnTimeStop and Color3.fromRGB(115, 55, 175) or Color3.fromRGB(65, 70, 85)
+    btn.Text = Config.AutoPower5OnTimeStop and "⏱️ PODER 5 TRAS 30s DE TIEMPO DETENIDO: ON" or "⏱️ PODER 5 EN TIEMPO DETENIDO: OFF"
+end)
+
+-- 3. Carrera Rápida por Zanahorias (Activable)
+createToggleBtn(86, "🥕 IR RÁPIDO POR ZANAHORIAS (ESQUIVANDO): OFF", Color3.fromRGB(65, 70, 85), function(btn)
+    Config.AutoCarrotDash = not Config.AutoCarrotDash
+    btn.BackgroundColor3 = Config.AutoCarrotDash and Color3.fromRGB(210, 120, 20) or Color3.fromRGB(65, 70, 85)
+    btn.Text = Config.AutoCarrotDash and "🥕 IR RÁPIDO POR ZANAHORIAS (ESQUIVANDO): ON" or "🥕 IR RÁPIDO POR ZANAHORIAS (ESQUIVANDO): OFF"
+end)
+
+-- 4. Anclar AFK (Destruye BodyPosition para que NO regrese + Equipa Arma 2)
+createToggleBtn(126, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + EQUIPAR ARMA 2): OFF", Color3.fromRGB(45, 85, 155), function(btn)
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if root then
+        if not root.Anchored then
+            clearFlightForcesOnly(root) -- Elimina el BodyPosition que te jalaba al punto anterior
+            State.IsFlying = false
+            root.Anchored = true
+            btn.BackgroundColor3 = Color3.fromRGB(210, 120, 20)
+            btn.Text = "⚓ ANCLADO AFK AQUÍ (ARMA 2 ACTIVA): ON"
+            if Config.AutoEquipSlot2 then equipSlotWeapon(2) end
+        else
+            root.Anchored = false
+            btn.BackgroundColor3 = Color3.fromRGB(45, 85, 155)
+            btn.Text = "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + EQUIPAR ARMA 2): OFF"
+        end
+    end
+end)
+
+-- 5. Fijar Posición con BodyPosition vs Libre (Resuelve el regreso automático)
+createToggleBtn(166, "🧲 RETENER CON BODYPOSITION AL BAJAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
+    Config.LockPositionBP = not Config.LockPositionBP
+    btn.BackgroundColor3 = Config.LockPositionBP and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
+    btn.Text = Config.LockPositionBP and "🧲 RETENER CON BODYPOSITION AL BAJAR: ON" or "🔓 LIBRE AL BAJAR (ANCLA SIN JALAR DE VUELTA): OFF"
+end)
+
+-- 6. Modo Refugio (Bajo Piel vs Búnker)
+createToggleBtn(206, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.fromRGB(115, 55, 175), function(btn)
     if Config.Mode == "UnderSkin" then
         Config.Mode = "Bunker"
-        ModeSelectorBtn.BackgroundColor3 = Color3.fromRGB(35, 130, 95)
-        ModeSelectorBtn.Text = "MODO: 🪨 BÚNKER DENTRO (EN SUELO REAL)"
+        btn.BackgroundColor3 = Color3.fromRGB(35, 130, 95)
+        btn.Text = "MODO: 🪨 BÚNKER DENTRO (EN SUELO REAL)"
     else
         Config.Mode = "UnderSkin"
-        ModeSelectorBtn.BackgroundColor3 = Color3.fromRGB(115, 55, 175)
-        ModeSelectorBtn.Text = "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)"
+        btn.BackgroundColor3 = Color3.fromRGB(115, 55, 175)
+        btn.Text = "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)"
     end
 end)
 
-local KeepFlyToggleBtn = Instance.new("TextButton")
-KeepFlyToggleBtn.Size = UDim2.new(1, -20, 0, 38)
-KeepFlyToggleBtn.Position = UDim2.new(0, 10, 0, 50)
-KeepFlyToggleBtn.BackgroundColor3 = Color3.fromRGB(0, 135, 195)
-KeepFlyToggleBtn.Text = "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON (NO SE APAGA)"
-KeepFlyToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-KeepFlyToggleBtn.TextSize = 10
-KeepFlyToggleBtn.Font = Enum.Font.GothamBold
-KeepFlyToggleBtn.Parent = ConfigPage
-Instance.new("UICorner", KeepFlyToggleBtn).CornerRadius = UDim.new(0, 8)
-
-KeepFlyToggleBtn.MouseButton1Click:Connect(function()
+-- 7. Mantener Fly vs Apagar Fly
+createToggleBtn(246, "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
     Config.KeepFly = not Config.KeepFly
-    if Config.KeepFly then
-        KeepFlyToggleBtn.BackgroundColor3 = Color3.fromRGB(0, 135, 195)
-        KeepFlyToggleBtn.Text = "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON (NO SE APAGA)"
-    else
-        KeepFlyToggleBtn.BackgroundColor3 = Color3.fromRGB(65, 70, 85)
-        KeepFlyToggleBtn.Text = "🛑 APAGAR FLY AUTOMÁTICAMENTE AL LLEGAR: OFF"
-    end
+    btn.BackgroundColor3 = Config.KeepFly and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
+    btn.Text = Config.KeepFly and "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON" or "🛑 APAGAR FLY AUTOMÁTICAMENTE AL LLEGAR: OFF"
 end)
 
-local DeepestEdgeToggleBtn = Instance.new("TextButton")
-DeepestEdgeToggleBtn.Size = UDim2.new(1, -20, 0, 38)
-DeepestEdgeToggleBtn.Position = UDim2.new(0, 10, 0, 94)
-DeepestEdgeToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 145, 80)
-DeepestEdgeToggleBtn.Text = "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)"
-DeepestEdgeToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-DeepestEdgeToggleBtn.TextSize = 10
-DeepestEdgeToggleBtn.Font = Enum.Font.GothamBold
-DeepestEdgeToggleBtn.Parent = ConfigPage
-Instance.new("UICorner", DeepestEdgeToggleBtn).CornerRadius = UDim.new(0, 8)
-
-DeepestEdgeToggleBtn.MouseButton1Click:Connect(function()
+-- 8. Bajada Recta vs Esquina Profunda
+createToggleBtn(286, "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)", Color3.fromRGB(30, 145, 80), function(btn)
     Config.GoToDeepestEdge = not Config.GoToDeepestEdge
-    if Config.GoToDeepestEdge then
-        DeepestEdgeToggleBtn.BackgroundColor3 = Color3.fromRGB(190, 115, 20)
-        DeepestEdgeToggleBtn.Text = "📐 TRAYECTORIA: IR A ESQUINA MÁS PROFUNDA (DIAGONAL)"
-    else
-        DeepestEdgeToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 145, 80)
-        DeepestEdgeToggleBtn.Text = "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)"
-    end
+    btn.BackgroundColor3 = Config.GoToDeepestEdge and Color3.fromRGB(190, 115, 20) or Color3.fromRGB(30, 145, 80)
+    btn.Text = Config.GoToDeepestEdge and "📐 TRAYECTORIA: ESQUINA PROFUNDA (DIAGONAL)" or "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)"
 end)
 
 local function createStepperControl(parent, yPos, titleText, getValText, onMinus, onPlus)
     local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, -20, 0, 46)
+    row.Size = UDim2.new(1, -24, 0, 44)
     row.Position = UDim2.new(0, 10, 0, yPos)
     row.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
     row.Parent = parent
@@ -1030,8 +1322,8 @@ local function createStepperControl(parent, yPos, titleText, getValText, onMinus
     lbl.Parent = row
 
     local minusBtn = Instance.new("TextButton")
-    minusBtn.Size = UDim2.new(0, 48, 0, 32)
-    minusBtn.Position = UDim2.new(1, -110, 0, 7)
+    minusBtn.Size = UDim2.new(0, 46, 0, 30)
+    minusBtn.Position = UDim2.new(1, -106, 0, 7)
     minusBtn.BackgroundColor3 = Color3.fromRGB(160, 45, 55)
     minusBtn.Text = "➖"
     minusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1041,8 +1333,8 @@ local function createStepperControl(parent, yPos, titleText, getValText, onMinus
     Instance.new("UICorner", minusBtn).CornerRadius = UDim.new(0, 6)
 
     local plusBtn = Instance.new("TextButton")
-    plusBtn.Size = UDim2.new(0, 48, 0, 32)
-    plusBtn.Position = UDim2.new(1, -56, 0, 7)
+    plusBtn.Size = UDim2.new(0, 46, 0, 30)
+    plusBtn.Position = UDim2.new(1, -54, 0, 7)
     plusBtn.BackgroundColor3 = Color3.fromRGB(30, 145, 80)
     plusBtn.Text = "➕"
     plusBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1051,98 +1343,42 @@ local function createStepperControl(parent, yPos, titleText, getValText, onMinus
     plusBtn.Parent = row
     Instance.new("UICorner", plusBtn).CornerRadius = UDim.new(0, 6)
 
-    minusBtn.MouseButton1Click:Connect(function()
-        onMinus()
-        lbl.Text = titleText .. "\n" .. getValText()
-    end)
-
-    plusBtn.MouseButton1Click:Connect(function()
-        onPlus()
-        lbl.Text = titleText .. "\n" .. getValText()
-    end)
+    minusBtn.MouseButton1Click:Connect(function() onMinus(); lbl.Text = titleText .. "\n" .. getValText() end)
+    plusBtn.MouseButton1Click:Connect(function() onPlus(); lbl.Text = titleText .. "\n" .. getValText() end)
 end
 
-createStepperControl(
-    ConfigPage, 140,
-    "🎯 AJUSTE BAJO PIEL INFERIOR (STUDS)",
-    function() return string.format("Actual: -%.1f studs bajo la piel real", Config.SkinOffset) end,
+createStepperControl(ConfigPage, 328, "🎯 AJUSTE BAJO PIEL INFERIOR",
+    function() return string.format("Actual: -%.1f studs", Config.SkinOffset) end,
     function() Config.SkinOffset = math.max(0.0, Config.SkinOffset - 0.2) end,
     function() Config.SkinOffset = math.min(6.0, Config.SkinOffset + 0.2) end
 )
 
-createStepperControl(
-    ConfigPage, 192,
-    "✈️ VELOCIDAD DE VUELO (FLY)",
+createStepperControl(ConfigPage, 378, "💣 BAJADA ANTI-BLOATER (STUDS)",
+    function() return string.format("Actual: -%d studs al esquivar", Config.BloaterDropStuds) end,
+    function() Config.BloaterDropStuds = math.max(4, Config.BloaterDropStuds - 2) end,
+    function() Config.BloaterDropStuds = math.min(30, Config.BloaterDropStuds + 2) end
+)
+
+createStepperControl(ConfigPage, 428, "✈️ VELOCIDAD DE VUELO (FLY)",
     function() return string.format("Actual: %d studs/s", Config.FlySpeed) end,
     function() Config.FlySpeed = math.max(20, Config.FlySpeed - 10) end,
     function() Config.FlySpeed = math.min(250, Config.FlySpeed + 10) end
 )
 
-createStepperControl(
-    ConfigPage, 244,
-    "🚶 VELOCIDAD AL CAMINAR A LA ROCA",
+createStepperControl(ConfigPage, 478, "🚶 VELOCIDAD AL CAMINAR",
     function() return string.format("Actual: %d WalkSpeed", Config.WalkSpeed) end,
     function() Config.WalkSpeed = math.max(16, Config.WalkSpeed - 4) end,
     function() Config.WalkSpeed = math.min(80, Config.WalkSpeed + 4) end
 )
 
-createStepperControl(
-    ConfigPage, 296,
-    "⏱️ ESPERA SI SE APAGA FLY AUTOMÁTICO",
-    function() return string.format("Actual: %.1f segundos tras quitar Noclip", Config.HoldSeconds) end,
-    function() Config.HoldSeconds = math.max(0.2, Config.HoldSeconds - 0.2) end,
-    function() Config.HoldSeconds = math.min(5.0, Config.HoldSeconds + 0.2) end
-)
-
-local WalkFirstToggle = Instance.new("TextButton")
-WalkFirstToggle.Size = UDim2.new(0.5, -14, 0, 38)
-WalkFirstToggle.Position = UDim2.new(0, 10, 0, 350)
-WalkFirstToggle.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
-WalkFirstToggle.Text = "🚶 CAMINAR PRIMERO: ON"
-WalkFirstToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-WalkFirstToggle.TextSize = 9
-WalkFirstToggle.Font = Enum.Font.GothamBold
-WalkFirstToggle.Parent = ConfigPage
-Instance.new("UICorner", WalkFirstToggle).CornerRadius = UDim.new(0, 8)
-
-WalkFirstToggle.MouseButton1Click:Connect(function()
+createToggleBtn(528, "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON", Color3.fromRGB(0, 130, 110), function(btn)
     Config.WalkFirst = not Config.WalkFirst
-    if Config.WalkFirst then
-        WalkFirstToggle.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
-        WalkFirstToggle.Text = "🚶 CAMINAR PRIMERO: ON"
-    else
-        WalkFirstToggle.BackgroundColor3 = Color3.fromRGB(65, 70, 85)
-        WalkFirstToggle.Text = "✈️ VOLAR DIRECTO: OFF"
-    end
-end)
-
-local AnchorAfkBtn = Instance.new("TextButton")
-AnchorAfkBtn.Size = UDim2.new(0.5, -14, 0, 38)
-AnchorAfkBtn.Position = UDim2.new(0.5, 4, 0, 350)
-AnchorAfkBtn.BackgroundColor3 = Color3.fromRGB(45, 85, 155)
-AnchorAfkBtn.Text = "⚓ ANCLAR POSICIÓN AFK: OFF"
-AnchorAfkBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-AnchorAfkBtn.TextSize = 9
-AnchorAfkBtn.Font = Enum.Font.GothamBold
-AnchorAfkBtn.Parent = ConfigPage
-Instance.new("UICorner", AnchorAfkBtn).CornerRadius = UDim.new(0, 8)
-
-AnchorAfkBtn.MouseButton1Click:Connect(function()
-    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if root then
-        root.Anchored = not root.Anchored
-        if root.Anchored then
-            AnchorAfkBtn.BackgroundColor3 = Color3.fromRGB(210, 120, 20)
-            AnchorAfkBtn.Text = "⚓ ANCLADO AFK: ON"
-        else
-            AnchorAfkBtn.BackgroundColor3 = Color3.fromRGB(45, 85, 155)
-            AnchorAfkBtn.Text = "⚓ ANCLAR POSICIÓN AFK: OFF"
-        end
-    end
+    btn.BackgroundColor3 = Config.WalkFirst and Color3.fromRGB(0, 130, 110) or Color3.fromRGB(65, 70, 85)
+    btn.Text = Config.WalkFirst and "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON" or "✈️ VOLAR DIRECTO SIN CAMINAR: OFF"
 end)
 
 -- ==============================================================================
--- 8. PESTAÑA 3: COORDENADAS EN TIEMPO REAL
+-- 10. PESTAÑA 3: COORDENADAS EN TIEMPO REAL
 -- ==============================================================================
 
 local CoordCard = Instance.new("Frame")
@@ -1195,10 +1431,7 @@ task.spawn(function()
             if root then
                 local p = root.Position
                 currentFormattedVector = string.format("Vector3.new(%.1f, %.1f, %.1f)", p.X, p.Y, p.Z)
-                LiveCoordText.Text = string.format(
-                    "X: %.2f   |   Y: %.2f   |   Z: %.2f\n\nFormato Lua:\n%s",
-                    p.X, p.Y, p.Z, currentFormattedVector
-                )
+                LiveCoordText.Text = string.format("X: %.2f   |   Y: %.2f   |   Z: %.2f\n\nFormato Lua:\n%s", p.X, p.Y, p.Z, currentFormattedVector)
             else
                 LiveCoordText.Text = "Personaje no encontrado..."
             end
@@ -1214,7 +1447,7 @@ CopyVecBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 9. RENDERIZADO DE LISTA SELECCIONABLE + BOTÓN DE ENTRADA EN CADA FILA
+-- 11. RENDERIZADO DE LISTA Y EVENTOS
 -- ==============================================================================
 
 local RowButtons = {}
@@ -1222,11 +1455,7 @@ local RowButtons = {}
 local function refreshRowSelectionVisuals()
     for part, rowFrame in pairs(RowButtons) do
         if rowFrame and rowFrame.Parent then
-            if part == State.SelectedPart then
-                rowFrame.BackgroundColor3 = Color3.fromRGB(20, 65, 115)
-            else
-                rowFrame.BackgroundColor3 = Color3.fromRGB(22, 26, 36)
-            end
+            rowFrame.BackgroundColor3 = (part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
         end
     end
 end
@@ -1243,7 +1472,6 @@ local function updateScrollList()
         row.BackgroundColor3 = (obj.Part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
         row.Parent = ScrollFrame
         Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
-
         RowButtons[obj.Part] = row
 
         local selectBtn = Instance.new("TextButton")
@@ -1279,11 +1507,8 @@ local function updateScrollList()
             selectTargetPart(obj.Part)
             refreshRowSelectionVisuals()
             InfoTitle.Text = string.format("📌 #%d Destino: '%s' (%s)", rank, obj.Name, obj.Class)
-
             task.spawn(function()
-                executeRefugeEntry(obj.Part, function(statusMsg)
-                    InfoDetails.Text = statusMsg .. string.format("\nModo: %s | Pieza: %s", Config.Mode, obj.Name)
-                end, false)
+                executeRefugeEntry(obj.Part, StatusDisplayCallback, false)
             end)
         end)
     end
@@ -1291,39 +1516,24 @@ local function updateScrollList()
     ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, #State.FilteredObjects * 40)
 end
 
--- ==============================================================================
--- 10. EVENTOS DE INTERFAZ Y INSPECCIÓN POR CLICK
--- ==============================================================================
-
-local function handleWorldClick()
+mouse.Button1Down:Connect(function()
     if not State.ClickInspect then return end
-
     local targetPart = mouse.Target
     if targetPart and targetPart:IsA("BasePart") then
-        local isSelf = lp.Character and targetPart:IsDescendantOf(lp.Character)
-        if isSelf then return end
-
+        if lp.Character and targetPart:IsDescendantOf(lp.Character) then return end
         selectTargetPart(targetPart)
         refreshRowSelectionVisuals()
-
         local bottomY = getPartBottomDepth(targetPart)
         InfoTitle.Text = string.format("📌 Click en: '%s' (%s)", targetPart.Name, targetPart.ClassName)
         InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)\nRuta: %s", bottomY, targetPart.Position.Y, targetPart.Size.X, targetPart.Size.Y, targetPart.Size.Z, targetPart:GetFullName())
         SearchBox.Text = targetPart.Name
     end
-end
-
-mouse.Button1Down:Connect(handleWorldClick)
+end)
 
 ClickModeBtn.MouseButton1Click:Connect(function()
     State.ClickInspect = not State.ClickInspect
-    if State.ClickInspect then
-        ClickModeBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 80)
-        ClickModeBtn.Text = "🎯 CLICK: ON"
-    else
-        ClickModeBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 50)
-        ClickModeBtn.Text = "🎯 CLICK: OFF"
-    end
+    ClickModeBtn.BackgroundColor3 = State.ClickInspect and Color3.fromRGB(30, 160, 80) or Color3.fromRGB(160, 40, 50)
+    ClickModeBtn.Text = State.ClickInspect and "🎯 CLICK: ON" or "🎯 CLICK: OFF"
 end)
 
 CopyNameBtn.MouseButton1Click:Connect(function()
@@ -1333,18 +1543,12 @@ CopyNameBtn.MouseButton1Click:Connect(function()
         CopyNameBtn.Text = "✅ ¡COPIADO!"
         task.wait(1.2)
         CopyNameBtn.Text = "📋 COPIAR NOMBRE"
-    else
-        CopyNameBtn.Text = "⚠️ SIN SELECCIÓN"
-        task.wait(1.2)
-        CopyNameBtn.Text = "📋 COPIAR NOMBRE"
     end
 end)
 
 StopFlyBtn.MouseButton1Click:Connect(function()
     stopFlyAndNoclipImmediate()
     restoreGhostRocks()
-    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if root then root.Anchored = false end
     InfoDetails.Text = "🛑 Fly, Noclip y Anclaje soltados manualmente."
 end)
 
@@ -1361,6 +1565,9 @@ FloatBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
 
--- Carga inicial
+-- Carga inicial + Equipar Arma 2 por defecto
 scanAndRankTerrain("")
 updateScrollList()
+if Config.AutoEquipSlot2 then
+    equipSlotWeapon(2)
+end
