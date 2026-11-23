@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V7.1 (DESCENSO SUAVE -7 STUDS + BEAM + COORDENADAS)
+-- EXPLORADOR FORENSE DE TERRENO V7.2 (LLEGADA ESTRICTA -> NOCLIP OFF -> 1s FLY OFF)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -79,7 +79,6 @@ local function updateGuideBeam(targetPart)
     State.BeamObj = beam
 end
 
--- Reenganchar línea guía si el personaje reaparece
 lp.CharacterAdded:Connect(function()
     task.wait(0.5)
     if State.SelectedPart and State.SelectedPart.Parent then
@@ -220,20 +219,22 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
     bg.CFrame = root.CFrame
     bg.Parent = root
 
-    -- Destino: 7 studs por debajo de la base inferior de la roca/pieza
     local bottomY = targetPart.Position.Y - (targetPart.Size.Y * 0.5)
     local destPos = Vector3.new(targetPart.Position.X, bottomY - 7.0, targetPart.Position.Z)
 
     if statusCallback then
-        statusCallback("✈️ Fly + Noclip activos: Bajando lento a -7 studs...")
+        statusCallback("✈️ Fly + Noclip activos: Viajando al objetivo (-7 studs)...")
     end
 
-    local speed = 55 -- Velocidad reducida para descenso más lento y controlado
-    local timeout = tick() + 30
+    local speed = 55
+    local reachedTarget = false
 
-    while State.IsFlying and tick() < timeout do
-        RunService.Heartbeat:Wait()
-        if not targetPart or not targetPart.Parent then break end
+    -- Bucle estricto: No desactiva noclip hasta haber llegado al objetivo
+    while State.IsFlying do
+        local dt = RunService.Heartbeat:Wait()
+        if not targetPart or not targetPart.Parent or not root or not root.Parent then
+            break
+        end
 
         bottomY = targetPart.Position.Y - (targetPart.Size.Y * 0.5)
         destPos = Vector3.new(targetPart.Position.X, bottomY - 7.0, targetPart.Position.Z)
@@ -241,34 +242,42 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
         local diff = destPos - root.Position
         local dist = diff.Magnitude
 
-        if dist <= 1.8 then
+        if dist <= 1.5 then
             bp.Position = destPos
+            reachedTarget = true
             break
         end
 
-        bp.Position = root.Position + (diff.Unit * (speed * 0.05))
+        local step = math.min(dist, speed * dt)
+        bp.Position = root.Position + (diff.Unit * step)
     end
 
-    -- 1. Desactivar Noclip al llegar a -7 studs
-    State.IsNoclip = false
-    if char then
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then
-                p.CanCollide = true
+    -- Solo desactivar noclip y fly secuencialmente si llegó al objetivo
+    if reachedTarget and State.IsFlying then
+        -- 1. Primero desactivar Noclip al llegar al objetivo
+        State.IsNoclip = false
+        if char then
+            for _, p in ipairs(char:GetDescendants()) do
+                if p:IsA("BasePart") then
+                    p.CanCollide = true
+                end
             end
         end
-    end
 
-    if statusCallback then
-        statusCallback("🛑 Noclip OFF (-7 studs). Apagando Fly en 1s...")
-    end
+        if statusCallback then
+            statusCallback("🛑 Objetivo alcanzado: Noclip OFF. Apagando Fly en 1s...")
+        end
 
-    -- 2. Esperar 1 segundo sosteniendo la posición y luego desactivar Fly
-    task.wait(1.0)
-    stopFlyAndNoclipImmediate()
+        -- 2. Esperar 1 segundo sosteniendo posición y luego desactivar Fly
+        task.wait(1.0)
+        stopFlyAndNoclipImmediate()
 
-    if statusCallback then
-        statusCallback("✅ Descenso completado (-7 studs debajo).")
+        if statusCallback then
+            statusCallback("✅ Descenso completado (-7 studs debajo).")
+        end
+    else
+        -- Si se canceló manualmente con 'CORTAR FLY' o desapareció el objeto
+        stopFlyAndNoclipImmediate()
     end
 end
 
@@ -376,7 +385,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V7.1 | FLY -7 STUDS & GUÍA"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V7.2 | FLY -7 STUDS & GUÍA"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
