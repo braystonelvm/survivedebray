@@ -145,7 +145,7 @@ local function selectTargetPart(targetPart)
 end
 
 -- ==============================================================================
--- 2. SISTEMA DE FLY + NOCLIP PARA DESCENSO LENTO Y CONTROLADO (-7 STUDS)
+-- 2. SISTEMA DE FLY + NOCLIP PARA DESCENSO LENTO Y CONTROLADO (-2 STUDS)
 -- ==============================================================================
 
 RunService.Stepped:Connect(function()
@@ -220,10 +220,10 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
     bg.Parent = root
 
     local bottomY = targetPart.Position.Y - (targetPart.Size.Y * 0.5)
-    local destPos = Vector3.new(targetPart.Position.X, bottomY - 7.0, targetPart.Position.Z)
+    local destPos = Vector3.new(targetPart.Position.X, bottomY - 2.0, targetPart.Position.Z)
 
     if statusCallback then
-        statusCallback("✈️ Fly + Noclip activos: Viajando al objetivo (-7 studs)...")
+        statusCallback("✈️ Fly + Noclip activos: Viajando al objetivo (-2 studs)...")
     end
 
     local speed = 55
@@ -237,7 +237,7 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
         end
 
         bottomY = targetPart.Position.Y - (targetPart.Size.Y * 0.5)
-        destPos = Vector3.new(targetPart.Position.X, bottomY - 7.0, targetPart.Position.Z)
+        destPos = Vector3.new(targetPart.Position.X, bottomY - 2.0, targetPart.Position.Z)
 
         local diff = destPos - root.Position
         local dist = diff.Magnitude
@@ -273,7 +273,7 @@ local function flyDescendBelowTarget(targetPart, statusCallback)
         stopFlyAndNoclipImmediate()
 
         if statusCallback then
-            statusCallback("✅ Descenso completado (-7 studs debajo).")
+            statusCallback("✅ Descenso completado (-2 studs debajo).")
         end
     else
         -- Si se canceló manualmente con 'CORTAR FLY' o desapareció el objeto
@@ -385,7 +385,7 @@ MainCorner.Parent = MainFrame
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V7.2 | FLY -7 STUDS & GUÍA"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V7.2 | FLY -2 STUDS & GUÍA"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -478,7 +478,7 @@ local InfoDetails = Instance.new("TextLabel")
 InfoDetails.Size = UDim2.new(1, -12, 0, 48)
 InfoDetails.Position = UDim2.new(0, 6, 0, 25)
 InfoDetails.BackgroundTransparency = 1
-InfoDetails.Text = "Toca una fila para seleccionarla (Azul + Línea) o presiona '⬇️ BAJAR' para descender lento con Fly+Noclip 7 studs debajo."
+InfoDetails.Text = "Toca una fila para seleccionarla (Azul + Línea) o presiona '⬇️ BAJAR' para descender lento con Fly+Noclip 2 studs debajo."
 InfoDetails.TextColor3 = Color3.fromRGB(200, 200, 200)
 InfoDetails.TextSize = 9
 InfoDetails.Font = Enum.Font.Code
@@ -699,7 +699,7 @@ local function updateScrollList()
 
             task.spawn(function()
                 flyDescendBelowTarget(obj.Part, function(statusMsg)
-                    InfoDetails.Text = statusMsg .. string.format("\nBase Y: %.2f | Objetivo Y: %.2f", obj.BottomY, obj.BottomY - 7.0)
+                    InfoDetails.Text = statusMsg .. string.format("\nBase Y: %.2f | Objetivo Y: %.2f", obj.BottomY, obj.BottomY - 2.0)
                 end)
             end)
         end)
