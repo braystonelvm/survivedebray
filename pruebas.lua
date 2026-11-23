@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V9.5 (KEEP FLY + BAJAR AQUÍ + BAJADA RECTA)
+-- EXPLORADOR FORENSE DE TERRENO V9.6 (KEEP FLY + BAJAR AQUÍ + SUBIR Y SOLTAR)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -13,7 +13,7 @@ local Config = {
     Mode = "UnderSkin",         -- "UnderSkin" (Bajo piel) o "Bunker" (Dentro sobre suelo real)
     KeepFly = true,             -- TRUE por defecto: No apaga el Fly al llegar para no caer/deslizar
     GoToDeepestEdge = false,    -- FALSE por defecto: Baja recto (sin irse de lado a esquinas)
-    FlySpeed = 95,              -- Velocidad de bajada en vuelo
+    FlySpeed = 95,              -- Velocidad de bajada/subida en vuelo
     WalkSpeed = 24,             -- Velocidad al caminar hacia la roca
     SkinOffset = 1.2,           -- Ajuste fino en studs respecto a la piel inferior
     HoldSeconds = 1.0,          -- Espera tras quitar Noclip (si KeepFly está en OFF)
@@ -77,13 +77,11 @@ local function getLowestCornerXZ(part)
     ), minY
 end
 
--- Calcula las coordenadas (X, Z) objetivo según si quiere bajada recta o punto más profundo
 local function getTargetHorizontalPos(part, currentRootPos)
     if Config.GoToDeepestEdge then
         local cornerPos, _ = getLowestCornerXZ(part)
         return Vector3.new(cornerPos.X, part.Position.Y, cornerPos.Z)
     else
-        -- Modo Bajada Recta: Si ya estás encima de la roca, usa tu propia X, Z para bajar verticalmente
         if currentRootPos then
             local checkParams = RaycastParams.new()
             checkParams.FilterType = Enum.RaycastFilterType.Include
@@ -97,12 +95,10 @@ local function getTargetHorizontalPos(part, currentRootPos)
                 return Vector3.new(currentRootPos.X, part.Position.Y, currentRootPos.Z)
             end
         end
-        -- Si aún no estás encima, ir directo al centro X, Z de la roca (sin desviarse a los costados)
         return Vector3.new(part.Position.X, part.Position.Y, part.Position.Z)
     end
 end
 
--- Raycast de abajo hacia arriba para tocar la PIEL FÍSICA REAL en la vertical elegida
 local function getExactUndersideSkinPoint(part, customXZ)
     local _, bboxMinY = getLowestCornerXZ(part)
     local targetXZ = customXZ or getTargetHorizontalPos(part, nil)
@@ -119,7 +115,6 @@ local function getExactUndersideSkinPoint(part, customXZ)
         return hit.Position
     end
 
-    -- Respaldo al centro si en ese punto exacto no golpeó malla
     local centerOrigin = Vector3.new(part.Position.X, bboxMinY - 15, part.Position.Z)
     local centerHit = workspace:Raycast(centerOrigin, Vector3.new(0, part.Size.Y + 35, 0), includeParams)
     if centerHit then
@@ -129,7 +124,6 @@ local function getExactUndersideSkinPoint(part, customXZ)
     return Vector3.new(targetXZ.X, bboxMinY, targetXZ.Z)
 end
 
--- MODO BÚNKER: Raycast hacia abajo ignorando la roca para hallar el SUELO REAL
 local function getRealGroundInsideRock(part, customXZ)
     local targetXZ = customXZ or Vector3.new(part.Position.X, part.Position.Y, part.Position.Z)
     local excludeParams = RaycastParams.new()
@@ -261,7 +255,7 @@ local function selectTargetPart(targetPart)
 end
 
 -- ==============================================================================
--- 3. SISTEMA DE CAMINATA + FLY + NOCLIP (CON OPCIÓN DE MANTENER FLY)
+-- 3. SISTEMA DE CAMINATA + FLY + NOCLIP + SUBIR Y SOLTAR
 -- ==============================================================================
 
 RunService.Stepped:Connect(function()
@@ -296,6 +290,7 @@ local function stopFlyAndNoclipImmediate()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
 
     if root then
+        root.Anchored = false
         for _, obj in ipairs(root:GetChildren()) do
             if obj.Name == "DescentBP" or obj.Name == "DescentBG" then
                 obj:Destroy()
@@ -318,6 +313,85 @@ local function stopFlyAndNoclipImmediate()
     end
 end
 
+-- Subir hacia la superficie libre por encima y soltar todo
+local function ascendAndReleaseAll(statusCallback)
+    local char = lp.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum then return end
+
+    stopFlyAndNoclipImmediate()
+    restoreGhostRocks()
+
+    State.IsNoclip = true
+    State.IsFlying = true
+    hum.PlatformStand = true
+
+    local bp = Instance.new("BodyPosition")
+    bp.Name = "DescentBP"
+    bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    bp.P = 35000
+    bp.D = 900
+    bp.Position = root.Position
+    bp.Parent = root
+
+    local bg = Instance.new("BodyGyro")
+    bg.Name = "DescentBG"
+    bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+    bg.CFrame = root.CFrame
+    bg.Parent = root
+
+    -- Raycast desde el cielo hacia abajo en la X, Z actual para encontrar la superficie superior real
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = {char}
+
+    local skyOrigin = Vector3.new(root.Position.X, root.Position.Y + 120, root.Position.Z)
+    local surfaceHit = workspace:Raycast(skyOrigin, Vector3.new(0, -180, 0), rayParams)
+
+    local targetY = root.Position.Y + 15.0
+    if surfaceHit and surfaceHit.Position.Y > (root.Position.Y - 2.0) then
+        targetY = surfaceHit.Position.Y + 3.5
+    end
+
+    local destPos = Vector3.new(root.Position.X, targetY, root.Position.Z)
+
+    if statusCallback then
+        statusCallback(string.format("⬆️ Subiendo a la superficie (Y: %.1f)...", targetY))
+    end
+
+    local reached = false
+    local timeout = tick() + 12.0
+
+    while State.IsFlying and tick() < timeout do
+        local dt = RunService.Heartbeat:Wait()
+        if not root or not root.Parent then break end
+
+        local diff = destPos - root.Position
+        local dist = diff.Magnitude
+        if dist <= 1.2 then
+            bp.Position = destPos
+            reached = true
+            break
+        end
+
+        local step = math.min(dist, Config.FlySpeed * dt)
+        bp.Position = root.Position + (diff.Unit * step)
+    end
+
+    -- Soltar Noclip, Fly y restaurar colisiones al salir
+    stopFlyAndNoclipImmediate()
+    restoreGhostRocks()
+
+    if statusCallback then
+        if reached then
+            statusCallback("✅ Superficie alcanzada: Fly y Noclip sueltos.")
+        else
+            statusCallback("🛑 Ascenso finalizado: Todo suelto.")
+        end
+    end
+end
+
 local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
     if not targetPart or not targetPart.Parent then return end
     local char = lp.Character
@@ -330,7 +404,7 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
 
     local approachPos = getTargetHorizontalPos(targetPart, root.Position)
 
-    -- FASE 1: CAMINAR HACIA LA ROCA (si no es bajada directa bajo los pies)
+    -- FASE 1: CAMINAR HACIA LA ROCA
     if Config.WalkFirst and not skipWalk then
         local initialHoriz = Vector3.new(approachPos.X - root.Position.X, 0, approachPos.Z - root.Position.Z).Magnitude
         if initialHoriz > 5.0 then
@@ -371,12 +445,9 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
         end
     end
 
-    -- Recalcular vertical exacta una vez posicionado
     local finalXZ = getTargetHorizontalPos(targetPart, root.Position)
 
-    -- ==========================================================================
-    -- OPCIÓN A: MODO BÚNKER DENTRO (SUELO REAL + ROCA SIN COLISIÓN LOCAL)
-    -- ==========================================================================
+    -- OPCIÓN A: MODO BÚNKER DENTRO
     if Config.Mode == "Bunker" then
         State.GhostRocks[targetPart] = targetPart.CanCollide
         targetPart.CanCollide = false
@@ -443,9 +514,7 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
         return
     end
 
-    -- ==========================================================================
-    -- OPCIÓN B: MODO BAJO PIEL INFERIOR (RAYCAST INVERTIDO VERTICAL)
-    -- ==========================================================================
+    -- OPCIÓN B: MODO BAJO PIEL INFERIOR
     local skinPoint = getExactUndersideSkinPoint(targetPart, finalXZ)
     local targetDest = Vector3.new(skinPoint.X, skinPoint.Y - Config.SkinOffset, skinPoint.Z)
 
@@ -493,7 +562,6 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
     end
 
     if reachedTarget and State.IsFlying then
-        -- 1. Primero quitar Noclip al llegar a la piel inferior
         State.IsNoclip = false
         if char then
             for _, p in ipairs(char:GetDescendants()) do
@@ -503,7 +571,6 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
             end
         end
 
-        -- 2. Mantener Fly activo o apagarlo según configuración
         if Config.KeepFly then
             bp.Position = targetDest
             if statusCallback then
@@ -524,7 +591,6 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
     end
 end
 
--- Detectar lo que está justo debajo de los pies del personaje y bajar ahí
 local function descendBelowFeetObject(statusCallback)
     local char = lp.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -609,11 +675,11 @@ end
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV95")
+local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV96")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TerrainInspectorGuiV95"
+ScreenGui.Name = "TerrainInspectorGuiV96"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -643,7 +709,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V9.5 | KEEP FLY & BAJAR AQUÍ"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V9.6 | SUBIR/BAJAR & KEEP FLY"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -752,7 +818,7 @@ local InfoDetails = Instance.new("TextLabel")
 InfoDetails.Size = UDim2.new(1, -12, 0, 46)
 InfoDetails.Position = UDim2.new(0, 6, 0, 25)
 InfoDetails.BackgroundTransparency = 1
-InfoDetails.Text = "Usa '⬇️ BAJAR AQUÍ (PIES)' para meterte bajo lo que tengas debajo, o selecciona una pieza de la lista."
+InfoDetails.Text = "Usa '⬇️ BAJAR AQUÍ' para meterte bajo tus pies o '⬆️ SUBIR Y SOLTAR' para salir a la superficie."
 InfoDetails.TextColor3 = Color3.fromRGB(200, 200, 200)
 InfoDetails.TextSize = 9
 InfoDetails.Font = Enum.Font.Code
@@ -761,14 +827,14 @@ InfoDetails.TextXAlignment = Enum.TextXAlignment.Left
 InfoDetails.TextYAlignment = Enum.TextYAlignment.Top
 InfoDetails.Parent = InfoCard
 
--- Botón Nuevo: Bajar debajo de lo que esté bajo los pies
+-- Fila 1 de acción rápida: Bajar Aquí (Izquierda) + Subir y Soltar Todo (Derecha)
 local DropHereBtn = Instance.new("TextButton")
-DropHereBtn.Size = UDim2.new(1, -20, 0, 32)
+DropHereBtn.Size = UDim2.new(0.55, -12, 0, 32)
 DropHereBtn.Position = UDim2.new(0, 10, 0, 86)
 DropHereBtn.BackgroundColor3 = Color3.fromRGB(115, 55, 175)
-DropHereBtn.Text = "⬇️ BAJAR AQUÍ (DETECTAR PIEL DEBAJO DE MIS PIES)"
+DropHereBtn.Text = "⬇️ BAJAR AQUÍ (PIES)"
 DropHereBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-DropHereBtn.TextSize = 10
+DropHereBtn.TextSize = 9
 DropHereBtn.Font = Enum.Font.GothamBold
 DropHereBtn.Parent = ExplorerPage
 Instance.new("UICorner", DropHereBtn).CornerRadius = UDim.new(0, 6)
@@ -781,6 +847,26 @@ DropHereBtn.MouseButton1Click:Connect(function()
     end)
 end)
 
+local AscendReleaseBtn = Instance.new("TextButton")
+AscendReleaseBtn.Size = UDim2.new(0.45, -12, 0, 32)
+AscendReleaseBtn.Position = UDim2.new(0.55, 2, 0, 86)
+AscendReleaseBtn.BackgroundColor3 = Color3.fromRGB(25, 145, 95)
+AscendReleaseBtn.Text = "⬆️ SUBIR Y SOLTAR TODO"
+AscendReleaseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AscendReleaseBtn.TextSize = 9
+AscendReleaseBtn.Font = Enum.Font.GothamBold
+AscendReleaseBtn.Parent = ExplorerPage
+Instance.new("UICorner", AscendReleaseBtn).CornerRadius = UDim.new(0, 6)
+
+AscendReleaseBtn.MouseButton1Click:Connect(function()
+    task.spawn(function()
+        ascendAndReleaseAll(function(statusMsg)
+            InfoDetails.Text = statusMsg
+        end)
+    end)
+end)
+
+-- Fila 2: Click Mode + Copiar Nombre + Soltar Fly/Todo
 local ClickModeBtn = Instance.new("TextButton")
 ClickModeBtn.Size = UDim2.new(0.33, -8, 0, 28)
 ClickModeBtn.Position = UDim2.new(0, 10, 0, 124)
@@ -814,6 +900,7 @@ StopFlyBtn.Font = Enum.Font.GothamBold
 StopFlyBtn.Parent = ExplorerPage
 Instance.new("UICorner", StopFlyBtn).CornerRadius = UDim.new(0, 6)
 
+-- Fila 3: Buscador y Ordenar
 local SearchBox = Instance.new("TextBox")
 SearchBox.Size = UDim2.new(0.55, -10, 0, 28)
 SearchBox.Position = UDim2.new(0, 10, 0, 158)
@@ -856,7 +943,6 @@ UIListLayout.Parent = ScrollFrame
 -- 7. PESTAÑA 2: PANEL DE CONFIGURACIÓN
 -- ==============================================================================
 
--- Fila 1: Selector de Modo (Bajo Piel vs Búnker Dentro)
 local ModeSelectorBtn = Instance.new("TextButton")
 ModeSelectorBtn.Size = UDim2.new(1, -20, 0, 38)
 ModeSelectorBtn.Position = UDim2.new(0, 10, 0, 6)
@@ -880,7 +966,6 @@ ModeSelectorBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Fila 2: Toggle Mantener Fly Activo (ON por defecto)
 local KeepFlyToggleBtn = Instance.new("TextButton")
 KeepFlyToggleBtn.Size = UDim2.new(1, -20, 0, 38)
 KeepFlyToggleBtn.Position = UDim2.new(0, 10, 0, 50)
@@ -903,7 +988,6 @@ KeepFlyToggleBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Fila 3: Toggle Bajada Recta vs Punto Más Profundo Lateral
 local DeepestEdgeToggleBtn = Instance.new("TextButton")
 DeepestEdgeToggleBtn.Size = UDim2.new(1, -20, 0, 38)
 DeepestEdgeToggleBtn.Position = UDim2.new(0, 10, 0, 94)
@@ -978,7 +1062,6 @@ local function createStepperControl(parent, yPos, titleText, getValText, onMinus
     end)
 end
 
--- Control 1: Ajuste fino de piel inferior
 createStepperControl(
     ConfigPage, 140,
     "🎯 AJUSTE BAJO PIEL INFERIOR (STUDS)",
@@ -987,7 +1070,6 @@ createStepperControl(
     function() Config.SkinOffset = math.min(6.0, Config.SkinOffset + 0.2) end
 )
 
--- Control 2: Velocidad de Bajada (Fly)
 createStepperControl(
     ConfigPage, 192,
     "✈️ VELOCIDAD DE VUELO (FLY)",
@@ -996,7 +1078,6 @@ createStepperControl(
     function() Config.FlySpeed = math.min(250, Config.FlySpeed + 10) end
 )
 
--- Control 3: Velocidad al Caminar hacia la roca
 createStepperControl(
     ConfigPage, 244,
     "🚶 VELOCIDAD AL CAMINAR A LA ROCA",
@@ -1005,7 +1086,6 @@ createStepperControl(
     function() Config.WalkSpeed = math.min(80, Config.WalkSpeed + 4) end
 )
 
--- Control 4: Tiempo de espera si KeepFly está apagado
 createStepperControl(
     ConfigPage, 296,
     "⏱️ ESPERA SI SE APAGA FLY AUTOMÁTICO",
@@ -1014,7 +1094,6 @@ createStepperControl(
     function() Config.HoldSeconds = math.min(5.0, Config.HoldSeconds + 0.2) end
 )
 
--- Fila inferior: Caminar primero + Anclaje AFK
 local WalkFirstToggle = Instance.new("TextButton")
 WalkFirstToggle.Size = UDim2.new(0.5, -14, 0, 38)
 WalkFirstToggle.Position = UDim2.new(0, 10, 0, 350)
