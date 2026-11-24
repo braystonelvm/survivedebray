@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V10.1 (ANTI-BLOATER + PODER 5 + ZANAHORIAS <20%)
+-- EXPLORADOR FORENSE DE TERRENO V10.2 (BLOATER DELAY 0.5s + PODER 5 + ZANAHORIAS)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -22,9 +22,11 @@ local Config = {
     HoldSeconds = 1.0,
     WalkFirst = true,
 
-    -- Anti-Bloater
+    -- Anti-Bloater calibrado
     AutoEvadeBloaters = true,
-    BloaterDropStuds = 12,
+    BloaterPreDelay = 0.5,      -- Espera 0.5s antes de irse para cubrir explosiones escalonadas
+    BloaterDropStuds = 14,      -- Studs hacia abajo al esquivar explosión
+    BloaterHoldDown = 2.6,      -- Tiempo abajo antes de volver
     BloaterThreshold = 3,
     BloaterScanRadius = 55,
 
@@ -146,7 +148,6 @@ local function equipSlotWeapon(slotNum)
     return targetTool
 end
 
--- Activación instantánea del 5to poder y regreso inmediato al Arma 2
 local function activatePowerSlot5()
     local tool5 = equipSlotWeapon(5)
     if tool5 then
@@ -683,12 +684,12 @@ local function descendBelowFeetObject(statusCallback)
 end
 
 -- ==============================================================================
--- 5. SISTEMAS AUTOMÁTICOS: ANTI-BLOATER, PODER 5 (C/10s) Y ZANAHORIAS (<20%)
+-- 5. SISTEMAS AUTOMÁTICOS: ANTI-BLOATER (DELAY 0.5s), PODER 5 Y ZANAHORIAS
 -- ==============================================================================
 
 local StatusDisplayCallback = nil
 
--- A. ANTI-EXPLOSIÓN DE BLOATERS (Noclip ON al bajar -> Noclip OFF al volver)
+-- A. ANTI-EXPLOSIÓN DE BLOATERS (Espera 0.5s antes de bajar -> Noclip ON -> Baja -> Vuelve -> Noclip OFF)
 local function triggerBloaterDodge()
     if State.IsDodgingBloater then return end
     local char = lp.Character
@@ -696,19 +697,33 @@ local function triggerBloaterDodge()
     if not root then return end
 
     State.IsDodgingBloater = true
+
+    if StatusDisplayCallback then
+        StatusDisplayCallback(string.format("💣 Bloaters detectados: Esperando %.1fs antes de bajar...", Config.BloaterPreDelay))
+    end
+
+    -- 1. Retardo de 0.5s para sincronizar con los Bloaters que tardan más en detonar
+    task.wait(Config.BloaterPreDelay)
+
+    if not root or not root.Parent then
+        State.IsDodgingBloater = false
+        return
+    end
+
     local savedCF = root.CFrame
     local wasAnchored = root.Anchored
     local existingBP = root:FindFirstChild("DescentBP")
     local savedBPPos = existingBP and existingBP.Position or savedCF.Position
 
     if StatusDisplayCallback then
-        StatusDisplayCallback(string.format("💣 ¡%d+ Bloaters desaparecieron! Noclip ON y bajando -%d studs...", Config.BloaterThreshold, Config.BloaterDropStuds))
+        StatusDisplayCallback(string.format("🛡️ Noclip ON: Bajando -%d studs para esquivar onda...", Config.BloaterDropStuds))
     end
 
-    -- 1. Activar Noclip antes de moverse
+    -- 2. Activar Noclip y bajar
     State.IsNoclip = true
     setCharacterCollide(false)
     root.Anchored = false
+    root.AssemblyLinearVelocity = Vector3.zero
 
     local dodgePos = savedBPPos - Vector3.new(0, Config.BloaterDropStuds, 0)
     if existingBP then
@@ -718,11 +733,12 @@ local function triggerBloaterDodge()
         root.Anchored = true
     end
 
-    -- 2. Esperar 3 segundos a que pasen las explosiones arriba
-    task.wait(3.0)
+    -- 3. Mantenerse abajo durante las detonaciones
+    task.wait(Config.BloaterHoldDown)
 
-    -- 3. Regresar al punto seguro con Noclip aún activo
+    -- 4. Regresar al punto seguro con Noclip aún activo
     if root and root.Parent then
+        root.AssemblyLinearVelocity = Vector3.zero
         if existingBP and existingBP.Parent then
             existingBP.Position = savedBPPos
             task.wait(0.35)
@@ -732,12 +748,12 @@ local function triggerBloaterDodge()
         end
     end
 
-    -- 4. Desactivar Noclip al volver
+    -- 5. Desactivar Noclip al volver
     State.IsNoclip = false
     setCharacterCollide(true)
 
     if StatusDisplayCallback then
-        StatusDisplayCallback("✅ Explosión esquivada. Noclip OFF y de vuelta en refugio.")
+        StatusDisplayCallback("✅ Explosiones esquivadas. Noclip OFF y de vuelta en refugio.")
     end
     State.IsDodgingBloater = false
 end
@@ -815,7 +831,6 @@ task.spawn(function()
 
         local currentClock = Lighting.ClockTime
         if math.abs(currentClock - lastCheckedClock) < 0.0001 then
-            -- El tiempo se detuvo: esperar 30 segundos y pulsar 5to poder
             if StatusDisplayCallback then
                 StatusDisplayCallback("⏱️ Tiempo detenido detectado. Esperando 30s para 5to Poder...")
             end
@@ -878,7 +893,6 @@ task.spawn(function()
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not root or not hum or hum.Health <= 0 then continue end
 
-        -- Verificar que haya menos de 5 zombies en 35 studs
         local nearbyZombies = countZombiesInRadius(root.Position, Config.CarrotZombieRadius)
         if nearbyZombies >= Config.CarrotMaxZombies then
             if StatusDisplayCallback then
@@ -890,7 +904,6 @@ task.spawn(function()
         local item, part = findNearestCarrot(Config.CarrotMaxDist)
         if not item or not part then continue end
 
-        -- Guardar posición y estado exacto del refugio para regresar
         State.IsDashingCarrot = true
         local savedCF = root.CFrame
         local wasAnchored = root.Anchored
@@ -901,11 +914,9 @@ task.spawn(function()
             StatusDisplayCallback(string.format("🥕 Saciedad %d%% | %d zombies: Subiendo por zanahoria...", hungerPct, nearbyZombies))
         end
 
-        -- 1. Subir a la superficie para correr libremente
         ascendAndReleaseAll(nil)
         task.wait(0.1)
 
-        -- 2. Correr rápido hacia la zanahoria (esquivando zombies)
         local origSpeed = hum.WalkSpeed
         hum.WalkSpeed = 34
         local dashEnd = tick() + 4.0
@@ -922,7 +933,6 @@ task.spawn(function()
                 break
             end
 
-            -- Evasión rápida de zombies en el camino
             local avoidVec = Vector3.zero
             local folder = workspace:FindFirstChild("Characters") or workspace
             for _, ent in ipairs(folder:GetChildren()) do
@@ -944,7 +954,6 @@ task.spawn(function()
 
         hum.WalkSpeed = origSpeed
 
-        -- 3. Comer la zanahoria recogida en un instante
         task.wait(0.12)
         for _, cont in ipairs({char, lp:FindFirstChild("Backpack")}) do
             if cont then
@@ -964,7 +973,6 @@ task.spawn(function()
             end
         end
 
-        -- 4. Regresar al lugar exacto donde estaba (con Noclip ON -> OFF)
         if StatusDisplayCallback then
             StatusDisplayCallback("🔙 Regresando a la posición original...")
         end
@@ -1065,11 +1073,11 @@ end
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV101")
+local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV102")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TerrainInspectorGuiV101"
+ScreenGui.Name = "TerrainInspectorGuiV102"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -1077,7 +1085,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(25, 120, 110)
-FloatBtn.Text = "🔍\nV10.1"
+FloatBtn.Text = "🔍\nV10.2"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -1099,7 +1107,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V10.1 | BLOATER + PODER 5 + ZANAHORIAS"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V10.2 | BLOATER 0.5s + PODER 5"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -1152,7 +1160,7 @@ ConfigPage.Size = UDim2.new(1, 0, 1, -74)
 ConfigPage.Position = UDim2.new(0, 0, 0, 74)
 ConfigPage.BackgroundTransparency = 1
 ConfigPage.BorderSizePixel = 0
-ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 580)
+ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 630)
 ConfigPage.ScrollBarThickness = 5
 ConfigPage.Visible = false
 ConfigPage.Parent = MainFrame
@@ -1199,7 +1207,7 @@ local InfoTitle = Instance.new("TextLabel")
 InfoTitle.Size = UDim2.new(1, -12, 0, 20)
 InfoTitle.Position = UDim2.new(0, 6, 0, 4)
 InfoTitle.BackgroundTransparency = 1
-InfoTitle.Text = "📌 V10.1 | Bloater(Noclip): ON | Poder 5(c/10s): ON | Arma 2"
+InfoTitle.Text = "📌 V10.2 | Bloater(Delay 0.5s): ON | Poder 5(c/10s): ON | Arma 2"
 InfoTitle.TextColor3 = Color3.fromRGB(90, 190, 255)
 InfoTitle.TextSize = 10
 InfoTitle.Font = Enum.Font.GothamBold
@@ -1343,28 +1351,24 @@ local function createToggleBtn(yPos, text, color, onClick)
     return btn
 end
 
--- 1. Anti-Explosión Bloaters (ON por defecto)
-createToggleBtn(6, "💣 ANTI-BLOATER (NOCLIP + BAJAR SI 3+): ON", Color3.fromRGB(30, 145, 80), function(btn)
+createToggleBtn(6, "💣 ANTI-BLOATER (DELAY 0.5s + NOCLIP): ON", Color3.fromRGB(30, 145, 80), function(btn)
     Config.AutoEvadeBloaters = not Config.AutoEvadeBloaters
     btn.BackgroundColor3 = Config.AutoEvadeBloaters and Color3.fromRGB(30, 145, 80) or Color3.fromRGB(65, 70, 85)
-    btn.Text = Config.AutoEvadeBloaters and "💣 ANTI-BLOATER (NOCLIP + BAJAR SI 3+): ON" or "💣 ANTI-BLOATER: OFF"
+    btn.Text = Config.AutoEvadeBloaters and "💣 ANTI-BLOATER (DELAY 0.5s + NOCLIP): ON" or "💣 ANTI-BLOATER: OFF"
 end)
 
--- 2. Poder 5 (Revisa c/10s, espera 30s)
 createToggleBtn(46, "⏱️ PODER 5 SI TIEMPO DETENIDO (REV c/10s): ON", Color3.fromRGB(115, 55, 175), function(btn)
     Config.AutoPower5OnTimeStop = not Config.AutoPower5OnTimeStop
     btn.BackgroundColor3 = Config.AutoPower5OnTimeStop and Color3.fromRGB(115, 55, 175) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.AutoPower5OnTimeStop and "⏱️ PODER 5 SI TIEMPO DETENIDO (REV c/10s): ON" or "⏱️ PODER 5 EN TIEMPO DETENIDO: OFF"
 end)
 
--- 3. Zanahorias Inteligentes (<20% saciedad y <5 zombies en 35 studs)
 createToggleBtn(86, "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF", Color3.fromRGB(65, 70, 85), function(btn)
     Config.AutoCarrotDash = not Config.AutoCarrotDash
     btn.BackgroundColor3 = Config.AutoCarrotDash and Color3.fromRGB(210, 120, 20) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.AutoCarrotDash and "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): ON" or "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF"
 end)
 
--- 4. Anclar AFK (Sin jalón + Arma 2)
 createToggleBtn(126, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA 2): OFF", Color3.fromRGB(45, 85, 155), function(btn)
     local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     if root then
@@ -1383,14 +1387,12 @@ createToggleBtn(126, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA 2): OFF", Color3.f
     end
 end)
 
--- 5. Fijar Posición con BodyPosition vs Libre
 createToggleBtn(166, "🧲 RETENER CON BODYPOSITION AL BAJAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
     Config.LockPositionBP = not Config.LockPositionBP
     btn.BackgroundColor3 = Config.LockPositionBP and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.LockPositionBP and "🧲 RETENER CON BODYPOSITION AL BAJAR: ON" or "🔓 LIBRE AL BAJAR (ANCLA SIN JALAR DE VUELTA): OFF"
 end)
 
--- 6. Modo Refugio
 createToggleBtn(206, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.fromRGB(115, 55, 175), function(btn)
     if Config.Mode == "UnderSkin" then
         Config.Mode = "Bunker"
@@ -1403,14 +1405,12 @@ createToggleBtn(206, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.
     end
 end)
 
--- 7. Mantener Fly vs Apagar Fly
 createToggleBtn(246, "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
     Config.KeepFly = not Config.KeepFly
     btn.BackgroundColor3 = Config.KeepFly and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.KeepFly and "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON" or "🛑 APAGAR FLY AUTOMÁTICAMENTE AL LLEGAR: OFF"
 end)
 
--- 8. Bajada Recta vs Esquina Profunda
 createToggleBtn(286, "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)", Color3.fromRGB(30, 145, 80), function(btn)
     Config.GoToDeepestEdge = not Config.GoToDeepestEdge
     btn.BackgroundColor3 = Config.GoToDeepestEdge and Color3.fromRGB(190, 115, 20) or Color3.fromRGB(30, 145, 80)
@@ -1462,10 +1462,10 @@ local function createStepperControl(parent, yPos, titleText, getValText, onMinus
     plusBtn.MouseButton1Click:Connect(function() onPlus(); lbl.Text = titleText .. "\n" .. getValText() end)
 end
 
-createStepperControl(ConfigPage, 328, "🎯 AJUSTE BAJO PIEL INFERIOR",
-    function() return string.format("Actual: -%.1f studs", Config.SkinOffset) end,
-    function() Config.SkinOffset = math.max(0.0, Config.SkinOffset - 0.2) end,
-    function() Config.SkinOffset = math.min(6.0, Config.SkinOffset + 0.2) end
+createStepperControl(ConfigPage, 328, "⏱️ RETARDO ANTES DE BAJAR (BLOATER)",
+    function() return string.format("Actual: %.1f segundos", Config.BloaterPreDelay) end,
+    function() Config.BloaterPreDelay = math.max(0.0, Config.BloaterPreDelay - 0.1) end,
+    function() Config.BloaterPreDelay = math.min(2.0, Config.BloaterPreDelay + 0.1) end
 )
 
 createStepperControl(ConfigPage, 378, "💣 BAJADA ANTI-BLOATER (STUDS)",
@@ -1474,19 +1474,25 @@ createStepperControl(ConfigPage, 378, "💣 BAJADA ANTI-BLOATER (STUDS)",
     function() Config.BloaterDropStuds = math.min(30, Config.BloaterDropStuds + 2) end
 )
 
-createStepperControl(ConfigPage, 428, "✈️ VELOCIDAD DE VUELO (FLY)",
+createStepperControl(ConfigPage, 428, "🎯 AJUSTE BAJO PIEL INFERIOR",
+    function() return string.format("Actual: -%.1f studs", Config.SkinOffset) end,
+    function() Config.SkinOffset = math.max(0.0, Config.SkinOffset - 0.2) end,
+    function() Config.SkinOffset = math.min(6.0, Config.SkinOffset + 0.2) end
+)
+
+createStepperControl(ConfigPage, 478, "✈️ VELOCIDAD DE VUELO (FLY)",
     function() return string.format("Actual: %d studs/s", Config.FlySpeed) end,
     function() Config.FlySpeed = math.max(20, Config.FlySpeed - 10) end,
     function() Config.FlySpeed = math.min(250, Config.FlySpeed + 10) end
 )
 
-createStepperControl(ConfigPage, 478, "🚶 VELOCIDAD AL CAMINAR",
+createStepperControl(ConfigPage, 528, "🚶 VELOCIDAD AL CAMINAR",
     function() return string.format("Actual: %d WalkSpeed", Config.WalkSpeed) end,
     function() Config.WalkSpeed = math.max(16, Config.WalkSpeed - 4) end,
     function() Config.WalkSpeed = math.min(80, Config.WalkSpeed + 4) end
 )
 
-createToggleBtn(528, "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON", Color3.fromRGB(0, 130, 110), function(btn)
+createToggleBtn(578, "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON", Color3.fromRGB(0, 130, 110), function(btn)
     Config.WalkFirst = not Config.WalkFirst
     btn.BackgroundColor3 = Config.WalkFirst and Color3.fromRGB(0, 130, 110) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.WalkFirst and "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON" or "✈️ VOLAR DIRECTO SIN CAMINAR: OFF"
