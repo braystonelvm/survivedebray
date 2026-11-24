@@ -1,12 +1,11 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V10.2 (BLOATER DELAY 0.5s + PODER 5 + ZANAHORIAS)
+-- EXPLORADOR FORENSE DE TERRENO V10.4 (BLOATER DIAGONAL OPUESTO + RELOJ HUD)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local lp = Players.LocalPlayer
 local mouse = lp:GetMouse()
@@ -22,25 +21,25 @@ local Config = {
     HoldSeconds = 1.0,
     WalkFirst = true,
 
-    -- Anti-Bloater calibrado
+    -- Anti-Bloater Diagonal (Dispara con 1 bloater que desaparezca/muera)
     AutoEvadeBloaters = true,
-    BloaterPreDelay = 0.5,      -- Espera 0.5s antes de irse para cubrir explosiones escalonadas
-    BloaterDropStuds = 14,      -- Studs hacia abajo al esquivar explosión
-    BloaterHoldDown = 2.6,      -- Tiempo abajo antes de volver
-    BloaterThreshold = 1,
+    BloaterThreshold = 1,       -- Con 1 solo bloater que desaparezca activa la evasión
+    BloaterSideStuds = 16,      -- Studs de desplazamiento horizontal hacia el lado opuesto
+    BloaterDropStuds = 14,      -- Studs de bajada vertical en diagonal
+    BloaterHoldDown = 3.0,      -- Tiempo que permanece resguardado antes de volver (configurable)
     BloaterScanRadius = 55,
 
-    -- 5to Poder al detenerse el tiempo
+    -- 5to Poder con el Temporizador Ascendente del HUD (Arriba al Centro)
     AutoPower5OnTimeStop = true,
-    TimeCheckInterval = 10,     -- Revisa cada 10 segundos si el tiempo se detuvo
-    TimeStopDelay = 30,         -- Espera 30 segundos y activa el 5to poder
+    TimeCheckInterval = 2.0,
+    TimeStopDelay = 30,
 
     -- Zanahorias Inteligentes
     AutoCarrotDash = false,
-    CarrotHungerThreshold = 20, -- Solo va si la saciedad es menor al 20%
-    CarrotMaxZombies = 5,       -- Solo va si hay menos de 5 zombies cerca
-    CarrotZombieRadius = 35,    -- Radio de conteo de zombies (35 studs)
-    CarrotMaxDist = 80,         -- Distancia máxima de búsqueda de zanahorias (80 studs)
+    CarrotHungerThreshold = 20,
+    CarrotMaxZombies = 5,
+    CarrotZombieRadius = 35,
+    CarrotMaxDist = 80,
     AutoEquipSlot2 = true
 }
 
@@ -62,7 +61,10 @@ local State = {
     -- Línea guía (Beam)
     BeamObj = nil,
     Att0 = nil,
-    Att1 = nil
+    Att1 = nil,
+
+    -- Telemetría del Reloj HUD
+    DetectedHudTime = "Buscando..."
 }
 
 local COLOR_YELLOW = Color3.fromRGB(255, 220, 0)
@@ -449,7 +451,7 @@ end
 local function clearFlightForcesOnly(root)
     if not root then return end
     for _, obj in ipairs(root:GetChildren()) do
-        if obj.Name == "DescentBP" or obj.Name == "DescentBG" then
+        if obj.Name == "DescentBP" or obj.Name == "DescentBG" or obj.Name == "TempBloaterBP" then
             obj:Destroy()
         end
     end
@@ -684,13 +686,13 @@ local function descendBelowFeetObject(statusCallback)
 end
 
 -- ==============================================================================
--- 5. SISTEMAS AUTOMÁTICOS: ANTI-BLOATER (DELAY 0.5s), PODER 5 Y ZANAHORIAS
+-- 5. SISTEMAS AUTOMÁTICOS: BLOATER DIAGONAL OPUESTO + RELOJ HUD CENTRAL SUPERIOR
 -- ==============================================================================
 
 local StatusDisplayCallback = nil
 
--- A. ANTI-EXPLOSIÓN DE BLOATERS (Espera 0.5s antes de bajar -> Noclip ON -> Baja -> Vuelve -> Noclip OFF)
-local function triggerBloaterDodge()
+-- A. ANTI-BLOATER DIAGONAL (Cuando 1 bloater desaparece/muere, va en diagonal hacia el lado opuesto)
+local function triggerDiagonalBloaterDodge(bloaterLastPos)
     if State.IsDodgingBloater then return end
     local char = lp.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -698,75 +700,76 @@ local function triggerBloaterDodge()
 
     State.IsDodgingBloater = true
 
-    if StatusDisplayCallback then
-        StatusDisplayCallback(string.format("💣 Bloaters detectados: Esperando %.1fs antes de bajar...", Config.BloaterPreDelay))
-    end
-
-    -- 1. Retardo de 0.5s para sincronizar con los Bloaters que tardan más en detonar
-    task.wait(Config.BloaterPreDelay)
-
-    if not root or not root.Parent then
-        State.IsDodgingBloater = false
-        return
-    end
-
     local savedCF = root.CFrame
     local wasAnchored = root.Anchored
     local existingBP = root:FindFirstChild("DescentBP")
     local savedBPPos = existingBP and existingBP.Position or savedCF.Position
 
+    -- Calcular dirección horizontal opuesta exacta respecto a la última posición del bloater
+    local awayHoriz = Vector3.new(savedBPPos.X - bloaterLastPos.X, 0, savedBPPos.Z - bloaterLastPos.Z)
+    if awayHoriz.Magnitude < 0.2 then
+        awayHoriz = Vector3.new(1, 0, 1)
+    end
+    local awayDir = awayHoriz.Unit
+
+    -- Vector diagonal: alejarse horizontalmente hacia donde NO estaba el bloater + bajar en Y
+    local diagonalDest = savedBPPos + (awayDir * Config.BloaterSideStuds) - Vector3.new(0, Config.BloaterDropStuds, 0)
+
     if StatusDisplayCallback then
-        StatusDisplayCallback(string.format("🛡️ Noclip ON: Bajando -%d studs para esquivar onda...", Config.BloaterDropStuds))
+        StatusDisplayCallback(string.format("💣 ¡Bloater desapareció! Diagonal opuesta (%dm lado / -%dm) por %.1fs...", Config.BloaterSideStuds, Config.BloaterDropStuds, Config.BloaterHoldDown))
     end
 
-    -- 2. Activar Noclip y bajar
+    -- 1. Activar Noclip y desplazar en diagonal
     State.IsNoclip = true
     setCharacterCollide(false)
     root.Anchored = false
     root.AssemblyLinearVelocity = Vector3.zero
 
-    local dodgePos = savedBPPos - Vector3.new(0, Config.BloaterDropStuds, 0)
-    if existingBP then
-        existingBP.Position = dodgePos
-    else
-        root.CFrame = CFrame.new(dodgePos) * (savedCF - savedCF.Position)
-        root.Anchored = true
+    local tempBP = existingBP
+    if not tempBP then
+        tempBP = Instance.new("BodyPosition")
+        tempBP.Name = "TempBloaterBP"
+        tempBP.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+        tempBP.P = 45000
+        tempBP.D = 900
+        tempBP.Parent = root
     end
+    tempBP.Position = diagonalDest
 
-    -- 3. Mantenerse abajo durante las detonaciones
+    -- 2. Esperar el tiempo configurable de resguardo
     task.wait(Config.BloaterHoldDown)
 
-    -- 4. Regresar al punto seguro con Noclip aún activo
+    -- 3. Regresar al punto original con Noclip activo
     if root and root.Parent then
         root.AssemblyLinearVelocity = Vector3.zero
         if existingBP and existingBP.Parent then
             existingBP.Position = savedBPPos
             task.wait(0.35)
         else
+            if tempBP and tempBP.Parent then tempBP:Destroy() end
             root.CFrame = savedCF
             root.Anchored = wasAnchored
         end
     end
 
-    -- 5. Desactivar Noclip al volver
+    -- 4. Desactivar Noclip al volver
     State.IsNoclip = false
     setCharacterCollide(true)
 
     if StatusDisplayCallback then
-        StatusDisplayCallback("✅ Explosiones esquivadas. Noclip OFF y de vuelta en refugio.")
+        StatusDisplayCallback("✅ Evasión diagonal completada: De vuelta en refugio.")
     end
     State.IsDodgingBloater = false
 end
 
+-- Rastreo continuo de última posición de Bloaters vivos para saber hacia dónde huir al desaparecer
 task.spawn(function()
-    local trackedBloaters = {}
-    local recentDisappearances = {}
+    local trackedBloaters = {} -- [Model] = lastKnownPosition (Vector3)
 
     while true do
-        task.wait(0.25)
+        task.wait(0.15)
         if not Config.AutoEvadeBloaters then
             table.clear(trackedBloaters)
-            table.clear(recentDisappearances)
             continue
         end
 
@@ -775,9 +778,10 @@ task.spawn(function()
         if not root then continue end
 
         local myPos = root.Position
-        local now = tick()
         local currentAlive = {}
         local folder = workspace:FindFirstChild("Characters") or workspace
+        local disappearedPos = nil
+        local disappearedCount = 0
 
         for _, ent in ipairs(folder:GetChildren()) do
             if ent:IsA("Model") and ent ~= char then
@@ -785,71 +789,137 @@ task.spawn(function()
                 if n:find("bloat") or n:find("boom") then
                     local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
                     local eHum = ent:FindFirstChildOfClass("Humanoid")
-                    if eRoot and (eRoot.Position - myPos).Magnitude <= Config.BloaterScanRadius then
-                        if eHum and eHum.Health > 0 and ent:GetAttribute("Dead") ~= true then
-                            currentAlive[ent] = true
-                            trackedBloaters[ent] = true
+                    if eRoot then
+                        local dist = (eRoot.Position - myPos).Magnitude
+                        if dist <= Config.BloaterScanRadius then
+                            local isAlive = (eHum and eHum.Health > 0) and (ent:GetAttribute("Dead") ~= true)
+                            if isAlive then
+                                currentAlive[ent] = eRoot.Position
+                                trackedBloaters[ent] = eRoot.Position -- Actualizar posición con antelación
+                            end
                         end
                     end
                 end
             end
         end
 
-        for ent, _ in pairs(trackedBloaters) do
+        -- Detectar si alguno de los Bloaters rastreados desapareció o murió de la nada
+        local sumPos = Vector3.zero
+        for ent, lastPos in pairs(trackedBloaters) do
             if not currentAlive[ent] then
                 trackedBloaters[ent] = nil
-                table.insert(recentDisappearances, now)
+                sumPos = sumPos + lastPos
+                disappearedCount = disappearedCount + 1
             end
         end
 
-        local validCount = 0
-        for i = #recentDisappearances, 1, -1 do
-            if (now - recentDisappearances[i]) > 1.5 then
-                table.remove(recentDisappearances, i)
-            else
-                validCount = validCount + 1
-            end
-        end
-
-        if validCount >= Config.BloaterThreshold and not State.IsDodgingBloater then
-            table.clear(recentDisappearances)
-            task.spawn(triggerBloaterDodge)
+        if disappearedCount >= Config.BloaterThreshold and not State.IsDodgingBloater then
+            disappearedPos = sumPos / disappearedCount
+            task.spawn(function()
+                triggerDiagonalBloaterDodge(disappearedPos)
+            end)
         end
     end
 end)
 
--- B. REVISIÓN CONSTANTE DE TIEMPO (CADA 10s) -> ESPERA 30s -> 5TO PODER INSTANTÁNEO -> ARMA 2
+-- B. LECTOR DEL TEMPORIZADOR ASCENDENTE EN EL CENTRO SUPERIOR DEL HUD
+local function readTopCenterAscendantTimer()
+    local pg = lp:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+
+    local cam = workspace.CurrentCamera
+    local screenW = cam and cam.ViewportSize.X or 1280
+    local screenH = cam and cam.ViewportSize.Y or 720
+    local centerX = screenW * 0.5
+
+    local bestTimerText = nil
+    local bestScore = math.huge
+
+    for _, gui in ipairs(pg:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "TerrainInspectorGuiV104" then
+            for _, desc in ipairs(gui:GetDescendants()) do
+                if desc:IsA("TextLabel") and desc.Visible and desc.Text ~= "" then
+                    local txt = desc.Text:gsub("%s+", "")
+                    if txt:match("^%d+:%d%d$") or txt:match("^%d+:%d%d:%d%d$") then
+                        local pos = desc.AbsolutePosition
+                        local size = desc.AbsoluteSize
+                        local lblCenterX = pos.X + (size.X * 0.5)
+                        local lblCenterY = pos.Y + (size.Y * 0.5)
+
+                        if lblCenterY <= (screenH * 0.25) and math.abs(lblCenterX - centerX) <= (screenW * 0.25) then
+                            local distToTopCenter = math.abs(lblCenterX - centerX) + lblCenterY
+                            if distToTopCenter < bestScore then
+                                bestScore = distToTopCenter
+                                bestTimerText = txt
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestTimerText
+end
+
+local function timerStringToSeconds(tStr)
+    if not tStr then return nil end
+    local parts = {}
+    for num in tStr:gmatch("%d+") do
+        table.insert(parts, tonumber(num))
+    end
+    if #parts == 2 then
+        return (parts[1] * 60) + parts[2]
+    elseif #parts == 3 then
+        return (parts[1] * 3600) + (parts[2] * 60) + parts[3]
+    end
+    return nil
+end
+
 task.spawn(function()
-    local lastCheckedClock = Lighting.ClockTime
+    local lastSeconds = nil
+    local alreadyTriggeredThisFreeze = false
 
     while true do
-        task.wait(Config.TimeCheckInterval) -- Revisa cada 10 segundos
-        if not Config.AutoPower5OnTimeStop then
-            lastCheckedClock = Lighting.ClockTime
+        task.wait(Config.TimeCheckInterval)
+        local rawTimer = readTopCenterAscendantTimer()
+        State.DetectedHudTime = rawTimer or "No detectado"
+
+        if not Config.AutoPower5OnTimeStop or not rawTimer then
+            lastSeconds = nil
+            alreadyTriggeredThisFreeze = false
             continue
         end
 
-        local currentClock = Lighting.ClockTime
-        if math.abs(currentClock - lastCheckedClock) < 0.0001 then
-            if StatusDisplayCallback then
-                StatusDisplayCallback("⏱️ Tiempo detenido detectado. Esperando 30s para 5to Poder...")
-            end
-            task.wait(Config.TimeStopDelay)
+        local curSec = timerStringToSeconds(rawTimer)
+        if curSec and lastSeconds then
+            if curSec == lastSeconds then
+                if not alreadyTriggeredThisFreeze then
+                    alreadyTriggeredThisFreeze = true
+                    if StatusDisplayCallback then
+                        StatusDisplayCallback(string.format("⏱️ Reloj HUD (%s) detenido: Esperando 30s para 5to Poder...", rawTimer))
+                    end
 
-            if Config.AutoPower5OnTimeStop then
-                if StatusDisplayCallback then
-                    StatusDisplayCallback("⚡ Activando 5to Poder y regresando al Arma 2...")
+                    task.wait(Config.TimeStopDelay)
+
+                    local checkAgain = timerStringToSeconds(readTopCenterAscendantTimer())
+                    if Config.AutoPower5OnTimeStop and checkAgain == curSec then
+                        if StatusDisplayCallback then
+                            StatusDisplayCallback("⚡ Activando 5to Poder y regresando al Arma 2...")
+                        end
+                        activatePowerSlot5()
+                    end
                 end
-                activatePowerSlot5()
+            elseif curSec > lastSeconds then
+                alreadyTriggeredThisFreeze = false
             end
-            lastCheckedClock = Lighting.ClockTime
-        else
-            lastCheckedClock = currentClock
         end
+
+        lastSeconds = curSec
     end
 end)
 
--- C. CARRERA RÁPIDA POR ZANAHORIAS (<20% SACIEDAD + <5 ZOMBIES EN 35 STUDS + HASTA 80 STUDS + VOLVER)
+-- C. CARRERA RÁPIDA POR ZANAHORIAS (<20% SACIEDAD + <5 ZOMBIES EN 35 STUDS)
 local function findNearestCarrot(maxDist)
     local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     if not root then return nil end
@@ -1073,11 +1143,11 @@ end
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV102")
+local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV104")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TerrainInspectorGuiV102"
+ScreenGui.Name = "TerrainInspectorGuiV104"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -1085,7 +1155,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(25, 120, 110)
-FloatBtn.Text = "🔍\nV10.2"
+FloatBtn.Text = "🔍\nV10.4"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -1107,7 +1177,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V10.2 | BLOATER 0.5s + PODER 5"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V10.4 | BLOATER DIAGONAL & HUD"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -1160,7 +1230,7 @@ ConfigPage.Size = UDim2.new(1, 0, 1, -74)
 ConfigPage.Position = UDim2.new(0, 0, 0, 74)
 ConfigPage.BackgroundTransparency = 1
 ConfigPage.BorderSizePixel = 0
-ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 630)
+ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 680)
 ConfigPage.ScrollBarThickness = 5
 ConfigPage.Visible = false
 ConfigPage.Parent = MainFrame
@@ -1207,12 +1277,21 @@ local InfoTitle = Instance.new("TextLabel")
 InfoTitle.Size = UDim2.new(1, -12, 0, 20)
 InfoTitle.Position = UDim2.new(0, 6, 0, 4)
 InfoTitle.BackgroundTransparency = 1
-InfoTitle.Text = "📌 V10.2 | Bloater(Delay 0.5s): ON | Poder 5(c/10s): ON | Arma 2"
+InfoTitle.Text = "📌 Reloj HUD: Buscando... | Bloater Diagonal(1): ON | Arma 2"
 InfoTitle.TextColor3 = Color3.fromRGB(90, 190, 255)
 InfoTitle.TextSize = 10
 InfoTitle.Font = Enum.Font.GothamBold
 InfoTitle.TextXAlignment = Enum.TextXAlignment.Left
 InfoTitle.Parent = InfoCard
+
+task.spawn(function()
+    while true do
+        task.wait(1.0)
+        if not State.SelectedPart then
+            InfoTitle.Text = string.format("📌 Reloj HUD: [%s] | Bloater Diag(1): ON | Arma 2", State.DetectedHudTime)
+        end
+    end
+end)
 
 local InfoDetails = Instance.new("TextLabel")
 InfoDetails.Size = UDim2.new(1, -12, 0, 46)
@@ -1351,16 +1430,16 @@ local function createToggleBtn(yPos, text, color, onClick)
     return btn
 end
 
-createToggleBtn(6, "💣 ANTI-BLOATER (DELAY 0.5s + NOCLIP): ON", Color3.fromRGB(30, 145, 80), function(btn)
+createToggleBtn(6, "💣 ANTI-BLOATER DIAGONAL (SI DESAPARECE 1): ON", Color3.fromRGB(30, 145, 80), function(btn)
     Config.AutoEvadeBloaters = not Config.AutoEvadeBloaters
     btn.BackgroundColor3 = Config.AutoEvadeBloaters and Color3.fromRGB(30, 145, 80) or Color3.fromRGB(65, 70, 85)
-    btn.Text = Config.AutoEvadeBloaters and "💣 ANTI-BLOATER (DELAY 0.5s + NOCLIP): ON" or "💣 ANTI-BLOATER: OFF"
+    btn.Text = Config.AutoEvadeBloaters and "💣 ANTI-BLOATER DIAGONAL (SI DESAPARECE 1): ON" or "💣 ANTI-BLOATER: OFF"
 end)
 
-createToggleBtn(46, "⏱️ PODER 5 SI TIEMPO DETENIDO (REV c/10s): ON", Color3.fromRGB(115, 55, 175), function(btn)
+createToggleBtn(46, "⏱️ PODER 5 SI RELOJ HUD SE DETIENE (30s): ON", Color3.fromRGB(115, 55, 175), function(btn)
     Config.AutoPower5OnTimeStop = not Config.AutoPower5OnTimeStop
     btn.BackgroundColor3 = Config.AutoPower5OnTimeStop and Color3.fromRGB(115, 55, 175) or Color3.fromRGB(65, 70, 85)
-    btn.Text = Config.AutoPower5OnTimeStop and "⏱️ PODER 5 SI TIEMPO DETENIDO (REV c/10s): ON" or "⏱️ PODER 5 EN TIEMPO DETENIDO: OFF"
+    btn.Text = Config.AutoPower5OnTimeStop and "⏱️ PODER 5 SI RELOJ HUD SE DETIENE (30s): ON" or "⏱️ PODER 5 EN RELOJ HUD: OFF"
 end)
 
 createToggleBtn(86, "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF", Color3.fromRGB(65, 70, 85), function(btn)
@@ -1462,16 +1541,18 @@ local function createStepperControl(parent, yPos, titleText, getValText, onMinus
     plusBtn.MouseButton1Click:Connect(function() onPlus(); lbl.Text = titleText .. "\n" .. getValText() end)
 end
 
-createStepperControl(ConfigPage, 328, "⏱️ RETARDO ANTES DE BAJAR (BLOATER)",
-    function() return string.format("Actual: %.1f segundos", Config.BloaterPreDelay) end,
-    function() Config.BloaterPreDelay = math.max(0.0, Config.BloaterPreDelay - 0.1) end,
-    function() Config.BloaterPreDelay = math.min(2.0, Config.BloaterPreDelay + 0.1) end
+-- Tiempo de resguardo configurable al esquivar bloater
+createStepperControl(ConfigPage, 328, "⏱️ TIEMPO RESGUARDO BLOATER (SEG)",
+    function() return string.format("Actual: %.1f segundos antes de volver", Config.BloaterHoldDown) end,
+    function() Config.BloaterHoldDown = math.max(1.0, Config.BloaterHoldDown - 0.5) end,
+    function() Config.BloaterHoldDown = math.min(10.0, Config.BloaterHoldDown + 0.5) end
 )
 
-createStepperControl(ConfigPage, 378, "💣 BAJADA ANTI-BLOATER (STUDS)",
-    function() return string.format("Actual: -%d studs al esquivar", Config.BloaterDropStuds) end,
-    function() Config.BloaterDropStuds = math.max(4, Config.BloaterDropStuds - 2) end,
-    function() Config.BloaterDropStuds = math.min(30, Config.BloaterDropStuds + 2) end
+-- Desplazamiento lateral hacia el lado opuesto
+createStepperControl(ConfigPage, 378, "↗️ DIAGONAL OPUESTA BLOATER (STUDS)",
+    function() return string.format("Actual: %d studs lado / -%d studs abajo", Config.BloaterSideStuds, Config.BloaterDropStuds) end,
+    function() Config.BloaterSideStuds = math.max(6, Config.BloaterSideStuds - 2) end,
+    function() Config.BloaterSideStuds = math.min(35, Config.BloaterSideStuds + 2) end
 )
 
 createStepperControl(ConfigPage, 428, "🎯 AJUSTE BAJO PIEL INFERIOR",
