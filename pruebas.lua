@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V10.0 (ANTI-BLOATER + PODER 5 + ZANAHORIAS + SLOT 2)
+-- EXPLORADOR FORENSE DE TERRENO V10.1 (ANTI-BLOATER + PODER 5 + ZANAHORIAS <20%)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -22,17 +22,24 @@ local Config = {
     HoldSeconds = 1.0,
     WalkFirst = true,
 
-    -- Nuevas funciones V10.0
-    AutoEvadeBloaters = true,   -- ON por defecto: Baja si desaparecen 3+ Bloaters cercanos
-    BloaterDropStuds = 12,      -- Studs extra hacia abajo al esquivar explosión
-    BloaterThreshold = 3,       -- Cantidad de Bloaters desaparecidos para disparar evasión
+    -- Anti-Bloater
+    AutoEvadeBloaters = true,
+    BloaterDropStuds = 12,
+    BloaterThreshold = 3,
     BloaterScanRadius = 55,
 
-    AutoPower5OnTimeStop = true,-- Espera 30s cuando se detiene el tiempo y usa Slot 5
-    TimeStopDelay = 30,
+    -- 5to Poder al detenerse el tiempo
+    AutoPower5OnTimeStop = true,
+    TimeCheckInterval = 10,     -- Revisa cada 10 segundos si el tiempo se detuvo
+    TimeStopDelay = 30,         -- Espera 30 segundos y activa el 5to poder
 
-    AutoCarrotDash = false,     -- Opción activable: Ir rápido por zanahorias esquivando zombies
-    AutoEquipSlot2 = true       -- Mantiene siempre el Arma 2 equipada
+    -- Zanahorias Inteligentes
+    AutoCarrotDash = false,
+    CarrotHungerThreshold = 20, -- Solo va si la saciedad es menor al 20%
+    CarrotMaxZombies = 5,       -- Solo va si hay menos de 5 zombies cerca
+    CarrotZombieRadius = 35,    -- Radio de conteo de zombies (35 studs)
+    CarrotMaxDist = 80,         -- Distancia máxima de búsqueda de zanahorias (80 studs)
+    AutoEquipSlot2 = true
 }
 
 local State = {
@@ -75,7 +82,7 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ==============================================================================
--- 1. GESTIÓN DE ARMAS (SLOT 2 PRINCIPAL Y SLOT 5 PODER VÍA BACKPACKGUI)
+-- 1. GESTIÓN DE ARMAS (SLOT 2 PRINCIPAL Y SLOT 5 PODER INSTANTÁNEO)
 -- ==============================================================================
 
 local function getToolInstanceForSlot(slotNum)
@@ -133,16 +140,17 @@ local function equipSlotWeapon(slotNum)
 
     if currentTool and currentTool ~= targetTool then
         hum:UnequipTools()
-        task.wait(0.04)
+        task.wait(0.03)
     end
     hum:EquipTool(targetTool)
     return targetTool
 end
 
+-- Activación instantánea del 5to poder y regreso inmediato al Arma 2
 local function activatePowerSlot5()
     local tool5 = equipSlotWeapon(5)
     if tool5 then
-        task.wait(0.1)
+        task.wait(0.06)
         pcall(function() tool5:Activate() end)
         for _, child in ipairs(tool5:GetChildren()) do
             if child:IsA("RemoteEvent") then
@@ -152,7 +160,7 @@ local function activatePowerSlot5()
                 end
             end
         end
-        task.wait(0.3)
+        task.wait(0.12)
     end
     if Config.AutoEquipSlot2 then
         equipSlotWeapon(2)
@@ -160,8 +168,47 @@ local function activatePowerSlot5()
 end
 
 -- ==============================================================================
--- 2. DETECCIÓN EXACTA DE PIEL INFERIOR Y PUNTOS DE DESCENSO
+-- 2. DETECCIÓN DE SACIEDAD, ZOMBIES Y PUNTOS DE DESCENSO
 -- ==============================================================================
+
+local function getHungerPercent()
+    local char = lp.Character
+    local hunger = (char and char:GetAttribute("Hunger")) or lp:GetAttribute("Hunger")
+    local maxHunger = (char and char:GetAttribute("MaxHunger")) or lp:GetAttribute("MaxHunger") or 100
+
+    if type(hunger) == "number" then
+        return math.floor((hunger / math.max(maxHunger, 1)) * 100)
+    end
+
+    local hVal = (char and char:FindFirstChild("Hunger")) or lp:FindFirstChild("Hunger")
+    if hVal and (hVal:IsA("NumberValue") or hVal:IsA("IntValue")) then
+        local maxHVal = (char and char:FindFirstChild("MaxHunger")) or lp:FindFirstChild("MaxHunger")
+        local maxV = (maxHVal and maxHVal.Value) or 100
+        return math.floor((hVal.Value / math.max(maxV, 1)) * 100)
+    end
+
+    return 100
+end
+
+local function countZombiesInRadius(originPos, radius)
+    local count = 0
+    local char = lp.Character
+    local folder = workspace:FindFirstChild("Characters") or workspace
+
+    for _, ent in ipairs(folder:GetChildren()) do
+        if ent:IsA("Model") and ent ~= char and not Players:GetPlayerFromCharacter(ent) then
+            local eHum = ent:FindFirstChildOfClass("Humanoid")
+            local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+            if eHum and eHum.Health > 0 and ent:GetAttribute("Dead") ~= true and eRoot then
+                local dist = (Vector3.new(eRoot.Position.X, 0, eRoot.Position.Z) - Vector3.new(originPos.X, 0, originPos.Z)).Magnitude
+                if dist <= radius then
+                    count = count + 1
+                end
+            end
+        end
+    end
+    return count
+end
 
 local function getLowestCornerXZ(part)
     local cf = part.CFrame
@@ -378,6 +425,17 @@ RunService.Stepped:Connect(function()
     end
 end)
 
+local function setCharacterCollide(enabled)
+    local char = lp.Character
+    if char then
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.CanCollide = enabled
+            end
+        end
+    end
+end
+
 local function restoreGhostRocks()
     for part, origCollide in pairs(State.GhostRocks) do
         if part and part.Parent then
@@ -412,13 +470,7 @@ local function stopFlyAndNoclipImmediate()
         clearFlightForcesOnly(root)
     end
 
-    if char then
-        for _, p in ipairs(char:GetDescendants()) do
-            if p:IsA("BasePart") then
-                p.CanCollide = true
-            end
-        end
-    end
+    setCharacterCollide(true)
 
     if hum then
         hum.PlatformStand = false
@@ -586,33 +638,20 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
 
     if reachedTarget and State.IsFlying then
         State.IsNoclip = false
-        if char then
-            for _, p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") then p.CanCollide = true end
-            end
-        end
+        setCharacterCollide(true)
 
         if Config.KeepFly and Config.LockPositionBP then
             bp.Position = targetDest
-            if statusCallback then
-                statusCallback("🔒 Noclip OFF | ✈️ Fly fijo activo.")
-            end
+            if statusCallback then statusCallback("🔒 Noclip OFF | ✈️ Fly fijo activo.") end
         elseif Config.KeepFly and not Config.LockPositionBP then
-            -- Suelta el BodyPosition para no jalarte de vuelta si te mueves con otro script
             clearFlightForcesOnly(root)
             root.Anchored = true
-            if statusCallback then
-                statusCallback("⚓ Noclip OFF | Posición libre anclada (sin jalón).")
-            end
+            if statusCallback then statusCallback("⚓ Noclip OFF | Posición libre anclada (sin jalón).") end
         else
-            if statusCallback then
-                statusCallback(string.format("🛑 Noclip OFF. Soltando Fly en %.1fs...", Config.HoldSeconds))
-            end
+            if statusCallback then statusCallback(string.format("🛑 Noclip OFF. Soltando Fly en %.1fs...", Config.HoldSeconds)) end
             task.wait(Config.HoldSeconds)
             stopFlyAndNoclipImmediate()
-            if statusCallback then
-                statusCallback("✅ Posición alcanzada (Fly OFF).")
-            end
+            if statusCallback then statusCallback("✅ Posición alcanzada (Fly OFF).") end
         end
 
         if Config.AutoEquipSlot2 then
@@ -636,24 +675,20 @@ local function descendBelowFeetObject(statusCallback)
     if hit and hit.Instance and hit.Instance:IsA("BasePart") then
         local floorPart = hit.Instance
         selectTargetPart(floorPart)
-        if statusCallback then
-            statusCallback(string.format("👣 Bajo tus pies: '%s'. Bajando...", floorPart.Name))
-        end
+        if statusCallback then statusCallback(string.format("👣 Bajo tus pies: '%s'. Bajando...", floorPart.Name)) end
         executeRefugeEntry(floorPart, statusCallback, true)
     else
-        if statusCallback then
-            statusCallback("⚠️ No se detectó nada sólido debajo de tus pies.")
-        end
+        if statusCallback then statusCallback("⚠️ No se detectó nada sólido debajo de tus pies.") end
     end
 end
 
 -- ==============================================================================
--- 5. SISTEMAS AUTOMÁTICOS: ANTI-BLOATER, PODER 5 (TIEMPO DETENIDO) Y ZANAHORIAS
+-- 5. SISTEMAS AUTOMÁTICOS: ANTI-BLOATER, PODER 5 (C/10s) Y ZANAHORIAS (<20%)
 -- ==============================================================================
 
-local StatusDisplayCallback = nil -- Se conecta con InfoDetails al crear la GUI
+local StatusDisplayCallback = nil
 
--- A. ANTI-EXPLOSIÓN DE BLOATERS (Detecta si 3+ desaparecen de la nada -> Baja y vuelve)
+-- A. ANTI-EXPLOSIÓN DE BLOATERS (Noclip ON al bajar -> Noclip OFF al volver)
 local function triggerBloaterDodge()
     if State.IsDodgingBloater then return end
     local char = lp.Character
@@ -667,11 +702,13 @@ local function triggerBloaterDodge()
     local savedBPPos = existingBP and existingBP.Position or savedCF.Position
 
     if StatusDisplayCallback then
-        StatusDisplayCallback(string.format("💣 ¡%d+ Bloaters desaparecieron! Bajando -%d studs...", Config.BloaterThreshold, Config.BloaterDropStuds))
+        StatusDisplayCallback(string.format("💣 ¡%d+ Bloaters desaparecieron! Noclip ON y bajando -%d studs...", Config.BloaterThreshold, Config.BloaterDropStuds))
     end
 
-    root.Anchored = false
+    -- 1. Activar Noclip antes de moverse
     State.IsNoclip = true
+    setCharacterCollide(false)
+    root.Anchored = false
 
     local dodgePos = savedBPPos - Vector3.new(0, Config.BloaterDropStuds, 0)
     if existingBP then
@@ -681,22 +718,26 @@ local function triggerBloaterDodge()
         root.Anchored = true
     end
 
-    -- Esperar 3 segundos a que exploten arriba
+    -- 2. Esperar 3 segundos a que pasen las explosiones arriba
     task.wait(3.0)
 
-    -- Regresar a la posición segura original
+    -- 3. Regresar al punto seguro con Noclip aún activo
     if root and root.Parent then
         if existingBP and existingBP.Parent then
             existingBP.Position = savedBPPos
+            task.wait(0.35)
         else
             root.CFrame = savedCF
             root.Anchored = wasAnchored
         end
     end
+
+    -- 4. Desactivar Noclip al volver
     State.IsNoclip = false
+    setCharacterCollide(true)
 
     if StatusDisplayCallback then
-        StatusDisplayCallback("✅ Explosión de Bloaters esquivada. De vuelta en refugio.")
+        StatusDisplayCallback("✅ Explosión esquivada. Noclip OFF y de vuelta en refugio.")
     end
     State.IsDodgingBloater = false
 end
@@ -738,7 +779,6 @@ task.spawn(function()
             end
         end
 
-        -- Comprobar cuáles de los Bloaters cercanos desaparecieron o murieron
         for ent, _ in pairs(trackedBloaters) do
             if not currentAlive[ent] then
                 trackedBloaters[ent] = nil
@@ -746,7 +786,6 @@ task.spawn(function()
             end
         end
 
-        -- Limpiar desapariciones viejas (> 1.5s)
         local validCount = 0
         for i = #recentDisappearances, 1, -1 do
             if (now - recentDisappearances[i]) > 1.5 then
@@ -763,47 +802,47 @@ task.spawn(function()
     end
 end)
 
--- B. DETECTOR DE TIEMPO DETENIDO -> ESPERA 30s -> PULSA 5TO PODER
+-- B. REVISIÓN CONSTANTE DE TIEMPO (CADA 10s) -> ESPERA 30s -> 5TO PODER INSTANTÁNEO -> ARMA 2
 task.spawn(function()
-    local lastClockTime = Lighting.ClockTime
-    local frozenSeconds = 0
-    local powerUsedThisFreeze = false
+    local lastCheckedClock = Lighting.ClockTime
 
     while true do
-        task.wait(1.0)
+        task.wait(Config.TimeCheckInterval) -- Revisa cada 10 segundos
         if not Config.AutoPower5OnTimeStop then
-            frozenSeconds = 0
-            powerUsedThisFreeze = false
+            lastCheckedClock = Lighting.ClockTime
             continue
         end
 
         local currentClock = Lighting.ClockTime
-        if math.abs(currentClock - lastClockTime) < 0.0001 then
-            frozenSeconds = frozenSeconds + 1
-            if frozenSeconds >= Config.TimeStopDelay and not powerUsedThisFreeze then
-                powerUsedThisFreeze = true
+        if math.abs(currentClock - lastCheckedClock) < 0.0001 then
+            -- El tiempo se detuvo: esperar 30 segundos y pulsar 5to poder
+            if StatusDisplayCallback then
+                StatusDisplayCallback("⏱️ Tiempo detenido detectado. Esperando 30s para 5to Poder...")
+            end
+            task.wait(Config.TimeStopDelay)
+
+            if Config.AutoPower5OnTimeStop then
                 if StatusDisplayCallback then
-                    StatusDisplayCallback("⏱️ Tiempo detenido 30s: Activando 5to Poder y volviendo a Arma 2...")
+                    StatusDisplayCallback("⚡ Activando 5to Poder y regresando al Arma 2...")
                 end
                 activatePowerSlot5()
             end
+            lastCheckedClock = Lighting.ClockTime
         else
-            frozenSeconds = 0
-            powerUsedThisFreeze = false
-            lastClockTime = currentClock
+            lastCheckedClock = currentClock
         end
     end
 end)
 
--- C. CARRERA RÁPIDA POR ZANAHORIAS (ESQUIVANDO ZOMBIES + EQUIPAR ARMA 2)
-local function findNearestCarrot()
+-- C. CARRERA RÁPIDA POR ZANAHORIAS (<20% SACIEDAD + <5 ZOMBIES EN 35 STUDS + HASTA 80 STUDS + VOLVER)
+local function findNearestCarrot(maxDist)
     local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     if not root then return nil end
     local dropped = workspace:FindFirstChild("DroppedItems")
     if not dropped then return nil end
 
     local bestItem, bestPart = nil, nil
-    local shortest = 140
+    local shortest = maxDist
 
     for _, item in ipairs(dropped:GetChildren()) do
         local isCarrot = item.Name:lower():find("carrot") or item:GetAttribute("ItemType") == "Food"
@@ -811,7 +850,7 @@ local function findNearestCarrot()
             local part = item:IsA("BasePart") and item or (item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart"))
             if part then
                 local d = (part.Position - root.Position).Magnitude
-                if d < shortest then
+                if d <= shortest then
                     shortest = d
                     bestItem = item
                     bestPart = part
@@ -824,78 +863,154 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.3)
-        if Config.AutoCarrotDash and not State.IsDashingCarrot and not State.IsDodgingBloater then
-            local item, part = findNearestCarrot()
-            local char = lp.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
+        task.wait(0.8)
+        if not Config.AutoCarrotDash or State.IsDashingCarrot or State.IsDodgingBloater then
+            continue
+        end
 
-            if item and part and root and hum and hum.Health > 0 then
-                State.IsDashingCarrot = true
-                stopFlyAndNoclipImmediate()
+        local hungerPct = getHungerPercent()
+        if hungerPct >= Config.CarrotHungerThreshold then
+            continue
+        end
 
-                if StatusDisplayCallback then
-                    StatusDisplayCallback("🥕 Yendo rápido por zanahoria esquivando zombies...")
+        local char = lp.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 then continue end
+
+        -- Verificar que haya menos de 5 zombies en 35 studs
+        local nearbyZombies = countZombiesInRadius(root.Position, Config.CarrotZombieRadius)
+        if nearbyZombies >= Config.CarrotMaxZombies then
+            if StatusDisplayCallback then
+                StatusDisplayCallback(string.format("🥕 Saciedad %d%% (<20%%): Esperando (%d zombies en 35m)...", hungerPct, nearbyZombies))
+            end
+            continue
+        end
+
+        local item, part = findNearestCarrot(Config.CarrotMaxDist)
+        if not item or not part then continue end
+
+        -- Guardar posición y estado exacto del refugio para regresar
+        State.IsDashingCarrot = true
+        local savedCF = root.CFrame
+        local wasAnchored = root.Anchored
+        local hadBP = root:FindFirstChild("DescentBP") ~= nil
+        local savedBPPos = hadBP and root.DescentBP.Position or savedCF.Position
+
+        if StatusDisplayCallback then
+            StatusDisplayCallback(string.format("🥕 Saciedad %d%% | %d zombies: Subiendo por zanahoria...", hungerPct, nearbyZombies))
+        end
+
+        -- 1. Subir a la superficie para correr libremente
+        ascendAndReleaseAll(nil)
+        task.wait(0.1)
+
+        -- 2. Correr rápido hacia la zanahoria (esquivando zombies)
+        local origSpeed = hum.WalkSpeed
+        hum.WalkSpeed = 34
+        local dashEnd = tick() + 4.0
+
+        while Config.AutoCarrotDash and tick() < dashEnd and part and part.Parent and hum.Health > 0 do
+            RunService.Heartbeat:Wait()
+            local toCarrot = part.Position - root.Position
+            local horiz = Vector3.new(toCarrot.X, 0, toCarrot.Z)
+
+            if horiz.Magnitude <= 5.5 then
+                if PickUpRemote then
+                    pcall(function() PickUpRemote:FireServer(item) end)
                 end
+                break
+            end
 
-                local dashEnd = tick() + 1.4
-                while Config.AutoCarrotDash and tick() < dashEnd and part and part.Parent do
-                    RunService.Heartbeat:Wait()
-                    local toCarrot = part.Position - root.Position
-                    local horiz = Vector3.new(toCarrot.X, 0, toCarrot.Z)
-
-                    if horiz.Magnitude <= 5.5 then
-                        if PickUpRemote then
-                            pcall(function() PickUpRemote:FireServer(item) end)
+            -- Evasión rápida de zombies en el camino
+            local avoidVec = Vector3.zero
+            local folder = workspace:FindFirstChild("Characters") or workspace
+            for _, ent in ipairs(folder:GetChildren()) do
+                if ent:IsA("Model") and ent ~= char and not Players:GetPlayerFromCharacter(ent) then
+                    local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+                    if eRoot then
+                        local diff = root.Position - eRoot.Position
+                        local d = Vector3.new(diff.X, 0, diff.Z).Magnitude
+                        if d <= 14 and d > 0.5 then
+                            avoidVec = avoidVec + (Vector3.new(diff.X, 0, diff.Z).Unit * (15 - d) * 1.5)
                         end
+                    end
+                end
+            end
+
+            local moveDir = (horiz.Unit + avoidVec).Unit
+            hum:MoveTo(root.Position + moveDir * 12)
+        end
+
+        hum.WalkSpeed = origSpeed
+
+        -- 3. Comer la zanahoria recogida en un instante
+        task.wait(0.12)
+        for _, cont in ipairs({char, lp:FindFirstChild("Backpack")}) do
+            if cont then
+                for _, t in ipairs(cont:GetChildren()) do
+                    if t:IsA("Tool") and (t.Name:lower():find("carrot") or t:GetAttribute("ItemType") == "Food") then
+                        hum:EquipTool(t)
+                        task.wait(0.05)
+                        pcall(function() t:Activate() end)
+                        local useRem = t:FindFirstChild("Use") or t:FindFirstChild("Consume")
+                        if useRem and useRem:IsA("RemoteEvent") then
+                            pcall(function() useRem:FireServer() end)
+                        end
+                        task.wait(0.15)
                         break
                     end
-
-                    -- Evasión rápida de zombies cercanos (15 studs)
-                    local avoidVec = Vector3.zero
-                    local folder = workspace:FindFirstChild("Characters") or workspace
-                    for _, ent in ipairs(folder:GetChildren()) do
-                        if ent:IsA("Model") and ent ~= char and not Players:GetPlayerFromCharacter(ent) then
-                            local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
-                            if eRoot then
-                                local diff = root.Position - eRoot.Position
-                                local d = Vector3.new(diff.X, 0, diff.Z).Magnitude
-                                if d <= 15 and d > 0.5 then
-                                    avoidVec = avoidVec + (Vector3.new(diff.X, 0, diff.Z).Unit * (16 - d) * 1.6)
-                                end
-                            end
-                        end
-                    end
-
-                    local moveDir = (horiz.Unit + avoidVec).Unit
-                    root.AssemblyLinearVelocity = Vector3.new(moveDir.X * 36, root.AssemblyLinearVelocity.Y, moveDir.Z * 36)
-                    hum:MoveTo(root.Position + moveDir * 10)
                 end
-
-                -- Consumir si entró al inventario y re-equipar Arma 2
-                task.wait(0.15)
-                for _, cont in ipairs({char, lp:FindFirstChild("Backpack")}) do
-                    if cont then
-                        for _, t in ipairs(cont:GetChildren()) do
-                            if t:IsA("Tool") and (t.Name:lower():find("carrot") or t:GetAttribute("ItemType") == "Food") then
-                                hum:EquipTool(t)
-                                task.wait(0.05)
-                                pcall(function() t:Activate() end)
-                                task.wait(0.15)
-                                break
-                            end
-                        end
-                    end
-                end
-
-                if Config.AutoEquipSlot2 then
-                    equipSlotWeapon(2)
-                end
-                State.IsDashingCarrot = false
-                task.wait(1.0)
             end
         end
+
+        -- 4. Regresar al lugar exacto donde estaba (con Noclip ON -> OFF)
+        if StatusDisplayCallback then
+            StatusDisplayCallback("🔙 Regresando a la posición original...")
+        end
+
+        State.IsNoclip = true
+        setCharacterCollide(false)
+
+        if hadBP then
+            State.IsFlying = true
+            hum.PlatformStand = true
+            local bp = Instance.new("BodyPosition")
+            bp.Name = "DescentBP"
+            bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+            bp.P = 35000
+            bp.D = 900
+            bp.Position = savedBPPos
+            bp.Parent = root
+
+            local bg = Instance.new("BodyGyro")
+            bg.Name = "DescentBG"
+            bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
+            bg.CFrame = savedCF
+            bg.Parent = root
+
+            local retTimeout = tick() + 5.0
+            while tick() < retTimeout and (root.Position - savedBPPos).Magnitude > 1.5 do
+                RunService.Heartbeat:Wait()
+            end
+        else
+            root.CFrame = savedCF
+            root.Anchored = wasAnchored
+        end
+
+        State.IsNoclip = false
+        setCharacterCollide(true)
+
+        if Config.AutoEquipSlot2 then
+            equipSlotWeapon(2)
+        end
+
+        if StatusDisplayCallback then
+            StatusDisplayCallback("✅ Zanahoria comida. De vuelta en refugio con Arma 2.")
+        end
+
+        State.IsDashingCarrot = false
+        task.wait(2.0)
     end
 end)
 
@@ -950,11 +1065,11 @@ end
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV10")
+local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV101")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TerrainInspectorGuiV10"
+ScreenGui.Name = "TerrainInspectorGuiV101"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -962,7 +1077,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(25, 120, 110)
-FloatBtn.Text = "🔍\nV10"
+FloatBtn.Text = "🔍\nV10.1"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -984,7 +1099,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V10.0 | ANTI-BLOATER & AFK PRO"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V10.1 | BLOATER + PODER 5 + ZANAHORIAS"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -1084,7 +1199,7 @@ local InfoTitle = Instance.new("TextLabel")
 InfoTitle.Size = UDim2.new(1, -12, 0, 20)
 InfoTitle.Position = UDim2.new(0, 6, 0, 4)
 InfoTitle.BackgroundTransparency = 1
-InfoTitle.Text = "📌 V10.0 | Anti-Bloater: ON | Poder 5 (30s): ON | Arma 2"
+InfoTitle.Text = "📌 V10.1 | Bloater(Noclip): ON | Poder 5(c/10s): ON | Arma 2"
 InfoTitle.TextColor3 = Color3.fromRGB(90, 190, 255)
 InfoTitle.TextSize = 10
 InfoTitle.Font = Enum.Font.GothamBold
@@ -1229,32 +1344,32 @@ local function createToggleBtn(yPos, text, color, onClick)
 end
 
 -- 1. Anti-Explosión Bloaters (ON por defecto)
-createToggleBtn(6, "💣 ANTI-BLOATER (BAJAR SI DESAPARECEN 3+): ON", Color3.fromRGB(30, 145, 80), function(btn)
+createToggleBtn(6, "💣 ANTI-BLOATER (NOCLIP + BAJAR SI 3+): ON", Color3.fromRGB(30, 145, 80), function(btn)
     Config.AutoEvadeBloaters = not Config.AutoEvadeBloaters
     btn.BackgroundColor3 = Config.AutoEvadeBloaters and Color3.fromRGB(30, 145, 80) or Color3.fromRGB(65, 70, 85)
-    btn.Text = Config.AutoEvadeBloaters and "💣 ANTI-BLOATER (BAJAR SI DESAPARECEN 3+): ON" or "💣 ANTI-BLOATER: OFF"
+    btn.Text = Config.AutoEvadeBloaters and "💣 ANTI-BLOATER (NOCLIP + BAJAR SI 3+): ON" or "💣 ANTI-BLOATER: OFF"
 end)
 
--- 2. Poder 5 tras 30s de tiempo detenido
-createToggleBtn(46, "⏱️ PODER 5 TRAS 30s DE TIEMPO DETENIDO: ON", Color3.fromRGB(115, 55, 175), function(btn)
+-- 2. Poder 5 (Revisa c/10s, espera 30s)
+createToggleBtn(46, "⏱️ PODER 5 SI TIEMPO DETENIDO (REV c/10s): ON", Color3.fromRGB(115, 55, 175), function(btn)
     Config.AutoPower5OnTimeStop = not Config.AutoPower5OnTimeStop
     btn.BackgroundColor3 = Config.AutoPower5OnTimeStop and Color3.fromRGB(115, 55, 175) or Color3.fromRGB(65, 70, 85)
-    btn.Text = Config.AutoPower5OnTimeStop and "⏱️ PODER 5 TRAS 30s DE TIEMPO DETENIDO: ON" or "⏱️ PODER 5 EN TIEMPO DETENIDO: OFF"
+    btn.Text = Config.AutoPower5OnTimeStop and "⏱️ PODER 5 SI TIEMPO DETENIDO (REV c/10s): ON" or "⏱️ PODER 5 EN TIEMPO DETENIDO: OFF"
 end)
 
--- 3. Carrera Rápida por Zanahorias (Activable)
-createToggleBtn(86, "🥕 IR RÁPIDO POR ZANAHORIAS (ESQUIVANDO): OFF", Color3.fromRGB(65, 70, 85), function(btn)
+-- 3. Zanahorias Inteligentes (<20% saciedad y <5 zombies en 35 studs)
+createToggleBtn(86, "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF", Color3.fromRGB(65, 70, 85), function(btn)
     Config.AutoCarrotDash = not Config.AutoCarrotDash
     btn.BackgroundColor3 = Config.AutoCarrotDash and Color3.fromRGB(210, 120, 20) or Color3.fromRGB(65, 70, 85)
-    btn.Text = Config.AutoCarrotDash and "🥕 IR RÁPIDO POR ZANAHORIAS (ESQUIVANDO): ON" or "🥕 IR RÁPIDO POR ZANAHORIAS (ESQUIVANDO): OFF"
+    btn.Text = Config.AutoCarrotDash and "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): ON" or "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF"
 end)
 
--- 4. Anclar AFK (Destruye BodyPosition para que NO regrese + Equipa Arma 2)
-createToggleBtn(126, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + EQUIPAR ARMA 2): OFF", Color3.fromRGB(45, 85, 155), function(btn)
+-- 4. Anclar AFK (Sin jalón + Arma 2)
+createToggleBtn(126, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA 2): OFF", Color3.fromRGB(45, 85, 155), function(btn)
     local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     if root then
         if not root.Anchored then
-            clearFlightForcesOnly(root) -- Elimina el BodyPosition que te jalaba al punto anterior
+            clearFlightForcesOnly(root)
             State.IsFlying = false
             root.Anchored = true
             btn.BackgroundColor3 = Color3.fromRGB(210, 120, 20)
@@ -1263,19 +1378,19 @@ createToggleBtn(126, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + EQUIPAR ARMA 2): OFF", 
         else
             root.Anchored = false
             btn.BackgroundColor3 = Color3.fromRGB(45, 85, 155)
-            btn.Text = "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + EQUIPAR ARMA 2): OFF"
+            btn.Text = "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA 2): OFF"
         end
     end
 end)
 
--- 5. Fijar Posición con BodyPosition vs Libre (Resuelve el regreso automático)
+-- 5. Fijar Posición con BodyPosition vs Libre
 createToggleBtn(166, "🧲 RETENER CON BODYPOSITION AL BAJAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
     Config.LockPositionBP = not Config.LockPositionBP
     btn.BackgroundColor3 = Config.LockPositionBP and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.LockPositionBP and "🧲 RETENER CON BODYPOSITION AL BAJAR: ON" or "🔓 LIBRE AL BAJAR (ANCLA SIN JALAR DE VUELTA): OFF"
 end)
 
--- 6. Modo Refugio (Bajo Piel vs Búnker)
+-- 6. Modo Refugio
 createToggleBtn(206, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.fromRGB(115, 55, 175), function(btn)
     if Config.Mode == "UnderSkin" then
         Config.Mode = "Bunker"
