@@ -27,7 +27,7 @@ local Config = {
     BloaterPreDelay = 0.5,      -- Espera 0.5s antes de irse para cubrir explosiones escalonadas
     BloaterDropStuds = 14,      -- Studs hacia abajo al esquivar explosión
     BloaterHoldDown = 2.6,      -- Tiempo abajo antes de volver
-    BloaterThreshold = 3,
+    BloaterThreshold = 1,
     BloaterScanRadius = 55,
 
     -- 5to Poder al detenerse el tiempo
