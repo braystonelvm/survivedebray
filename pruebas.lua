@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V10.9 (REACTIVACIÓN AUTOMÁTICA AL BAJAR)
+-- EXPLORADOR FORENSE DE TERRENO V11.0 (ANTI-SPITTER/HAZMAT + ÓRBITA EN ROCA)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -30,12 +30,21 @@ local Config = {
     BloaterHoldDown = 3.0,
     BloaterScanRadius = 55,
 
-    -- Anti-Jefes (Experiment, Cyborg, Tyrant o cualquier entidad con HP muy alta)
-    AutoEvadeBosses = true,
+    -- Anti-Spitter y Hazmat (Evasión rápida en diagonal hacia el lado opuesto)
+    AutoEvadeToxic = true,
+    ToxicScanRadius = 65,
+    ToxicSideStuds = 18,
+    ToxicDropStuds = 14,
+    ToxicHoldDown = 2.8,
+
+    -- Órbita lenta alrededor de la piel baja de la roca + Evasión de Jefes
+    AutoRockOrbit = true,       -- Rodea la parte baja de la roca continuamente
+    OrbitAngularSpeed = 0.45,   -- Velocidad de giro (radianes/seg - medio lento por defecto)
+    OrbitRadiusRatio = 0.35,    -- Qué tanto abarca del tamaño de la roca (35% del radio)
+    AutoEvadeBosses = true,     -- Hunde y aleja la órbita al lado contrario de los jefes
     BossMinMaxHP = 4500,
     BossScanRadius = 110,
     BossExtraDepth = 10,
-    BossOrbitRadius = 12,
 
     -- 5to Poder con EternalNightTime / TopUI.DayCounter ("Survived: 12:00")
     AutoPower5OnTimeStop = true,
@@ -63,10 +72,14 @@ local State = {
     IsWalkingToTarget = false,
     IsFlying = false,
     IsNoclip = false,
-    IsDodgingBloater = false,
+    IsDodgingThreat = false,  -- Bloquea temporalmente la órbita mientras esquiva Bloater o Spitter/Hazmat
     IsEvadingBoss = false,
     IsDashingCarrot = false,
     GhostRocks = {},
+
+    -- Ancla base bajo la roca para orbitar alrededor
+    AnchorRockPart = nil,
+    BaseAnchorPos = nil,
 
     -- Línea guía (Beam)
     BeamObj = nil,
@@ -78,7 +91,6 @@ local State = {
     ActiveBossCount = 0
 }
 
--- Referencias a botones de UI para sincronizarlos al hacer Reset o Reactivación
 local UIRefs = {}
 
 local COLOR_YELLOW = Color3.fromRGB(255, 220, 0)
@@ -465,7 +477,7 @@ end
 local function clearFlightForcesOnly(root)
     if not root then return end
     for _, obj in ipairs(root:GetChildren()) do
-        if obj.Name == "DescentBP" or obj.Name == "DescentBG" or obj.Name == "TempBloaterBP" or obj.Name == "TempBossBP" then
+        if obj.Name == "DescentBP" or obj.Name == "DescentBG" or obj.Name == "TempDodgeBP" or obj.Name == "TempBossBP" then
             obj:Destroy()
         end
     end
@@ -479,9 +491,11 @@ local function stopFlyAndNoclipImmediate()
     State.IsWalkingToTarget = false
     State.IsNoclip = false
     State.IsFlying = false
-    State.IsDodgingBloater = false
+    State.IsDodgingThreat = false
     State.IsEvadingBoss = false
     State.IsDashingCarrot = false
+    State.AnchorRockPart = nil
+    State.BaseAnchorPos = nil
 
     local char = lp.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -499,9 +513,10 @@ local function stopFlyAndNoclipImmediate()
     end
 end
 
--- Reactiva automáticamente las defensas por defecto al darle al botón Bajar y actualiza los botones de Config
 local function reactivateDefaultProtections()
     Config.AutoEvadeBloaters = true
+    Config.AutoEvadeToxic = true
+    Config.AutoRockOrbit = true
     Config.AutoEvadeBosses = true
     Config.AutoPower5OnTimeStop = true
 
@@ -509,9 +524,13 @@ local function reactivateDefaultProtections()
         UIRefs.BloaterBtn.BackgroundColor3 = Color3.fromRGB(30, 145, 80)
         UIRefs.BloaterBtn.Text = "💣 ANTI-BLOATER DIAGONAL (SI DESAPARECE 1): ON"
     end
-    if UIRefs.BossBtn then
-        UIRefs.BossBtn.BackgroundColor3 = Color3.fromRGB(165, 45, 65)
-        UIRefs.BossBtn.Text = "👹 ANTI-JEFES ORBITAL (EXPERIMENT/CYBORG/TYRANT): ON"
+    if UIRefs.ToxicBtn then
+        UIRefs.ToxicBtn.BackgroundColor3 = Color3.fromRGB(40, 155, 115)
+        UIRefs.ToxicBtn.Text = "☣️ ANTI-SPITTER / HAZMAT (DIAGONAL): ON"
+    end
+    if UIRefs.OrbitBtn then
+        UIRefs.OrbitBtn.BackgroundColor3 = Color3.fromRGB(0, 135, 195)
+        UIRefs.OrbitBtn.Text = "🔄 RODEAR BAJO PIEL DE ROCA + JEFES: ON"
     end
     if UIRefs.Power5Btn then
         UIRefs.Power5Btn.BackgroundColor3 = Color3.fromRGB(115, 55, 175)
@@ -519,12 +538,13 @@ local function reactivateDefaultProtections()
     end
 end
 
--- Parada total y restauración de todos los estados/automatizaciones a OFF
 local function fullEmergencyResetAll()
     stopFlyAndNoclipImmediate()
     restoreGhostRocks()
 
     Config.AutoEvadeBloaters = false
+    Config.AutoEvadeToxic = false
+    Config.AutoRockOrbit = false
     Config.AutoEvadeBosses = false
     Config.AutoPower5OnTimeStop = false
     Config.AutoCarrotDash = false
@@ -535,9 +555,13 @@ local function fullEmergencyResetAll()
         UIRefs.BloaterBtn.BackgroundColor3 = Color3.fromRGB(65, 70, 85)
         UIRefs.BloaterBtn.Text = "💣 ANTI-BLOATER: OFF"
     end
-    if UIRefs.BossBtn then
-        UIRefs.BossBtn.BackgroundColor3 = Color3.fromRGB(65, 70, 85)
-        UIRefs.BossBtn.Text = "👹 ANTI-JEFES ORBITAL: OFF"
+    if UIRefs.ToxicBtn then
+        UIRefs.ToxicBtn.BackgroundColor3 = Color3.fromRGB(65, 70, 85)
+        UIRefs.ToxicBtn.Text = "☣️ ANTI-SPITTER / HAZMAT: OFF"
+    end
+    if UIRefs.OrbitBtn then
+        UIRefs.OrbitBtn.BackgroundColor3 = Color3.fromRGB(65, 70, 85)
+        UIRefs.OrbitBtn.Text = "🔄 RODEAR BAJO PIEL DE ROCA + JEFES: OFF"
     end
     if UIRefs.Power5Btn then
         UIRefs.Power5Btn.BackgroundColor3 = Color3.fromRGB(65, 70, 85)
@@ -637,8 +661,6 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
 
     stopFlyAndNoclipImmediate()
     restoreGhostRocks()
-
-    -- Volver a activar las defensas por defecto al iniciar el descenso
     reactivateDefaultProtections()
 
     local myOpId = State.EmergencyCancelId
@@ -728,13 +750,17 @@ local function executeRefugeEntry(targetPart, statusCallback, skipWalk)
         State.IsNoclip = false
         setCharacterCollide(true)
 
+        -- Guardar la roca y el punto base para que la órbita rodee su piel inferior
+        State.AnchorRockPart = targetPart
+        State.BaseAnchorPos = targetDest
+
         if Config.KeepFly and Config.LockPositionBP then
             bp.Position = targetDest
-            if statusCallback then statusCallback("🔒 Noclip OFF | ✈️ Fly fijo + Defensas activas.") end
+            if statusCallback then statusCallback("🔒 Bajo roca: Órbita lenta y Defensas activas.") end
         elseif Config.KeepFly and not Config.LockPositionBP then
             clearFlightForcesOnly(root)
             root.Anchored = true
-            if statusCallback then statusCallback("⚓ Noclip OFF | Posición anclada + Defensas activas.") end
+            if statusCallback then statusCallback("⚓ Posición anclada + Defensas activas.") end
         else
             if statusCallback then statusCallback(string.format("🛑 Noclip OFF. Soltando Fly en %.1fs...", Config.HoldSeconds)) end
             task.wait(Config.HoldSeconds)
@@ -772,35 +798,32 @@ local function descendBelowFeetObject(statusCallback)
 end
 
 -- ==============================================================================
--- 5. SISTEMAS AUTOMÁTICOS: BLOATER DIAGONAL + ANTI-JEFES + ETERNAL TIMER
+-- 5. EVASIÓN DIAGONAL RÁPIDA (BLOATERS + SPITTER / HAZMAT)
 -- ==============================================================================
 
 local StatusDisplayCallback = nil
 
--- A. ANTI-BLOATER DIAGONAL
-local function triggerDiagonalBloaterDodge(bloaterLastPos)
-    if State.IsDodgingBloater or not Config.AutoEvadeBloaters then return end
+-- Función unificada de evasión rápida en diagonal opuesta (Bloater, Spitter y Hazmat)
+local function triggerFastDiagonalDodge(threatPos, labelName, sideStuds, dropStuds, holdTime, preDelay)
+    if State.IsDodgingThreat then return end
     local char = lp.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then return end
 
     local myCancelId = State.EmergencyCancelId
-    State.IsDodgingBloater = true
+    State.IsDodgingThreat = true
 
-    if Config.BloaterPreDelay > 0 then
-        if StatusDisplayCallback then
-            StatusDisplayCallback(string.format("💣 Bloater detectado: Esperando %.1fs antes de moverse...", Config.BloaterPreDelay))
-        end
-        local preEnd = tick() + Config.BloaterPreDelay
+    if preDelay and preDelay > 0 then
+        local preEnd = tick() + preDelay
         while tick() < preEnd do
             task.wait(0.05)
-            if State.EmergencyCancelId ~= myCancelId or not Config.AutoEvadeBloaters then
-                State.IsDodgingBloater = false
+            if State.EmergencyCancelId ~= myCancelId then
+                State.IsDodgingThreat = false
                 return
             end
         end
         if not root or not root.Parent then
-            State.IsDodgingBloater = false
+            State.IsDodgingThreat = false
             return
         end
     end
@@ -808,18 +831,18 @@ local function triggerDiagonalBloaterDodge(bloaterLastPos)
     local savedCF = root.CFrame
     local wasAnchored = root.Anchored
     local existingBP = root:FindFirstChild("DescentBP")
-    local savedBPPos = existingBP and existingBP.Position or savedCF.Position
+    local returnPos = State.BaseAnchorPos or (existingBP and existingBP.Position) or savedCF.Position
 
-    local awayHoriz = Vector3.new(savedBPPos.X - bloaterLastPos.X, 0, savedBPPos.Z - bloaterLastPos.Z)
+    local awayHoriz = Vector3.new(returnPos.X - threatPos.X, 0, returnPos.Z - threatPos.Z)
     if awayHoriz.Magnitude < 0.2 then
         awayHoriz = Vector3.new(1, 0, 1)
     end
     local awayDir = awayHoriz.Unit
 
-    local diagonalDest = savedBPPos + (awayDir * Config.BloaterSideStuds) - Vector3.new(0, Config.BloaterDropStuds, 0)
+    local diagonalDest = returnPos + (awayDir * sideStuds) - Vector3.new(0, dropStuds, 0)
 
     if StatusDisplayCallback then
-        StatusDisplayCallback(string.format("💣 Diagonal opuesta (%dm lado / -%dm) por %.1fs...", Config.BloaterSideStuds, Config.BloaterDropStuds, Config.BloaterHoldDown))
+        StatusDisplayCallback(string.format("⚠️ ¡%s! Esquive diagonal (%dm lado / -%dm)...", labelName, sideStuds, dropStuds))
     end
 
     State.IsNoclip = true
@@ -830,7 +853,7 @@ local function triggerDiagonalBloaterDodge(bloaterLastPos)
     local tempBP = existingBP
     if not tempBP then
         tempBP = Instance.new("BodyPosition")
-        tempBP.Name = "TempBloaterBP"
+        tempBP.Name = "TempDodgeBP"
         tempBP.MaxForce = Vector3.new(1e6, 1e6, 1e6)
         tempBP.P = 45000
         tempBP.D = 900
@@ -838,21 +861,22 @@ local function triggerDiagonalBloaterDodge(bloaterLastPos)
     end
     tempBP.Position = diagonalDest
 
-    local holdEnd = tick() + Config.BloaterHoldDown
+    local holdEnd = tick() + holdTime
     while tick() < holdEnd do
         task.wait(0.05)
-        if State.EmergencyCancelId ~= myCancelId or not Config.AutoEvadeBloaters then
+        if State.EmergencyCancelId ~= myCancelId then
             if tempBP and tempBP ~= existingBP and tempBP.Parent then tempBP:Destroy() end
-            State.IsDodgingBloater = false
+            State.IsDodgingThreat = false
             return
         end
     end
 
+    -- Regresar al refugio
     if root and root.Parent and State.EmergencyCancelId == myCancelId then
         root.AssemblyLinearVelocity = Vector3.zero
         if existingBP and existingBP.Parent then
-            existingBP.Position = savedBPPos
-            task.wait(0.35)
+            existingBP.Position = returnPos
+            task.wait(0.30)
         else
             if tempBP and tempBP.Parent then tempBP:Destroy() end
             root.CFrame = savedCF
@@ -864,70 +888,98 @@ local function triggerDiagonalBloaterDodge(bloaterLastPos)
         State.IsNoclip = false
         setCharacterCollide(true)
         if StatusDisplayCallback then
-            StatusDisplayCallback("✅ Evasión Bloater completada: De vuelta en refugio.")
+            StatusDisplayCallback(string.format("✅ %s esquivado: De vuelta bajo roca.", labelName))
         end
     end
-    State.IsDodgingBloater = false
+    State.IsDodgingThreat = false
 end
 
+-- Monitor de Bloaters (desaparición) + Spitter / Hazmat (proximidad / ataque ácido)
 task.spawn(function()
     local trackedBloaters = {}
+    local toxicCooldownUntil = 0
 
     while true do
         task.wait(0.15)
-        if not Config.AutoEvadeBloaters then
-            table.clear(trackedBloaters)
-            continue
-        end
-
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
-        if not root then continue end
+        if not root or State.IsDodgingThreat or State.IsDashingCarrot then continue end
 
         local myPos = root.Position
-        local currentAlive = {}
+        local now = tick()
+        local currentAliveBloaters = {}
         local folder = workspace:FindFirstChild("Characters") or workspace
-        local disappearedCount = 0
+
+        local toxicSumPos = Vector3.zero
+        local toxicCount = 0
 
         for _, ent in ipairs(folder:GetChildren()) do
-            if ent:IsA("Model") and ent ~= char then
+            if ent:IsA("Model") and ent ~= char and not Players:GetPlayerFromCharacter(ent) then
                 local n = ent.Name:lower()
-                if n:find("bloat") or n:find("boom") then
-                    local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
-                    local eHum = ent:FindFirstChildOfClass("Humanoid")
-                    if eRoot then
-                        local dist = (eRoot.Position - myPos).Magnitude
-                        if dist <= Config.BloaterScanRadius then
-                            local isAlive = (eHum and eHum.Health > 0) and (ent:GetAttribute("Dead") ~= true)
-                            if isAlive then
-                                currentAlive[ent] = eRoot.Position
-                                trackedBloaters[ent] = eRoot.Position
-                            end
+                local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
+                local eHum = ent:FindFirstChildOfClass("Humanoid")
+
+                if eRoot and eHum then
+                    local isAlive = (eHum.Health > 0) and (ent:GetAttribute("Dead") ~= true)
+                    local dist = (eRoot.Position - myPos).Magnitude
+
+                    -- 1. Rastreo de Bloaters
+                    if Config.AutoEvadeBloaters and (n:find("bloat") or n:find("boom")) then
+                        if dist <= Config.BloaterScanRadius and isAlive then
+                            currentAliveBloaters[ent] = eRoot.Position
+                            trackedBloaters[ent] = eRoot.Position
+                        end
+                    end
+
+                    -- 2. Detección de Spitter y Hazmat (y cualquier variante con ese nombre)
+                    if Config.AutoEvadeToxic and isAlive and (n:find("spitter") or n:find("hazmat")) then
+                        if dist <= Config.ToxicScanRadius and now >= toxicCooldownUntil then
+                            toxicSumPos = toxicSumPos + eRoot.Position
+                            toxicCount = toxicCount + 1
                         end
                     end
                 end
             end
         end
 
-        local sumPos = Vector3.zero
-        for ent, lastPos in pairs(trackedBloaters) do
-            if not currentAlive[ent] then
-                trackedBloaters[ent] = nil
-                sumPos = sumPos + lastPos
-                disappearedCount = disappearedCount + 1
+        -- Comprobar si desapareció algún Bloater
+        if Config.AutoEvadeBloaters then
+            local sumBloat = Vector3.zero
+            local bloatCount = 0
+            for ent, lastPos in pairs(trackedBloaters) do
+                if not currentAliveBloaters[ent] then
+                    trackedBloaters[ent] = nil
+                    sumBloat = sumBloat + lastPos
+                    bloatCount = bloatCount + 1
+                end
             end
+
+            if bloatCount >= Config.BloaterThreshold then
+                local bPos = sumBloat / bloatCount
+                task.spawn(function()
+                    triggerFastDiagonalDodge(bPos, "Bloater", Config.BloaterSideStuds, Config.BloaterDropStuds, Config.BloaterHoldDown, Config.BloaterPreDelay)
+                end)
+                continue
+            end
+        else
+            table.clear(trackedBloaters)
         end
 
-        if disappearedCount >= Config.BloaterThreshold and not State.IsDodgingBloater then
-            local disappearedPos = sumPos / disappearedCount
+        -- Disparar esquive diagonal si hay Spitter o Hazmat tirando peste cerca
+        if toxicCount > 0 and now >= toxicCooldownUntil then
+            toxicCooldownUntil = now + Config.ToxicHoldDown + 1.2
+            local avgToxicPos = toxicSumPos / toxicCount
             task.spawn(function()
-                triggerDiagonalBloaterDodge(disappearedPos)
+                triggerFastDiagonalDodge(avgToxicPos, "Spitter/Hazmat", Config.ToxicSideStuds, Config.ToxicDropStuds, Config.ToxicHoldDown, 0)
             end)
         end
     end
 end)
 
--- B. RADAR DE JEFES (EXPERIMENT, CYBORG, TYRANT O VIDA ALTA)
+-- ==============================================================================
+-- 6. RODEAR LA PIEL INFERIOR DE LA ROCA (ÓRBITA LENTA + EVASIÓN DE JEFES)
+-- ==============================================================================
+
 local function isBossEntity(ent, hum)
     local n = ent.Name:lower()
     if n:find("experiment") or n:find("cyborg") or n:find("tyrant") or n:find("boss") or n:find("titan") or n:find("juggernaut") then
@@ -941,26 +993,29 @@ end
 
 task.spawn(function()
     local orbitAngle = 0
-    local baseSafePos = nil
-    local baseSafeCF = nil
-    local wasAnchoredBeforeBoss = false
+    local lastTick = tick()
 
     while true do
-        task.wait(0.35)
-        if not Config.AutoEvadeBosses then
-            State.ActiveBossCount = 0
-            if State.IsEvadingBoss then
-                State.IsEvadingBoss = false
-                baseSafePos = nil
-            end
-            continue
-        end
+        local now = tick()
+        local dt = now - lastTick
+        lastTick = now
+        task.wait(0.12)
 
         local char = lp.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
-        if not root or State.IsDodgingBloater or State.IsDashingCarrot then continue end
+        if not root or State.IsDodgingThreat or State.IsDashingCarrot or State.IsWalkingToTarget then
+            continue
+        end
 
-        local myPos = root.Position
+        -- Solo actuar cuando ya estamos posicionados bajo la roca con Fly activo
+        local bp = root:FindFirstChild("DescentBP")
+        local rock = State.AnchorRockPart or State.SelectedPart
+        if not bp or not rock or not rock.Parent then
+            State.ActiveBossCount = 0
+            continue
+        end
+
+        -- Escanear jefes cercanos (Experiment, Cyborg, Tyrant, etc.)
         local folder = workspace:FindFirstChild("Characters") or workspace
         local activeBosses = {}
         local avgBossPos = Vector3.zero
@@ -971,7 +1026,7 @@ task.spawn(function()
                 local eRoot = ent:FindFirstChild("HumanoidRootPart") or ent.PrimaryPart
                 if eHum and eHum.Health > 0 and ent:GetAttribute("Dead") ~= true and eRoot then
                     if isBossEntity(ent, eHum) then
-                        local dist = (eRoot.Position - myPos).Magnitude
+                        local dist = (eRoot.Position - root.Position).Magnitude
                         if dist <= Config.BossScanRadius then
                             table.insert(activeBosses, eRoot.Position)
                             avgBossPos = avgBossPos + eRoot.Position
@@ -982,73 +1037,66 @@ task.spawn(function()
         end
 
         State.ActiveBossCount = #activeBosses
+        local bossesPresent = (Config.AutoEvadeBosses and #activeBosses > 0)
 
-        if #activeBosses > 0 then
-            avgBossPos = avgBossPos / #activeBosses
-
-            if not State.IsEvadingBoss then
-                State.IsEvadingBoss = true
-                local existingBP = root:FindFirstChild("DescentBP")
-                baseSafePos = existingBP and existingBP.Position or root.Position
-                baseSafeCF = root.CFrame
-                wasAnchoredBeforeBoss = root.Anchored
+        -- Si no está activa la órbita ni hay jefes que esquivar, mantener posición base
+        if not Config.AutoRockOrbit and not bossesPresent then
+            if State.IsEvadingBoss then
+                State.IsEvadingBoss = false
+                State.IsNoclip = false
+                setCharacterCollide(true)
             end
-
-            State.IsNoclip = true
-            setCharacterCollide(false)
-            root.Anchored = false
-            root.AssemblyLinearVelocity = Vector3.zero
-
-            orbitAngle = orbitAngle + 0.65
-            local awayHoriz = Vector3.new(baseSafePos.X - avgBossPos.X, 0, baseSafePos.Z - avgBossPos.Z)
-            local awayDir = (awayHoriz.Magnitude > 0.2) and awayHoriz.Unit or Vector3.new(1, 0, 0)
-            local perpDir = Vector3.new(-awayDir.Z, 0, awayDir.X)
-
-            local sideWave = math.sin(orbitAngle) * Config.BossOrbitRadius
-            local backOffset = awayDir * (Config.BossOrbitRadius * 0.6)
-            local targetBossDodge = baseSafePos + backOffset + (perpDir * sideWave) - Vector3.new(0, Config.BossExtraDepth, 0)
-
-            local bp = root:FindFirstChild("DescentBP") or root:FindFirstChild("TempBossBP")
-            if not bp then
-                bp = Instance.new("BodyPosition")
-                bp.Name = "TempBossBP"
-                bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-                bp.P = 40000
-                bp.D = 900
-                bp.Parent = root
-            end
-            bp.Position = targetBossDodge
-
-            if StatusDisplayCallback then
-                StatusDisplayCallback(string.format("👹 %d Jefe(s) activos: Esquive orbital (-%dm)...", #activeBosses, Config.BossExtraDepth))
-            end
-
-        elseif State.IsEvadingBoss then
-            State.IsEvadingBoss = false
-            if root and root.Parent and baseSafePos and Config.AutoEvadeBosses then
-                local existingBP = root:FindFirstChild("DescentBP")
-                local tempBossBP = root:FindFirstChild("TempBossBP")
-                if existingBP then
-                    existingBP.Position = baseSafePos
-                    task.wait(0.35)
-                else
-                    if tempBossBP then tempBossBP:Destroy() end
-                    root.CFrame = baseSafeCF
-                    root.Anchored = wasAnchoredBeforeBoss
-                end
-            end
-            State.IsNoclip = false
-            setCharacterCollide(true)
-            baseSafePos = nil
-
-            if StatusDisplayCallback then
-                StatusDisplayCallback("✅ Jefes eliminados: Noclip OFF y de vuelta en refugio.")
-            end
+            continue
         end
+
+        -- Calcular radio de órbita ajustado al tamaño real de la roca
+        local rockHalfX = rock.Size.X * 0.5
+        local rockHalfZ = rock.Size.Z * 0.5
+        local orbitRadX = math.max(3.5, rockHalfX * Config.OrbitRadiusRatio)
+        local orbitRadZ = math.max(3.5, rockHalfZ * Config.OrbitRadiusRatio)
+
+        -- Avanzar ángulo lentamente según la velocidad configurada (acelera un 40% si hay jefes)
+        local speedMult = bossesPresent and 1.4 or 1.0
+        orbitAngle = (orbitAngle + (Config.OrbitAngularSpeed * speedMult * dt)) % (math.pi * 2)
+
+        local centerX = rock.Position.X
+        local centerZ = rock.Position.Z
+
+        -- Si hay jefes grandes, desplazar el centro de giro hacia el lado contrario de los jefes
+        local extraSink = 0
+        if bossesPresent then
+            State.IsEvadingBoss = true
+            avgBossPos = avgBossPos / #activeBosses
+            local awayHoriz = Vector3.new(rock.Position.X - avgBossPos.X, 0, rock.Position.Z - avgBossPos.Z)
+            local awayDir = (awayHoriz.Magnitude > 0.2) and awayHoriz.Unit or Vector3.new(1, 0, 0)
+
+            -- Empujar hacia el borde opuesto dentro de la roca y hundirse más
+            centerX = rock.Position.X + (awayDir.X * math.min(rockHalfX * 0.45, 14))
+            centerZ = rock.Position.Z + (awayDir.Z * math.min(rockHalfZ * 0.45, 14))
+            extraSink = Config.BossExtraDepth
+        else
+            State.IsEvadingBoss = false
+        end
+
+        local targetX = centerX + math.cos(orbitAngle) * orbitRadX
+        local targetZ = centerZ + math.sin(orbitAngle) * orbitRadZ
+
+        -- Seguir la curva real de la piel inferior de la roca en cada punto (targetX, targetZ)
+        local skinPos = getExactUndersideSkinPoint(rock, Vector3.new(targetX, rock.Position.Y, targetZ))
+        local targetY = skinPos.Y - Config.SkinOffset - extraSink
+
+        -- Mantener Noclip activo mientras rodea la malla inferior de la roca para no atorarse
+        State.IsNoclip = true
+        setCharacterCollide(false)
+        bp.Position = Vector3.new(targetX, targetY, targetZ)
+        State.BaseAnchorPos = bp.Position
     end
 end)
 
--- C. LECTOR DIRECTO DE ETERNALNIGHTTIME / TOPUI.DAYCOUNTER ("Survived: 12:00")
+-- ==============================================================================
+-- 7. LECTOR DIRECTO DE ETERNALNIGHTTIME / TOPUI.DAYCOUNTER ("Survived: 12:00")
+-- ==============================================================================
+
 local function getSurvivalTimeSecondsAndLabel()
     local attrSec = workspace:GetAttribute("EternalNightTime")
     local pg = lp:FindFirstChild("PlayerGui")
@@ -1129,7 +1177,10 @@ task.spawn(function()
     end
 end)
 
--- D. CARRERA RÁPIDA POR ZANAHORIAS (<20% SACIEDAD + <5 ZOMBIES EN 35 STUDS)
+-- ==============================================================================
+-- 8. CARRERA RÁPIDA POR ZANAHORIAS (<20% SACIEDAD + <5 ZOMBIES EN 35 STUDS)
+-- ==============================================================================
+
 local function findNearestCarrot(maxDist)
     local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     if not root then return nil end
@@ -1159,7 +1210,7 @@ end
 task.spawn(function()
     while true do
         task.wait(0.8)
-        if not Config.AutoCarrotDash or State.IsDashingCarrot or State.IsDodgingBloater or State.IsEvadingBoss then
+        if not Config.AutoCarrotDash or State.IsDashingCarrot or State.IsDodgingThreat or State.IsEvadingBoss then
             continue
         end
 
@@ -1184,8 +1235,8 @@ task.spawn(function()
         local item, part = findNearestCarrot(Config.CarrotMaxDist)
         if not item or not part then continue end
 
-        local myCancelId = State.EmergencyCancelId
         State.IsDashingCarrot = true
+        local savedRock = State.AnchorRockPart
         local savedCF = root.CFrame
         local wasAnchored = root.Anchored
         local hadBP = root:FindFirstChild("DescentBP") ~= nil
@@ -1196,7 +1247,7 @@ task.spawn(function()
         end
 
         ascendAndReleaseAll(nil)
-        myCancelId = State.EmergencyCancelId
+        local myCancelId = State.EmergencyCancelId
         task.wait(0.1)
 
         local origSpeed = hum.WalkSpeed
@@ -1292,6 +1343,8 @@ task.spawn(function()
             while State.EmergencyCancelId == myCancelId and tick() < retTimeout and (root.Position - savedBPPos).Magnitude > 1.5 do
                 RunService.Heartbeat:Wait()
             end
+            State.AnchorRockPart = savedRock
+            State.BaseAnchorPos = savedBPPos
         else
             root.CFrame = savedCF
             root.Anchored = wasAnchored
@@ -1314,7 +1367,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 6. CLASIFICADOR Y RANKING DE PROFUNDIDAD
+-- 9. CLASIFICADOR Y RANKING DE PROFUNDIDAD
 -- ==============================================================================
 
 local function scanAndRankTerrain(keyword)
@@ -1360,15 +1413,15 @@ local function scanAndRankTerrain(keyword)
 end
 
 -- ==============================================================================
--- 7. INTERFAZ GRÁFICA FLOTANTE NATIVA (3 PESTAÑAS)
+-- 10. INTERFAZ GRÁFICA FLOTANTE NATIVA (3 PESTAÑAS)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV109")
+local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV110")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TerrainInspectorGuiV109"
+ScreenGui.Name = "TerrainInspectorGuiV110"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -1376,7 +1429,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(25, 120, 110)
-FloatBtn.Text = "🔍\nV10.9"
+FloatBtn.Text = "🔍\nV11.0"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -1398,7 +1451,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V10.9 | AUTO-REACTIVAR DEFENSAS"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V11.0 | ANTI-SPITTER & ÓRBITA ROCA"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -1451,7 +1504,7 @@ ConfigPage.Size = UDim2.new(1, 0, 1, -74)
 ConfigPage.Position = UDim2.new(0, 0, 0, 74)
 ConfigPage.BackgroundTransparency = 1
 ConfigPage.BorderSizePixel = 0
-ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 870)
+ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 960)
 ConfigPage.ScrollBarThickness = 5
 ConfigPage.Visible = false
 ConfigPage.Parent = MainFrame
@@ -1484,7 +1537,7 @@ TabConfigBtn.MouseButton1Click:Connect(function() switchTab(TabConfigBtn, Config
 TabCoordsBtn.MouseButton1Click:Connect(function() switchTab(TabCoordsBtn, CoordsPage) end)
 
 -- ==============================================================================
--- 8. PESTAÑA 1: EXPLORADOR
+-- 11. PESTAÑA 1: EXPLORADOR
 -- ==============================================================================
 
 local InfoCard = Instance.new("Frame")
@@ -1498,7 +1551,7 @@ local InfoTitle = Instance.new("TextLabel")
 InfoTitle.Size = UDim2.new(1, -12, 0, 20)
 InfoTitle.Position = UDim2.new(0, 6, 0, 4)
 InfoTitle.BackgroundTransparency = 1
-InfoTitle.Text = "📌 Survived: 12:00 | Jefes: 0 | Bloater: ON"
+InfoTitle.Text = "📌 Survived: 12:00 | Jefes: 0 | Spitter/Bloater: ON"
 InfoTitle.TextColor3 = Color3.fromRGB(90, 190, 255)
 InfoTitle.TextSize = 10
 InfoTitle.Font = Enum.Font.GothamBold
@@ -1510,11 +1563,10 @@ task.spawn(function()
         task.wait(1.0)
         if not State.SelectedPart then
             InfoTitle.Text = string.format(
-                "📌 Survived: [%s] | Jefes: %d (%s) | Bloater: %s",
+                "📌 Survived: [%s] | Jefes: %d | Órbita: %s",
                 State.DetectedHudTime,
                 State.ActiveBossCount,
-                Config.AutoEvadeBosses and "ON" or "OFF",
-                Config.AutoEvadeBloaters and "ON" or "OFF"
+                Config.AutoRockOrbit and "ON" or "OFF"
             )
         end
     end
@@ -1524,7 +1576,7 @@ local InfoDetails = Instance.new("TextLabel")
 InfoDetails.Size = UDim2.new(1, -12, 0, 46)
 InfoDetails.Position = UDim2.new(0, 6, 0, 25)
 InfoDetails.BackgroundTransparency = 1
-InfoDetails.Text = "Usa '⬇️ BAJAR AQUÍ' para bajar y reactivar defensas, o '🛑 SOLTAR FLY/TODO' para detener todo."
+InfoDetails.Text = "Rodea la piel inferior de la roca esquivando Jefes, Spitter, Hazmat y Bloaters."
 InfoDetails.TextColor3 = Color3.fromRGB(200, 200, 200)
 InfoDetails.TextSize = 9
 InfoDetails.Font = Enum.Font.Code
@@ -1640,7 +1692,7 @@ UIListLayout.Padding = UDim.new(0, 4)
 UIListLayout.Parent = ScrollFrame
 
 -- ==============================================================================
--- 9. PESTAÑA 2: PANEL DE CONFIGURACIÓN (CON SCROLL)
+-- 12. PESTAÑA 2: PANEL DE CONFIGURACIÓN (CON SCROLL)
 -- ==============================================================================
 
 local function createToggleBtn(yPos, text, color, onClick)
@@ -1664,25 +1716,32 @@ UIRefs.BloaterBtn = createToggleBtn(6, "💣 ANTI-BLOATER DIAGONAL (SI DESAPAREC
     btn.Text = Config.AutoEvadeBloaters and "💣 ANTI-BLOATER DIAGONAL (SI DESAPARECE 1): ON" or "💣 ANTI-BLOATER: OFF"
 end)
 
-UIRefs.BossBtn = createToggleBtn(46, "👹 ANTI-JEFES ORBITAL (EXPERIMENT/CYBORG/TYRANT): ON", Color3.fromRGB(165, 45, 65), function(btn)
-    Config.AutoEvadeBosses = not Config.AutoEvadeBosses
-    btn.BackgroundColor3 = Config.AutoEvadeBosses and Color3.fromRGB(165, 45, 65) or Color3.fromRGB(65, 70, 85)
-    btn.Text = Config.AutoEvadeBosses and "👹 ANTI-JEFES ORBITAL (EXPERIMENT/CYBORG/TYRANT): ON" or "👹 ANTI-JEFES ORBITAL: OFF"
+UIRefs.ToxicBtn = createToggleBtn(46, "☣️ ANTI-SPITTER / HAZMAT (DIAGONAL): ON", Color3.fromRGB(40, 155, 115), function(btn)
+    Config.AutoEvadeToxic = not Config.AutoEvadeToxic
+    btn.BackgroundColor3 = Config.AutoEvadeToxic and Color3.fromRGB(40, 155, 115) or Color3.fromRGB(65, 70, 85)
+    btn.Text = Config.AutoEvadeToxic and "☣️ ANTI-SPITTER / HAZMAT (DIAGONAL): ON" or "☣️ ANTI-SPITTER / HAZMAT: OFF"
 end)
 
-UIRefs.Power5Btn = createToggleBtn(86, "⏱️ PODER 5 SI RELOJ SURVIVED SE DETIENE (30s): ON", Color3.fromRGB(115, 55, 175), function(btn)
+UIRefs.OrbitBtn = createToggleBtn(86, "🔄 RODEAR BAJO PIEL DE ROCA + JEFES: ON", Color3.fromRGB(0, 135, 195), function(btn)
+    Config.AutoRockOrbit = not Config.AutoRockOrbit
+    Config.AutoEvadeBosses = Config.AutoRockOrbit
+    btn.BackgroundColor3 = Config.AutoRockOrbit and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
+    btn.Text = Config.AutoRockOrbit and "🔄 RODEAR BAJO PIEL DE ROCA + JEFES: ON" or "🔄 RODEAR BAJO PIEL DE ROCA + JEFES: OFF"
+end)
+
+UIRefs.Power5Btn = createToggleBtn(126, "⏱️ PODER 5 SI RELOJ SURVIVED SE DETIENE (30s): ON", Color3.fromRGB(115, 55, 175), function(btn)
     Config.AutoPower5OnTimeStop = not Config.AutoPower5OnTimeStop
     btn.BackgroundColor3 = Config.AutoPower5OnTimeStop and Color3.fromRGB(115, 55, 175) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.AutoPower5OnTimeStop and "⏱️ PODER 5 SI RELOJ SURVIVED SE DETIENE (30s): ON" or "⏱️ PODER 5 EN RELOJ SURVIVED: OFF"
 end)
 
-UIRefs.CarrotBtn = createToggleBtn(126, "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF", Color3.fromRGB(65, 70, 85), function(btn)
+UIRefs.CarrotBtn = createToggleBtn(166, "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF", Color3.fromRGB(65, 70, 85), function(btn)
     Config.AutoCarrotDash = not Config.AutoCarrotDash
     btn.BackgroundColor3 = Config.AutoCarrotDash and Color3.fromRGB(210, 120, 20) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.AutoCarrotDash and "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): ON" or "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF"
 end)
 
-UIRefs.AnchorBtn = createToggleBtn(166, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA 2): OFF", Color3.fromRGB(45, 85, 155), function(btn)
+UIRefs.AnchorBtn = createToggleBtn(206, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA 2): OFF", Color3.fromRGB(45, 85, 155), function(btn)
     local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     if root then
         if not root.Anchored then
@@ -1700,13 +1759,13 @@ UIRefs.AnchorBtn = createToggleBtn(166, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA
     end
 end)
 
-createToggleBtn(206, "🧲 RETENER CON BODYPOSITION AL BAJAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
+createToggleBtn(246, "🧲 RETENER CON BODYPOSITION AL BAJAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
     Config.LockPositionBP = not Config.LockPositionBP
     btn.BackgroundColor3 = Config.LockPositionBP and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.LockPositionBP and "🧲 RETENER CON BODYPOSITION AL BAJAR: ON" or "🔓 LIBRE AL BAJAR (ANCLA SIN JALAR DE VUELTA): OFF"
 end)
 
-createToggleBtn(246, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.fromRGB(115, 55, 175), function(btn)
+createToggleBtn(286, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.fromRGB(115, 55, 175), function(btn)
     if Config.Mode == "UnderSkin" then
         Config.Mode = "Bunker"
         btn.BackgroundColor3 = Color3.fromRGB(35, 130, 95)
@@ -1718,13 +1777,13 @@ createToggleBtn(246, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.
     end
 end)
 
-createToggleBtn(286, "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
+createToggleBtn(326, "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
     Config.KeepFly = not Config.KeepFly
     btn.BackgroundColor3 = Config.KeepFly and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.KeepFly and "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON" or "🛑 APAGAR FLY AUTOMÁTICAMENTE AL LLEGAR: OFF"
 end)
 
-createToggleBtn(326, "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)", Color3.fromRGB(30, 145, 80), function(btn)
+createToggleBtn(366, "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)", Color3.fromRGB(30, 145, 80), function(btn)
     Config.GoToDeepestEdge = not Config.GoToDeepestEdge
     btn.BackgroundColor3 = Config.GoToDeepestEdge and Color3.fromRGB(190, 115, 20) or Color3.fromRGB(30, 145, 80)
     btn.Text = Config.GoToDeepestEdge and "📐 TRAYECTORIA: ESQUINA PROFUNDA (DIAGONAL)" or "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)"
@@ -1775,62 +1834,75 @@ local function createStepperControl(parent, yPos, titleText, getValText, onMinus
     plusBtn.MouseButton1Click:Connect(function() onPlus(); lbl.Text = titleText .. "\n" .. getValText() end)
 end
 
-createStepperControl(ConfigPage, 368, "👹 BAJADA EXTRA ANTI-JEFES (STUDS)",
-    function() return string.format("Actual: -%d studs / Órbita: %dm", Config.BossExtraDepth, Config.BossOrbitRadius) end,
+-- Velocidad configurable para dar vueltas alrededor de la piel baja de la roca
+createStepperControl(ConfigPage, 408, "🐢 VELOCIDAD ÓRBITA EN ROCA",
+    function() return string.format("Actual: %.2f rad/s (Giro medio lento)", Config.OrbitAngularSpeed) end,
+    function() Config.OrbitAngularSpeed = math.max(0.10, Config.OrbitAngularSpeed - 0.10) end,
+    function() Config.OrbitAngularSpeed = math.min(2.50, Config.OrbitAngularSpeed + 0.10) end
+)
+
+createStepperControl(ConfigPage, 458, "👹 BAJADA EXTRA ANTI-JEFES (STUDS)",
+    function() return string.format("Actual: -%d studs al lado opuesto", Config.BossExtraDepth) end,
     function() Config.BossExtraDepth = math.max(4, Config.BossExtraDepth - 2) end,
     function() Config.BossExtraDepth = math.min(30, Config.BossExtraDepth + 2) end
 )
 
-createStepperControl(ConfigPage, 418, "💓 VIDA MÍNIMA DETECCIÓN JEFES (HP)",
+createStepperControl(ConfigPage, 508, "💓 VIDA MÍNIMA DETECCIÓN JEFES (HP)",
     function() return string.format("Actual: >= %d MaxHealth", Config.BossMinMaxHP) end,
     function() Config.BossMinMaxHP = math.max(1500, Config.BossMinMaxHP - 500) end,
     function() Config.BossMinMaxHP = math.min(20000, Config.BossMinMaxHP + 500) end
 )
 
-createStepperControl(ConfigPage, 468, "⏳ RETARDO ANTES DE IRSE (BLOATER)",
+createStepperControl(ConfigPage, 558, "⏳ RETARDO ANTES DE IRSE (BLOATER)",
     function() return string.format("Actual: %.1f seg antes de esquivar", Config.BloaterPreDelay) end,
     function() Config.BloaterPreDelay = math.max(0.0, Config.BloaterPreDelay - 0.1) end,
     function() Config.BloaterPreDelay = math.min(2.0, Config.BloaterPreDelay + 0.1) end
 )
 
-createStepperControl(ConfigPage, 518, "⏱️ TIEMPO RESGUARDO BLOATER (SEG)",
+createStepperControl(ConfigPage, 608, "⏱️ TIEMPO RESGUARDO BLOATER (SEG)",
     function() return string.format("Actual: %.1f segundos antes de volver", Config.BloaterHoldDown) end,
     function() Config.BloaterHoldDown = math.max(1.0, Config.BloaterHoldDown - 0.5) end,
     function() Config.BloaterHoldDown = math.min(10.0, Config.BloaterHoldDown + 0.5) end
 )
 
-createStepperControl(ConfigPage, 568, "↗️ DIAGONAL OPUESTA BLOATER (STUDS)",
+createStepperControl(ConfigPage, 658, "↗️ DIAGONAL OPUESTA BLOATER/SPITTER",
     function() return string.format("Actual: %d studs lado / -%d studs abajo", Config.BloaterSideStuds, Config.BloaterDropStuds) end,
-    function() Config.BloaterSideStuds = math.max(6, Config.BloaterSideStuds - 2) end,
-    function() Config.BloaterSideStuds = math.min(35, Config.BloaterSideStuds + 2) end
+    function()
+        Config.BloaterSideStuds = math.max(6, Config.BloaterSideStuds - 2)
+        Config.ToxicSideStuds = Config.BloaterSideStuds + 2
+    end,
+    function()
+        Config.BloaterSideStuds = math.min(35, Config.BloaterSideStuds + 2)
+        Config.ToxicSideStuds = Config.BloaterSideStuds + 2
+    end
 )
 
-createStepperControl(ConfigPage, 618, "🎯 AJUSTE BAJO PIEL INFERIOR",
+createStepperControl(ConfigPage, 708, "🎯 AJUSTE BAJO PIEL INFERIOR",
     function() return string.format("Actual: -%.1f studs", Config.SkinOffset) end,
     function() Config.SkinOffset = math.max(0.0, Config.SkinOffset - 0.2) end,
     function() Config.SkinOffset = math.min(6.0, Config.SkinOffset + 0.2) end
 )
 
-createStepperControl(ConfigPage, 668, "✈️ VELOCIDAD DE VUELO (FLY)",
+createStepperControl(ConfigPage, 758, "✈️ VELOCIDAD DE VUELO (FLY)",
     function() return string.format("Actual: %d studs/s", Config.FlySpeed) end,
     function() Config.FlySpeed = math.max(20, Config.FlySpeed - 10) end,
     function() Config.FlySpeed = math.min(250, Config.FlySpeed + 10) end
 )
 
-createStepperControl(ConfigPage, 718, "🚶 VELOCIDAD AL CAMINAR",
+createStepperControl(ConfigPage, 808, "🚶 VELOCIDAD AL CAMINAR",
     function() return string.format("Actual: %d WalkSpeed", Config.WalkSpeed) end,
     function() Config.WalkSpeed = math.max(16, Config.WalkSpeed - 4) end,
     function() Config.WalkSpeed = math.min(80, Config.WalkSpeed + 4) end
 )
 
-createToggleBtn(768, "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON", Color3.fromRGB(0, 130, 110), function(btn)
+createToggleBtn(858, "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON", Color3.fromRGB(0, 130, 110), function(btn)
     Config.WalkFirst = not Config.WalkFirst
     btn.BackgroundColor3 = Config.WalkFirst and Color3.fromRGB(0, 130, 110) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.WalkFirst and "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON" or "✈️ VOLAR DIRECTO SIN CAMINAR: OFF"
 end)
 
 -- ==============================================================================
--- 10. PESTAÑA 3: COORDENADAS EN TIEMPO REAL
+-- 13. PESTAÑA 3: COORDENADAS EN TIEMPO REAL
 -- ==============================================================================
 
 local CoordCard = Instance.new("Frame")
@@ -1899,7 +1971,7 @@ CopyVecBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 11. RENDERIZADO DE LISTA Y EVENTOS
+-- 14. RENDERIZADO DE LISTA Y EVENTOS
 -- ==============================================================================
 
 local RowButtons = {}
@@ -2000,7 +2072,7 @@ end)
 
 StopFlyBtn.MouseButton1Click:Connect(function()
     fullEmergencyResetAll()
-    InfoDetails.Text = "🛑 TODO DETENIDO Y RESTAURADO (Fly, Noclip, Bloater, Jefes y Auto-rutinas en OFF)."
+    InfoDetails.Text = "🛑 TODO DETENIDO Y RESTAURADO (Fly, Noclip, Bloater, Spitter, Órbita y Jefes en OFF)."
 end)
 
 FilterBtn.MouseButton1Click:Connect(function()
