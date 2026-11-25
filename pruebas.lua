@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V11.2 (PARAR TODO + ÓRBITA VARIANTES + BLOATER 4s)
+-- EXPLORADOR FORENSE DE TERRENO V11.3 (TOP 5 CERCANAS + 4 PESTAÑAS + UI PRO)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -25,9 +25,9 @@ local Config = {
     AutoEvadeBloaters = true,
     BloaterThreshold = 1,
     BloaterPreDelay = 0.0,
-    BloaterSideStuds = 16,      -- Distancia restaurada (16 studs lado)
-    BloaterDropStuds = 14,      -- Distancia restaurada (14 studs abajo)
-    BloaterHoldDown = 4.0,      -- +1 segundo extra (4.0s en total)
+    BloaterSideStuds = 16,
+    BloaterDropStuds = 14,
+    BloaterHoldDown = 4.0,
     BloaterScanRadius = 55,
 
     -- Repulsión Diagonal a Variantes (Independiente de Bloaters, desactivable)
@@ -514,7 +514,6 @@ local function stopFlyAndNoclipImmediate()
     end
 end
 
--- Reactiva automáticamente Bloaters, Variantes, Órbita y Poder 5 al pulsar BAJAR
 local function reactivateDefaultProtections()
     Config.AutoEvadeBloaters = true
     Config.AutoEvadeToxic = true
@@ -535,7 +534,6 @@ local function reactivateDefaultProtections()
     end
 end
 
--- PARAR TODO: Detiene vuelo, noclip, Bloater, Variantes, Órbita, Zanahorias y Poder 5
 local function fullEmergencyResetAll()
     stopFlyAndNoclipImmediate()
     restoreGhostRocks()
@@ -566,11 +564,11 @@ local function fullEmergencyResetAll()
     end
     if UIRefs.AnchorBtn then
         UIRefs.AnchorBtn.BackgroundColor3 = Color3.fromRGB(45, 85, 155)
-        UIRefs.AnchorBtn.Text = "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA 2): OFF"
+        UIRefs.AnchorBtn.Text = "⚓ ANCLAR POSICIÓN AFK: OFF"
     end
     if UIRefs.ClickBtn then
         UIRefs.ClickBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 50)
-        UIRefs.ClickBtn.Text = "🎯 CLICK: OFF"
+        UIRefs.ClickBtn.Text = "🎯 CLICK INSPECCIONAR: OFF"
     end
 end
 
@@ -931,7 +929,6 @@ task.spawn(function()
                     local isAlive = (eHum.Health > 0) and (ent:GetAttribute("Dead") ~= true)
                     local dist = (eRoot.Position - myPos).Magnitude
 
-                    -- 1. Bloaters (siempre activos salvo que se pulse PARAR TODO)
                     if Config.AutoEvadeBloaters and isAnyBloater(ent.Name) then
                         if dist <= Config.BloaterScanRadius and isAlive then
                             currentAliveBloaters[ent] = { Pos = eRoot.Position, Name = ent.Name }
@@ -939,7 +936,6 @@ task.spawn(function()
                         end
                     end
 
-                    -- 2. Variantes Spitter/Hazmat/Splitter (controladas por su propio botón)
                     if Config.AutoEvadeToxic and isAlive and isDangerousToxicVariant(ent.Name) then
                         if dist <= Config.ToxicScanRadius and now >= toxicCooldownUntil then
                             toxicSumPos = toxicSumPos + eRoot.Position
@@ -992,13 +988,13 @@ end)
 local function isBossOrVariant(ent, hum)
     local n = ent.Name:lower()
     if n:find("experiment") or n:find("cyborg") or n:find("tyrant") or n:find("boss") or n:find("titan") or n:find("juggernaut") then
-        return true, true -- es especial, es jefe gigante
+        return true, true
     end
     if hum and hum.MaxHealth >= Config.BossMinMaxHP then
         return true, true
     end
     if isDangerousToxicVariant(ent.Name) or isAnyBloater(ent.Name) then
-        return true, false -- es especial (variante), no gigante
+        return true, false
     end
     return false, false
 end
@@ -1053,7 +1049,6 @@ task.spawn(function()
 
         State.ActiveSpecialCount = #activeSpecials
 
-        -- Si el usuario desactivó la órbita con su botón, detener el giro y quedarse fijo
         if not Config.AutoRockOrbit then
             if State.IsOrbitingThreat then
                 State.IsOrbitingThreat = false
@@ -1063,7 +1058,6 @@ task.spawn(function()
             continue
         end
 
-        -- La órbita actúa cuando hay al menos 1 jefe o variante en el rango
         if #activeSpecials == 0 then
             if State.IsOrbitingThreat then
                 State.IsOrbitingThreat = false
@@ -1090,7 +1084,6 @@ task.spawn(function()
         local awayHoriz = Vector3.new(rock.Position.X - avgThreatPos.X, 0, rock.Position.Z - avgThreatPos.Z)
         local awayDir = (awayHoriz.Magnitude > 0.2) and awayHoriz.Unit or Vector3.new(1, 0, 0)
 
-        -- Desplazar el centro de giro hacia el lado contrario de los jefes y variantes
         local centerX = rock.Position.X + (awayDir.X * math.min(rockHalfX * 0.42, 13))
         local centerZ = rock.Position.Z + (awayDir.Z * math.min(rockHalfZ * 0.42, 13))
         local extraSink = hasGiantBoss and Config.BossExtraDepth or 2
@@ -1382,27 +1375,26 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 9. CLASIFICADOR Y RANKING DE PROFUNDIDAD
+-- 9. ESCÁNER INICIAL (MANTIENE RESPLANDOR) + ORDENAMIENTO POR CERCANÍA (0% LAG)
 -- ==============================================================================
 
-local function scanAndRankTerrain(keyword)
+local function scanInitialTerrainWithHighlights()
     clearAllHighlights()
     State.FilteredObjects = {}
     local baseCenter = Vector3.new(0, 0, 0)
-    keyword = (keyword or ""):lower()
 
     for _, desc in ipairs(workspace:GetDescendants()) do
         if desc:IsA("BasePart") then
             local pos = desc.Position
             local dist = (pos - baseCenter).Magnitude
             if dist <= 350 then
-                local nLower = desc.Name:lower()
                 local isCharacterPart = lp.Character and desc:IsDescendantOf(lp.Character)
-                if not isCharacterPart and (keyword == "" or nLower:find(keyword, 1, true)) then
+                if not isCharacterPart then
                     local bottomY = getPartBottomDepth(desc)
                     table.insert(State.FilteredObjects, {
                         Part = desc, Name = desc.Name, Class = desc.ClassName,
-                        Pos = pos, Size = desc.Size, BottomY = bottomY, CenterY = pos.Y
+                        Pos = pos, Size = desc.Size, BottomY = bottomY, CenterY = pos.Y,
+                        DistToPlayer = 999
                     })
                 end
             end
@@ -1411,6 +1403,7 @@ local function scanAndRankTerrain(keyword)
 
     table.sort(State.FilteredObjects, function(a, b) return a.BottomY < b.BottomY end)
 
+    -- Mantener el resplandor amarillo inicial en los primeros 40 objetos
     for i = 1, math.min(40, #State.FilteredObjects) do
         local obj = State.FilteredObjects[i]
         local hl = Instance.new("Highlight")
@@ -1427,16 +1420,43 @@ local function scanAndRankTerrain(keyword)
     end
 end
 
+-- Ordena por cercanía al jugador sin recorrer todo workspace (0% lag)
+local function sortObjectsByProximityFast()
+    if #State.FilteredObjects == 0 then
+        scanInitialTerrainWithHighlights()
+    end
+
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    local myPos = root and root.Position or Vector3.new(0, 0, 0)
+
+    -- Filtrar piezas eliminadas y calcular distancia al jugador
+    local validList = {}
+    for _, obj in ipairs(State.FilteredObjects) do
+        if obj.Part and obj.Part.Parent then
+            local pPos = obj.Part.Position
+            obj.Pos = pPos
+            obj.CenterY = pPos.Y
+            obj.DistToPlayer = (pPos - myPos).Magnitude
+            table.insert(validList, obj)
+        end
+    end
+    State.FilteredObjects = validList
+
+    table.sort(State.FilteredObjects, function(a, b)
+        return a.DistToPlayer < b.DistToPlayer
+    end)
+end
+
 -- ==============================================================================
--- 10. INTERFAZ GRÁFICA FLOTANTE NATIVA (3 PESTAÑAS)
+-- 10. INTERFAZ GRÁFICA FLOTANTE NATIVA (4 PESTAÑAS REORGANIZADAS)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV112")
+local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV113")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TerrainInspectorGuiV112"
+ScreenGui.Name = "TerrainInspectorGuiV113"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -1444,7 +1464,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(25, 120, 110)
-FloatBtn.Text = "🔍\nV11.2"
+FloatBtn.Text = "🔍\nV11.3"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -1454,8 +1474,8 @@ FloatBtn.Parent = ScreenGui
 Instance.new("UICorner", FloatBtn).CornerRadius = UDim.new(1, 0)
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 535, 0, 520)
-MainFrame.Position = UDim2.new(0.5, -267, 0.5, -260)
+MainFrame.Size = UDim2.new(0, 545, 0, 520)
+MainFrame.Position = UDim2.new(0.5, -272, 0.5, -260)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 18, 24)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -1466,7 +1486,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V11.2 | PARAR TODO & ÓRBITA PRO"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V11.3 | TOP 5 CERCANAS & CONTROL"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -1474,35 +1494,47 @@ TitleBar.TextXAlignment = Enum.TextXAlignment.Left
 TitleBar.Parent = MainFrame
 Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
+-- Barra de 4 Pestañas
 local TabExplorerBtn = Instance.new("TextButton")
-TabExplorerBtn.Size = UDim2.new(0.34, -8, 0, 28)
+TabExplorerBtn.Size = UDim2.new(0.25, -7, 0, 28)
 TabExplorerBtn.Position = UDim2.new(0, 10, 0, 40)
 TabExplorerBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
 TabExplorerBtn.Text = "📊 EXPLORADOR"
 TabExplorerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-TabExplorerBtn.TextSize = 10
+TabExplorerBtn.TextSize = 9
 TabExplorerBtn.Font = Enum.Font.GothamBold
 TabExplorerBtn.Parent = MainFrame
 Instance.new("UICorner", TabExplorerBtn).CornerRadius = UDim.new(0, 6)
 
+local TabFullListBtn = Instance.new("TextButton")
+TabFullListBtn.Size = UDim2.new(0.25, -7, 0, 28)
+TabFullListBtn.Position = UDim2.new(0.25, 5, 0, 40)
+TabFullListBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
+TabFullListBtn.Text = "📋 LISTA COMPLETA"
+TabFullListBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+TabFullListBtn.TextSize = 9
+TabFullListBtn.Font = Enum.Font.GothamBold
+TabFullListBtn.Parent = MainFrame
+Instance.new("UICorner", TabFullListBtn).CornerRadius = UDim.new(0, 6)
+
 local TabConfigBtn = Instance.new("TextButton")
-TabConfigBtn.Size = UDim2.new(0.33, -8, 0, 28)
-TabConfigBtn.Position = UDim2.new(0.34, 4, 0, 40)
+TabConfigBtn.Size = UDim2.new(0.25, -7, 0, 28)
+TabConfigBtn.Position = UDim2.new(0.50, 2, 0, 40)
 TabConfigBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
-TabConfigBtn.Text = "⚙️ CONFIGURACIÓN"
+TabConfigBtn.Text = "⚙️ CONFIG"
 TabConfigBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-TabConfigBtn.TextSize = 10
+TabConfigBtn.TextSize = 9
 TabConfigBtn.Font = Enum.Font.GothamBold
 TabConfigBtn.Parent = MainFrame
 Instance.new("UICorner", TabConfigBtn).CornerRadius = UDim.new(0, 6)
 
 local TabCoordsBtn = Instance.new("TextButton")
-TabCoordsBtn.Size = UDim2.new(0.33, -8, 0, 28)
-TabCoordsBtn.Position = UDim2.new(0.67, 0, 0, 40)
+TabCoordsBtn.Size = UDim2.new(0.25, -7, 0, 28)
+TabCoordsBtn.Position = UDim2.new(0.75, -1, 0, 40)
 TabCoordsBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
-TabCoordsBtn.Text = "📍 COORDENADAS"
+TabCoordsBtn.Text = "📍 INSPECTOR"
 TabCoordsBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-TabCoordsBtn.TextSize = 10
+TabCoordsBtn.TextSize = 9
 TabCoordsBtn.Font = Enum.Font.GothamBold
 TabCoordsBtn.Parent = MainFrame
 Instance.new("UICorner", TabCoordsBtn).CornerRadius = UDim.new(0, 6)
@@ -1514,12 +1546,19 @@ ExplorerPage.BackgroundTransparency = 1
 ExplorerPage.Visible = true
 ExplorerPage.Parent = MainFrame
 
+local FullListPage = Instance.new("Frame")
+FullListPage.Size = UDim2.new(1, 0, 1, -74)
+FullListPage.Position = UDim2.new(0, 0, 0, 74)
+FullListPage.BackgroundTransparency = 1
+FullListPage.Visible = false
+FullListPage.Parent = MainFrame
+
 local ConfigPage = Instance.new("ScrollingFrame")
 ConfigPage.Size = UDim2.new(1, 0, 1, -74)
 ConfigPage.Position = UDim2.new(0, 0, 0, 74)
 ConfigPage.BackgroundTransparency = 1
 ConfigPage.BorderSizePixel = 0
-ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 960)
+ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 920)
 ConfigPage.ScrollBarThickness = 5
 ConfigPage.Visible = false
 ConfigPage.Parent = MainFrame
@@ -1533,10 +1572,11 @@ CoordsPage.Parent = MainFrame
 
 local function switchTab(activeBtn, activePage)
     ExplorerPage.Visible = (activePage == ExplorerPage)
+    FullListPage.Visible = (activePage == FullListPage)
     ConfigPage.Visible   = (activePage == ConfigPage)
     CoordsPage.Visible   = (activePage == CoordsPage)
 
-    for _, btn in ipairs({TabExplorerBtn, TabConfigBtn, TabCoordsBtn}) do
+    for _, btn in ipairs({TabExplorerBtn, TabFullListBtn, TabConfigBtn, TabCoordsBtn}) do
         if btn == activeBtn then
             btn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
             btn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1548,15 +1588,16 @@ local function switchTab(activeBtn, activePage)
 end
 
 TabExplorerBtn.MouseButton1Click:Connect(function() switchTab(TabExplorerBtn, ExplorerPage) end)
+TabFullListBtn.MouseButton1Click:Connect(function() switchTab(TabFullListBtn, FullListPage) end)
 TabConfigBtn.MouseButton1Click:Connect(function() switchTab(TabConfigBtn, ConfigPage) end)
 TabCoordsBtn.MouseButton1Click:Connect(function() switchTab(TabCoordsBtn, CoordsPage) end)
 
 -- ==============================================================================
--- 11. PESTAÑA 1: EXPLORADOR (CON BOTÓN GRANDE "🛑 PARAR TODO")
+-- 11. PESTAÑA 1: EXPLORADOR (BOTONES PRINCIPALES + ANCLAR AFK + TOP 5 CERCANAS)
 -- ==============================================================================
 
 local InfoCard = Instance.new("Frame")
-InfoCard.Size = UDim2.new(1, -20, 0, 72)
+InfoCard.Size = UDim2.new(1, -20, 0, 68)
 InfoCard.Position = UDim2.new(0, 10, 0, 4)
 InfoCard.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
 InfoCard.Parent = ExplorerPage
@@ -1589,8 +1630,8 @@ task.spawn(function()
 end)
 
 local InfoDetails = Instance.new("TextLabel")
-InfoDetails.Size = UDim2.new(1, -12, 0, 42)
-InfoDetails.Position = UDim2.new(0, 6, 0, 25)
+InfoDetails.Size = UDim2.new(1, -12, 0, 40)
+InfoDetails.Position = UDim2.new(0, 6, 0, 24)
 InfoDetails.BackgroundTransparency = 1
 InfoDetails.Text = "Bloater (16/14m, 4s) y Órbita de Jefes/Variantes activos. Pulsa '🛑 PARAR TODO' para detener todo."
 InfoDetails.TextColor3 = Color3.fromRGB(200, 200, 200)
@@ -1608,7 +1649,7 @@ end
 -- Fila 1: Bajar Aquí + Subir y Soltar
 local DropHereBtn = Instance.new("TextButton")
 DropHereBtn.Size = UDim2.new(0.55, -12, 0, 30)
-DropHereBtn.Position = UDim2.new(0, 10, 0, 82)
+DropHereBtn.Position = UDim2.new(0, 10, 0, 78)
 DropHereBtn.BackgroundColor3 = Color3.fromRGB(115, 55, 175)
 DropHereBtn.Text = "⬇️ BAJAR AQUÍ (PIES)"
 DropHereBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1623,7 +1664,7 @@ end)
 
 local AscendReleaseBtn = Instance.new("TextButton")
 AscendReleaseBtn.Size = UDim2.new(0.45, -12, 0, 30)
-AscendReleaseBtn.Position = UDim2.new(0.55, 2, 0, 82)
+AscendReleaseBtn.Position = UDim2.new(0.55, 2, 0, 78)
 AscendReleaseBtn.BackgroundColor3 = Color3.fromRGB(25, 145, 95)
 AscendReleaseBtn.Text = "⬆️ SUBIR Y SOLTAR TODO"
 AscendReleaseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1636,10 +1677,10 @@ AscendReleaseBtn.MouseButton1Click:Connect(function()
     task.spawn(function() ascendAndReleaseAll(StatusDisplayCallback) end)
 end)
 
--- Fila 2: Botón GRANDE y destacado de "🛑 PARAR TODO"
+-- Fila 2: Botón GRANDE de "🛑 PARAR TODO"
 local StopAllBtn = Instance.new("TextButton")
 StopAllBtn.Size = UDim2.new(1, -20, 0, 36)
-StopAllBtn.Position = UDim2.new(0, 10, 0, 118)
+StopAllBtn.Position = UDim2.new(0, 10, 0, 114)
 StopAllBtn.BackgroundColor3 = Color3.fromRGB(205, 45, 45)
 StopAllBtn.Text = "🛑 PARAR TODO (DETENER VUELO, BLOATER, ÓRBITA Y VARIANTES)"
 StopAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1648,62 +1689,85 @@ StopAllBtn.Font = Enum.Font.GothamBold
 StopAllBtn.Parent = ExplorerPage
 Instance.new("UICorner", StopAllBtn).CornerRadius = UDim.new(0, 6)
 
--- Fila 3: Click Mode + Copiar Nombre
-local ClickModeBtn = Instance.new("TextButton")
-ClickModeBtn.Size = UDim2.new(0.5, -12, 0, 26)
-ClickModeBtn.Position = UDim2.new(0, 10, 0, 160)
-ClickModeBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 50)
-ClickModeBtn.Text = "🎯 CLICK: OFF"
-ClickModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ClickModeBtn.TextSize = 9
-ClickModeBtn.Font = Enum.Font.GothamBold
-ClickModeBtn.Parent = ExplorerPage
-Instance.new("UICorner", ClickModeBtn).CornerRadius = UDim.new(0, 6)
-UIRefs.ClickBtn = ClickModeBtn
+-- Fila 3: Botón ANCLAR POSICIÓN AFK (Movido aquí por ser muy importante)
+local AnchorAfkMainBtn = Instance.new("TextButton")
+AnchorAfkMainBtn.Size = UDim2.new(1, -20, 0, 30)
+AnchorAfkMainBtn.Position = UDim2.new(0, 10, 0, 156)
+AnchorAfkMainBtn.BackgroundColor3 = Color3.fromRGB(45, 85, 155)
+AnchorAfkMainBtn.Text = "⚓ ANCLAR POSICIÓN AFK: OFF"
+AnchorAfkMainBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AnchorAfkMainBtn.TextSize = 10
+AnchorAfkMainBtn.Font = Enum.Font.GothamBold
+AnchorAfkMainBtn.Parent = ExplorerPage
+Instance.new("UICorner", AnchorAfkMainBtn).CornerRadius = UDim.new(0, 6)
+UIRefs.AnchorBtn = AnchorAfkMainBtn
 
-local CopyNameBtn = Instance.new("TextButton")
-CopyNameBtn.Size = UDim2.new(0.5, -12, 0, 26)
-CopyNameBtn.Position = UDim2.new(0.5, 2, 0, 160)
-CopyNameBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 170)
-CopyNameBtn.Text = "📋 COPIAR NOMBRE"
-CopyNameBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-CopyNameBtn.TextSize = 9
-CopyNameBtn.Font = Enum.Font.GothamBold
-CopyNameBtn.Parent = ExplorerPage
-Instance.new("UICorner", CopyNameBtn).CornerRadius = UDim.new(0, 6)
+AnchorAfkMainBtn.MouseButton1Click:Connect(function()
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if root then
+        if not root.Anchored then
+            clearFlightForcesOnly(root)
+            State.IsFlying = false
+            root.Anchored = true
+            AnchorAfkMainBtn.BackgroundColor3 = Color3.fromRGB(210, 120, 20)
+            AnchorAfkMainBtn.Text = "⚓ ANCLADO POSICIÓN AFK (ARMA 2): ON"
+            if Config.AutoEquipSlot2 then equipSlotWeapon(2) end
+        else
+            root.Anchored = false
+            AnchorAfkMainBtn.BackgroundColor3 = Color3.fromRGB(45, 85, 155)
+            AnchorAfkMainBtn.Text = "⚓ ANCLAR POSICIÓN AFK: OFF"
+        end
+    end
+end)
 
--- Fila 4: Buscador y Ordenar
-local SearchBox = Instance.new("TextBox")
-SearchBox.Size = UDim2.new(0.55, -10, 0, 28)
-SearchBox.Position = UDim2.new(0, 10, 0, 192)
-SearchBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-SearchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-SearchBox.PlaceholderText = "Filtrar (ej. rock, tree, ground)..."
-SearchBox.Text = ""
-SearchBox.TextSize = 10
-SearchBox.Font = Enum.Font.Code
-SearchBox.ClearTextOnFocus = false
-SearchBox.Parent = ExplorerPage
-Instance.new("UICorner", SearchBox).CornerRadius = UDim.new(0, 6)
+-- Separación amplia + Botón centrado de 5 Rocas Cercanas
+local Nearest5Btn = Instance.new("TextButton")
+Nearest5Btn.Size = UDim2.new(0.68, 0, 0, 32)
+Nearest5Btn.Position = UDim2.new(0.16, 0, 0, 204)
+Nearest5Btn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
+Nearest5Btn.Text = "📡 ACTUALIZAR 5 ROCAS MÁS CERCANAS"
+Nearest5Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+Nearest5Btn.TextSize = 10
+Nearest5Btn.Font = Enum.Font.GothamBold
+Nearest5Btn.Parent = ExplorerPage
+Instance.new("UICorner", Nearest5Btn).CornerRadius = UDim.new(0, 8)
 
-local FilterBtn = Instance.new("TextButton")
-FilterBtn.Size = UDim2.new(0.45, -10, 0, 28)
-FilterBtn.Position = UDim2.new(0.55, 0, 0, 192)
-FilterBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 80)
-FilterBtn.Text = "📊 ORDENAR PROFUNDIDAD"
-FilterBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-FilterBtn.TextSize = 9
-FilterBtn.Font = Enum.Font.GothamBold
-FilterBtn.Parent = ExplorerPage
-Instance.new("UICorner", FilterBtn).CornerRadius = UDim.new(0, 6)
+-- Contenedor exclusivo para las 5 rocas más cercanas (aparece al presionar el botón)
+local Top5Container = Instance.new("Frame")
+Top5Container.Size = UDim2.new(1, -20, 0, 192)
+Top5Container.Position = UDim2.new(0, 10, 0, 244)
+Top5Container.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+Top5Container.Visible = false
+Top5Container.Parent = ExplorerPage
+Instance.new("UICorner", Top5Container).CornerRadius = UDim.new(0, 6)
+
+local Top5Layout = Instance.new("UIListLayout")
+Top5Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Top5Layout.Padding = UDim.new(0, 4)
+Top5Layout.Parent = Top5Container
+
+-- ==============================================================================
+-- 12. PESTAÑA 2: LISTA COMPLETA (SEPARADA EN SU PROPIA PESTAÑA)
+-- ==============================================================================
+
+local FullListRefreshBtn = Instance.new("TextButton")
+FullListRefreshBtn.Size = UDim2.new(0.64, 0, 0, 30)
+FullListRefreshBtn.Position = UDim2.new(0.18, 0, 0, 8)
+FullListRefreshBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 80)
+FullListRefreshBtn.Text = "🔄 ACTUALIZAR LISTA POR CERCANÍA"
+FullListRefreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+FullListRefreshBtn.TextSize = 10
+FullListRefreshBtn.Font = Enum.Font.GothamBold
+FullListRefreshBtn.Parent = FullListPage
+Instance.new("UICorner", FullListRefreshBtn).CornerRadius = UDim.new(0, 6)
 
 local ScrollFrame = Instance.new("ScrollingFrame")
-ScrollFrame.Size = UDim2.new(1, -20, 1, -232)
-ScrollFrame.Position = UDim2.new(0, 10, 0, 226)
+ScrollFrame.Size = UDim2.new(1, -20, 1, -50)
+ScrollFrame.Position = UDim2.new(0, 10, 0, 44)
 ScrollFrame.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
 ScrollFrame.BorderSizePixel = 0
 ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-ScrollFrame.Parent = ExplorerPage
+ScrollFrame.Parent = FullListPage
 Instance.new("UICorner", ScrollFrame).CornerRadius = UDim.new(0, 6)
 
 local UIListLayout = Instance.new("UIListLayout")
@@ -1712,7 +1776,140 @@ UIListLayout.Padding = UDim.new(0, 4)
 UIListLayout.Parent = ScrollFrame
 
 -- ==============================================================================
--- 12. PESTAÑA 2: PANEL DE CONFIGURACIÓN (CON SCROLL)
+-- 13. RENDERIZADO DE TOP 5 Y LISTA COMPLETA
+-- ==============================================================================
+
+local RowButtons = {}
+local InspectorSelectedLabel = nil
+
+local function refreshRowSelectionVisuals()
+    for part, rowFrame in pairs(RowButtons) do
+        if rowFrame and rowFrame.Parent then
+            rowFrame.BackgroundColor3 = (part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
+        end
+    end
+end
+
+local function renderTop5List()
+    for _, child in ipairs(Top5Container:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+
+    local count = math.min(5, #State.FilteredObjects)
+    for rank = 1, count do
+        local obj = State.FilteredObjects[rank]
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -4, 0, 34)
+        row.BackgroundColor3 = (obj.Part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
+        row.Parent = Top5Container
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+
+        local selectBtn = Instance.new("TextButton")
+        selectBtn.Size = UDim2.new(1, -80, 1, 0)
+        selectBtn.Position = UDim2.new(0, 6, 0, 0)
+        selectBtn.BackgroundTransparency = 1
+        selectBtn.Text = string.format("#%d [%s] Dist: %.0fm | Base Y: %.1f", rank, obj.Name, obj.DistToPlayer, obj.BottomY)
+        selectBtn.TextColor3 = Color3.fromRGB(0, 255, 185)
+        selectBtn.TextSize = 9
+        selectBtn.Font = Enum.Font.Code
+        selectBtn.TextXAlignment = Enum.TextXAlignment.Left
+        selectBtn.Parent = row
+
+        selectBtn.MouseButton1Click:Connect(function()
+            selectTargetPart(obj.Part)
+            refreshRowSelectionVisuals()
+            InfoTitle.Text = string.format("📌 #%d Cercana: '%s' (a %.0fm)", rank, obj.Name, obj.DistToPlayer)
+            InfoDetails.Text = string.format("Base Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)", obj.BottomY, obj.Size.X, obj.Size.Y, obj.Size.Z)
+            if InspectorSelectedLabel then
+                InspectorSelectedLabel.Text = string.format("Seleccionado: '%s' (%s)", obj.Name, obj.Class)
+            end
+        end)
+
+        local goBtn = Instance.new("TextButton")
+        goBtn.Size = UDim2.new(0, 70, 0, 26)
+        goBtn.Position = UDim2.new(1, -74, 0, 4)
+        goBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
+        goBtn.Text = "⬇️ BAJAR"
+        goBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        goBtn.TextSize = 9
+        goBtn.Font = Enum.Font.GothamBold
+        goBtn.Parent = row
+        Instance.new("UICorner", goBtn).CornerRadius = UDim.new(0, 4)
+
+        goBtn.MouseButton1Click:Connect(function()
+            selectTargetPart(obj.Part)
+            refreshRowSelectionVisuals()
+            InfoTitle.Text = string.format("📌 #%d Destino: '%s'", rank, obj.Name)
+            task.spawn(function()
+                executeRefugeEntry(obj.Part, StatusDisplayCallback, false)
+            end)
+        end)
+    end
+
+    Top5Container.Visible = (count > 0)
+end
+
+local function updateFullScrollList()
+    for _, child in ipairs(ScrollFrame:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+    RowButtons = {}
+
+    for rank, obj in ipairs(State.FilteredObjects) do
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -6, 0, 36)
+        row.BackgroundColor3 = (obj.Part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
+        row.Parent = ScrollFrame
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+        RowButtons[obj.Part] = row
+
+        local selectBtn = Instance.new("TextButton")
+        selectBtn.Size = UDim2.new(1, -82, 1, 0)
+        selectBtn.Position = UDim2.new(0, 6, 0, 0)
+        selectBtn.BackgroundTransparency = 1
+        selectBtn.Text = string.format("#%d [%s] Dist: %.0fm | Base Y: %.1f", rank, obj.Name, obj.DistToPlayer, obj.BottomY)
+        selectBtn.TextColor3 = (obj.BottomY <= -5) and Color3.fromRGB(0, 255, 180) or Color3.fromRGB(220, 220, 220)
+        selectBtn.TextSize = 9
+        selectBtn.Font = Enum.Font.Code
+        selectBtn.TextXAlignment = Enum.TextXAlignment.Left
+        selectBtn.Parent = row
+
+        selectBtn.MouseButton1Click:Connect(function()
+            selectTargetPart(obj.Part)
+            refreshRowSelectionVisuals()
+            InfoTitle.Text = string.format("📌 #%d Seleccionado: '%s' (a %.0fm)", rank, obj.Name, obj.DistToPlayer)
+            InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)", obj.BottomY, obj.CenterY, obj.Size.X, obj.Size.Y, obj.Size.Z)
+            if InspectorSelectedLabel then
+                InspectorSelectedLabel.Text = string.format("Seleccionado: '%s' (%s)", obj.Name, obj.Class)
+            end
+        end)
+
+        local goBtn = Instance.new("TextButton")
+        goBtn.Size = UDim2.new(0, 72, 0, 28)
+        goBtn.Position = UDim2.new(1, -76, 0, 4)
+        goBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
+        goBtn.Text = "⬇️ BAJAR"
+        goBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        goBtn.TextSize = 9
+        goBtn.Font = Enum.Font.GothamBold
+        goBtn.Parent = row
+        Instance.new("UICorner", goBtn).CornerRadius = UDim.new(0, 4)
+
+        goBtn.MouseButton1Click:Connect(function()
+            selectTargetPart(obj.Part)
+            refreshRowSelectionVisuals()
+            InfoTitle.Text = string.format("📌 #%d Destino: '%s'", rank, obj.Name)
+            task.spawn(function()
+                executeRefugeEntry(obj.Part, StatusDisplayCallback, false)
+            end)
+        end)
+    end
+
+    ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, #State.FilteredObjects * 40)
+end
+
+-- ==============================================================================
+-- 14. PESTAÑA 3: CONFIGURACIÓN (SIN ANCLAR AFK)
 -- ==============================================================================
 
 local function createToggleBtn(yPos, text, color, onClick)
@@ -1730,60 +1927,37 @@ local function createToggleBtn(yPos, text, color, onClick)
     return btn
 end
 
--- 1. Botón independiente para activar/desactivar la Órbita Subterránea
 UIRefs.OrbitBtn = createToggleBtn(6, "🔄 ÓRBITA SUBTERRÁNEA (JEFES Y VARIANTES): ON", Color3.fromRGB(0, 135, 195), function(btn)
     Config.AutoRockOrbit = not Config.AutoRockOrbit
     btn.BackgroundColor3 = Config.AutoRockOrbit and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.AutoRockOrbit and "🔄 ÓRBITA SUBTERRÁNEA (JEFES Y VARIANTES): ON" or "🔄 ÓRBITA SUBTERRÁNEA (JEFES Y VARIANTES): OFF"
 end)
 
--- 2. Botón independiente para activar/desactivar la Repulsión a Variantes (separado de Bloaters)
 UIRefs.ToxicBtn = createToggleBtn(46, "☣️ REPULSIÓN DIAGONAL VARIANTES (SPITTER/HAZMAT): ON", Color3.fromRGB(40, 155, 115), function(btn)
     Config.AutoEvadeToxic = not Config.AutoEvadeToxic
     btn.BackgroundColor3 = Config.AutoEvadeToxic and Color3.fromRGB(40, 155, 115) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.AutoEvadeToxic and "☣️ REPULSIÓN DIAGONAL VARIANTES (SPITTER/HAZMAT): ON" or "☣️ REPULSIÓN DIAGONAL VARIANTES (SPITTER/HAZMAT): OFF"
 end)
 
--- 3. Poder 5 al detenerse el reloj Survived
 UIRefs.Power5Btn = createToggleBtn(86, "⏱️ PODER 5 SI RELOJ SURVIVED SE DETIENE (30s): ON", Color3.fromRGB(115, 55, 175), function(btn)
     Config.AutoPower5OnTimeStop = not Config.AutoPower5OnTimeStop
     btn.BackgroundColor3 = Config.AutoPower5OnTimeStop and Color3.fromRGB(115, 55, 175) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.AutoPower5OnTimeStop and "⏱️ PODER 5 SI RELOJ SURVIVED SE DETIENE (30s): ON" or "⏱️ PODER 5 EN RELOJ SURVIVED: OFF"
 end)
 
--- 4. Zanahorias inteligentes
 UIRefs.CarrotBtn = createToggleBtn(126, "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF", Color3.fromRGB(65, 70, 85), function(btn)
     Config.AutoCarrotDash = not Config.AutoCarrotDash
     btn.BackgroundColor3 = Config.AutoCarrotDash and Color3.fromRGB(210, 120, 20) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.AutoCarrotDash and "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): ON" or "🥕 ZANAHORIAS (<20% HAMBRE Y <5 ZOMBIES): OFF"
 end)
 
--- 5. Anclar AFK
-UIRefs.AnchorBtn = createToggleBtn(166, "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA 2): OFF", Color3.fromRGB(45, 85, 155), function(btn)
-    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if root then
-        if not root.Anchored then
-            clearFlightForcesOnly(root)
-            State.IsFlying = false
-            root.Anchored = true
-            btn.BackgroundColor3 = Color3.fromRGB(210, 120, 20)
-            btn.Text = "⚓ ANCLADO AFK AQUÍ (ARMA 2 ACTIVA): ON"
-            if Config.AutoEquipSlot2 then equipSlotWeapon(2) end
-        else
-            root.Anchored = false
-            btn.BackgroundColor3 = Color3.fromRGB(45, 85, 155)
-            btn.Text = "⚓ ANCLAR AFK AQUÍ (SIN JALÓN + ARMA 2): OFF"
-        end
-    end
-end)
-
-createToggleBtn(206, "🧲 RETENER CON BODYPOSITION AL BAJAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
+createToggleBtn(166, "🧲 RETENER CON BODYPOSITION AL BAJAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
     Config.LockPositionBP = not Config.LockPositionBP
     btn.BackgroundColor3 = Config.LockPositionBP and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.LockPositionBP and "🧲 RETENER CON BODYPOSITION AL BAJAR: ON" or "🔓 LIBRE AL BAJAR (ANCLA SIN JALAR DE VUELTA): OFF"
 end)
 
-createToggleBtn(246, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.fromRGB(115, 55, 175), function(btn)
+createToggleBtn(206, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.fromRGB(115, 55, 175), function(btn)
     if Config.Mode == "UnderSkin" then
         Config.Mode = "Bunker"
         btn.BackgroundColor3 = Color3.fromRGB(35, 130, 95)
@@ -1795,13 +1969,13 @@ createToggleBtn(246, "MODO: 🦇 BAJO PIEL INFERIOR (RAYCAST VERTICAL)", Color3.
     end
 end)
 
-createToggleBtn(286, "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
+createToggleBtn(246, "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON", Color3.fromRGB(0, 135, 195), function(btn)
     Config.KeepFly = not Config.KeepFly
     btn.BackgroundColor3 = Config.KeepFly and Color3.fromRGB(0, 135, 195) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.KeepFly and "✈️ MANTENER FLY ACTIVO AL LLEGAR: ON" or "🛑 APAGAR FLY AUTOMÁTICAMENTE AL LLEGAR: OFF"
 end)
 
-createToggleBtn(326, "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)", Color3.fromRGB(30, 145, 80), function(btn)
+createToggleBtn(286, "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)", Color3.fromRGB(30, 145, 80), function(btn)
     Config.GoToDeepestEdge = not Config.GoToDeepestEdge
     btn.BackgroundColor3 = Config.GoToDeepestEdge and Color3.fromRGB(190, 115, 20) or Color3.fromRGB(30, 145, 80)
     btn.Text = Config.GoToDeepestEdge and "📐 TRAYECTORIA: ESQUINA PROFUNDA (DIAGONAL)" or "📐 TRAYECTORIA: BAJADA RECTA (SIN IRSE DE LADO)"
@@ -1852,19 +2026,19 @@ local function createStepperControl(parent, yPos, titleText, getValText, onMinus
     plusBtn.MouseButton1Click:Connect(function() onPlus(); lbl.Text = titleText .. "\n" .. getValText() end)
 end
 
-createStepperControl(ConfigPage, 368, "🐢 VELOCIDAD ÓRBITA NORMAL (1 ENEMIGO)",
+createStepperControl(ConfigPage, 328, "🐢 VELOCIDAD ÓRBITA NORMAL (1 ENEMIGO)",
     function() return string.format("Actual: %.2f rad/s", Config.OrbitAngularSpeed) end,
     function() Config.OrbitAngularSpeed = math.max(0.15, Config.OrbitAngularSpeed - 0.10) end,
     function() Config.OrbitAngularSpeed = math.min(2.50, Config.OrbitAngularSpeed + 0.10) end
 )
 
-createStepperControl(ConfigPage, 418, "⚡ VELOCIDAD ÓRBITA MÚLTIPLE (>1 ENEMIGO)",
+createStepperControl(ConfigPage, 378, "⚡ VELOCIDAD ÓRBITA MÚLTIPLE (>1 ENEMIGO)",
     function() return string.format("Actual: %.2f rad/s (Giro amplio)", Config.OrbitMultiSpeed) end,
     function() Config.OrbitMultiSpeed = math.max(0.30, Config.OrbitMultiSpeed - 0.15) end,
     function() Config.OrbitMultiSpeed = math.min(3.50, Config.OrbitMultiSpeed + 0.15) end
 )
 
-createStepperControl(ConfigPage, 468, "💣 DIAGONAL BLOATER (SIEMPRE ACTIVO)",
+createStepperControl(ConfigPage, 428, "💣 DIAGONAL BLOATER (SIEMPRE ACTIVO)",
     function() return string.format("Actual: %d studs lado / -%d studs abajo", Config.BloaterSideStuds, Config.BloaterDropStuds) end,
     function()
         Config.BloaterSideStuds = math.max(6, Config.BloaterSideStuds - 2)
@@ -1876,61 +2050,113 @@ createStepperControl(ConfigPage, 468, "💣 DIAGONAL BLOATER (SIEMPRE ACTIVO)",
     end
 )
 
-createStepperControl(ConfigPage, 518, "⏱️ TIEMPO RESGUARDO BLOATER (SEG)",
+createStepperControl(ConfigPage, 478, "⏱️ TIEMPO RESGUARDO BLOATER (SEG)",
     function() return string.format("Actual: %.1f segundos antes de volver", Config.BloaterHoldDown) end,
     function() Config.BloaterHoldDown = math.max(1.0, Config.BloaterHoldDown - 0.5) end,
     function() Config.BloaterHoldDown = math.min(10.0, Config.BloaterHoldDown + 0.5) end
 )
 
-createStepperControl(ConfigPage, 568, "👹 BAJADA EXTRA ANTI-JEFES (STUDS)",
+createStepperControl(ConfigPage, 528, "👹 BAJADA EXTRA ANTI-JEFES (STUDS)",
     function() return string.format("Actual: -%d studs al lado opuesto", Config.BossExtraDepth) end,
     function() Config.BossExtraDepth = math.max(2, Config.BossExtraDepth - 2) end,
     function() Config.BossExtraDepth = math.min(24, Config.BossExtraDepth + 2) end
 )
 
-createStepperControl(ConfigPage, 618, "💓 VIDA MÍNIMA DETECCIÓN JEFES (HP)",
+createStepperControl(ConfigPage, 578, "💓 VIDA MÍNIMA DETECCIÓN JEFES (HP)",
     function() return string.format("Actual: >= %d MaxHealth", Config.BossMinMaxHP) end,
     function() Config.BossMinMaxHP = math.max(1500, Config.BossMinMaxHP - 500) end,
     function() Config.BossMinMaxHP = math.min(20000, Config.BossMinMaxHP + 500) end
 )
 
-createStepperControl(ConfigPage, 668, "⏳ RETARDO ANTES DE IRSE (BLOATER)",
+createStepperControl(ConfigPage, 628, "⏳ RETARDO ANTES DE IRSE (BLOATER)",
     function() return string.format("Actual: %.1f seg antes de esquivar", Config.BloaterPreDelay) end,
     function() Config.BloaterPreDelay = math.max(0.0, Config.BloaterPreDelay - 0.1) end,
     function() Config.BloaterPreDelay = math.min(2.0, Config.BloaterPreDelay + 0.1) end
 )
 
-createStepperControl(ConfigPage, 718, "🎯 AJUSTE BAJO PIEL INFERIOR",
+createStepperControl(ConfigPage, 678, "🎯 AJUSTE BAJO PIEL INFERIOR",
     function() return string.format("Actual: -%.1f studs", Config.SkinOffset) end,
     function() Config.SkinOffset = math.max(0.0, Config.SkinOffset - 0.2) end,
     function() Config.SkinOffset = math.min(6.0, Config.SkinOffset + 0.2) end
 )
 
-createStepperControl(ConfigPage, 768, "✈️ VELOCIDAD DE VUELO (FLY)",
+createStepperControl(ConfigPage, 728, "✈️ VELOCIDAD DE VUELO (FLY)",
     function() return string.format("Actual: %d studs/s", Config.FlySpeed) end,
     function() Config.FlySpeed = math.max(20, Config.FlySpeed - 10) end,
     function() Config.FlySpeed = math.min(250, Config.FlySpeed + 10) end
 )
 
-createStepperControl(ConfigPage, 818, "🚶 VELOCIDAD AL CAMINAR",
+createStepperControl(ConfigPage, 778, "🚶 VELOCIDAD AL CAMINAR",
     function() return string.format("Actual: %d WalkSpeed", Config.WalkSpeed) end,
     function() Config.WalkSpeed = math.max(16, Config.WalkSpeed - 4) end,
     function() Config.WalkSpeed = math.min(80, Config.WalkSpeed + 4) end
 )
 
-createToggleBtn(868, "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON", Color3.fromRGB(0, 130, 110), function(btn)
+createToggleBtn(828, "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON", Color3.fromRGB(0, 130, 110), function(btn)
     Config.WalkFirst = not Config.WalkFirst
     btn.BackgroundColor3 = Config.WalkFirst and Color3.fromRGB(0, 130, 110) or Color3.fromRGB(65, 70, 85)
     btn.Text = Config.WalkFirst and "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON" or "✈️ VOLAR DIRECTO SIN CAMINAR: OFF"
 end)
 
 -- ==============================================================================
--- 13. PESTAÑA 3: COORDENADAS EN TIEMPO REAL
+-- 15. PESTAÑA 4: INSPECTOR & COORDENADAS (CON CLICK: OFF Y COPIAR NOMBRE)
 -- ==============================================================================
+
+local InspectCard = Instance.new("Frame")
+InspectCard.Size = UDim2.new(1, -20, 0, 102)
+InspectCard.Position = UDim2.new(0, 10, 0, 8)
+InspectCard.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
+InspectCard.Parent = CoordsPage
+Instance.new("UICorner", InspectCard).CornerRadius = UDim.new(0, 8)
+
+local InspectHeader = Instance.new("TextLabel")
+InspectHeader.Size = UDim2.new(1, -20, 0, 24)
+InspectHeader.Position = UDim2.new(0, 10, 0, 6)
+InspectHeader.BackgroundTransparency = 1
+InspectHeader.Text = "🎯 INSPECTOR DE OBJETOS (CLICK EN EL MAPA)"
+InspectHeader.TextColor3 = Color3.fromRGB(90, 190, 255)
+InspectHeader.TextSize = 11
+InspectHeader.Font = Enum.Font.GothamBold
+InspectHeader.TextXAlignment = Enum.TextXAlignment.Left
+InspectHeader.Parent = InspectCard
+
+InspectorSelectedLabel = Instance.new("TextLabel")
+InspectorSelectedLabel.Size = UDim2.new(1, -20, 0, 20)
+InspectorSelectedLabel.Position = UDim2.new(0, 10, 0, 30)
+InspectorSelectedLabel.BackgroundTransparency = 1
+InspectorSelectedLabel.Text = "Seleccionado: (Ninguno)"
+InspectorSelectedLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+InspectorSelectedLabel.TextSize = 10
+InspectorSelectedLabel.Font = Enum.Font.Code
+InspectorSelectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+InspectorSelectedLabel.Parent = InspectCard
+
+local ClickModeBtn = Instance.new("TextButton")
+ClickModeBtn.Size = UDim2.new(0.5, -14, 0, 34)
+ClickModeBtn.Position = UDim2.new(0, 10, 0, 58)
+ClickModeBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 50)
+ClickModeBtn.Text = "🎯 CLICK INSPECCIONAR: OFF"
+ClickModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ClickModeBtn.TextSize = 9
+ClickModeBtn.Font = Enum.Font.GothamBold
+ClickModeBtn.Parent = InspectCard
+Instance.new("UICorner", ClickModeBtn).CornerRadius = UDim.new(0, 6)
+UIRefs.ClickBtn = ClickModeBtn
+
+local CopyNameBtn = Instance.new("TextButton")
+CopyNameBtn.Size = UDim2.new(0.5, -14, 0, 34)
+CopyNameBtn.Position = UDim2.new(0.5, 4, 0, 58)
+CopyNameBtn.BackgroundColor3 = Color3.fromRGB(40, 100, 170)
+CopyNameBtn.Text = "📋 COPIAR NOMBRE"
+CopyNameBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CopyNameBtn.TextSize = 9
+CopyNameBtn.Font = Enum.Font.GothamBold
+CopyNameBtn.Parent = InspectCard
+Instance.new("UICorner", CopyNameBtn).CornerRadius = UDim.new(0, 6)
 
 local CoordCard = Instance.new("Frame")
 CoordCard.Size = UDim2.new(1, -20, 0, 180)
-CoordCard.Position = UDim2.new(0, 10, 0, 10)
+CoordCard.Position = UDim2.new(0, 10, 0, 120)
 CoordCard.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
 CoordCard.Parent = CoordsPage
 Instance.new("UICorner", CoordCard).CornerRadius = UDim.new(0, 8)
@@ -1994,74 +2220,8 @@ CopyVecBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 14. RENDERIZADO DE LISTA Y EVENTOS
+-- 16. EVENTOS DE BOTONES Y CLIC EN EL MUNDO
 -- ==============================================================================
-
-local RowButtons = {}
-
-local function refreshRowSelectionVisuals()
-    for part, rowFrame in pairs(RowButtons) do
-        if rowFrame and rowFrame.Parent then
-            rowFrame.BackgroundColor3 = (part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
-        end
-    end
-end
-
-local function updateScrollList()
-    for _, child in ipairs(ScrollFrame:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
-    end
-    RowButtons = {}
-
-    for rank, obj in ipairs(State.FilteredObjects) do
-        local row = Instance.new("Frame")
-        row.Size = UDim2.new(1, -6, 0, 36)
-        row.BackgroundColor3 = (obj.Part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
-        row.Parent = ScrollFrame
-        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
-        RowButtons[obj.Part] = row
-
-        local selectBtn = Instance.new("TextButton")
-        selectBtn.Size = UDim2.new(1, -82, 1, 0)
-        selectBtn.Position = UDim2.new(0, 6, 0, 0)
-        selectBtn.BackgroundTransparency = 1
-        selectBtn.Text = string.format("#%d [%s] Base Y: %.1f | (%.0f, %.0f, %.0f)", rank, obj.Name, obj.BottomY, obj.Pos.X, obj.CenterY, obj.Pos.Z)
-        selectBtn.TextColor3 = (obj.BottomY <= -5) and Color3.fromRGB(0, 255, 180) or Color3.fromRGB(220, 220, 220)
-        selectBtn.TextSize = 9
-        selectBtn.Font = Enum.Font.Code
-        selectBtn.TextXAlignment = Enum.TextXAlignment.Left
-        selectBtn.Parent = row
-
-        selectBtn.MouseButton1Click:Connect(function()
-            selectTargetPart(obj.Part)
-            refreshRowSelectionVisuals()
-            InfoTitle.Text = string.format("📌 #%d Seleccionado: '%s' (%s)", rank, obj.Name, obj.Class)
-            InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)\nRuta: %s", obj.BottomY, obj.CenterY, obj.Size.X, obj.Size.Y, obj.Size.Z, obj.Part:GetFullName())
-        end)
-
-        local goBtn = Instance.new("TextButton")
-        goBtn.Size = UDim2.new(0, 72, 0, 28)
-        goBtn.Position = UDim2.new(1, -76, 0, 4)
-        goBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
-        goBtn.Text = "⬇️ BAJAR"
-        goBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        goBtn.TextSize = 9
-        goBtn.Font = Enum.Font.GothamBold
-        goBtn.Parent = row
-        Instance.new("UICorner", goBtn).CornerRadius = UDim.new(0, 4)
-
-        goBtn.MouseButton1Click:Connect(function()
-            selectTargetPart(obj.Part)
-            refreshRowSelectionVisuals()
-            InfoTitle.Text = string.format("📌 #%d Destino: '%s' (%s)", rank, obj.Name, obj.Class)
-            task.spawn(function()
-                executeRefugeEntry(obj.Part, StatusDisplayCallback, false)
-            end)
-        end)
-    end
-
-    ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, #State.FilteredObjects * 40)
-end
 
 mouse.Button1Down:Connect(function()
     if not State.ClickInspect then return end
@@ -2072,15 +2232,15 @@ mouse.Button1Down:Connect(function()
         refreshRowSelectionVisuals()
         local bottomY = getPartBottomDepth(targetPart)
         InfoTitle.Text = string.format("📌 Click en: '%s' (%s)", targetPart.Name, targetPart.ClassName)
-        InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)\nRuta: %s", bottomY, targetPart.Position.Y, targetPart.Size.X, targetPart.Size.Y, targetPart.Size.Z, targetPart:GetFullName())
-        SearchBox.Text = targetPart.Name
+        InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)", bottomY, targetPart.Position.Y, targetPart.Size.X, targetPart.Size.Y, targetPart.Size.Z)
+        InspectorSelectedLabel.Text = string.format("Seleccionado: '%s' (%s)", targetPart.Name, targetPart.ClassName)
     end
 end)
 
 ClickModeBtn.MouseButton1Click:Connect(function()
     State.ClickInspect = not State.ClickInspect
     ClickModeBtn.BackgroundColor3 = State.ClickInspect and Color3.fromRGB(30, 160, 80) or Color3.fromRGB(160, 40, 50)
-    ClickModeBtn.Text = State.ClickInspect and "🎯 CLICK: ON" or "🎯 CLICK: OFF"
+    ClickModeBtn.Text = State.ClickInspect and "🎯 CLICK INSPECCIONAR: ON" or "🎯 CLICK INSPECCIONAR: OFF"
 end)
 
 CopyNameBtn.MouseButton1Click:Connect(function()
@@ -2088,6 +2248,10 @@ CopyNameBtn.MouseButton1Click:Connect(function()
         local txt = State.SelectedPart.Name
         if setclipboard then setclipboard(txt) elseif toclipboard then toclipboard(txt) end
         CopyNameBtn.Text = "✅ ¡COPIADO!"
+        task.wait(1.2)
+        CopyNameBtn.Text = "📋 COPIAR NOMBRE"
+    else
+        CopyNameBtn.Text = "⚠️ SIN SELECCIÓN"
         task.wait(1.2)
         CopyNameBtn.Text = "📋 COPIAR NOMBRE"
     end
@@ -2098,22 +2262,33 @@ StopAllBtn.MouseButton1Click:Connect(function()
     InfoDetails.Text = "🛑 PARAR TODO: Vuelo, Noclip, Bloater, Órbita y Variantes detenidos. Pulsa 'BAJAR' para reactivar."
 end)
 
-FilterBtn.MouseButton1Click:Connect(function()
-    FilterBtn.Text = "⏳ ANALIZANDO..."
-    scanAndRankTerrain(SearchBox.Text)
-    updateScrollList()
-    FilterBtn.Text = string.format("✅ %d ORDENADOS", #State.FilteredObjects)
-    task.wait(1.2)
-    FilterBtn.Text = "📊 ORDENAR PROFUNDIDAD"
+-- Botón central de Explorador: Ordena por cercanía (0% lag) y despliega las 5 más cercanas
+Nearest5Btn.MouseButton1Click:Connect(function()
+    sortObjectsByProximityFast()
+    renderTop5List()
+    updateFullScrollList()
+    Nearest5Btn.Text = "✅ TOP 5 CERCANAS ACTUALIZADAS"
+    task.wait(1.0)
+    Nearest5Btn.Text = "📡 ACTUALIZAR 5 ROCAS MÁS CERCANAS"
+end)
+
+-- Botón de la pestaña Lista Completa
+FullListRefreshBtn.MouseButton1Click:Connect(function()
+    sortObjectsByProximityFast()
+    updateFullScrollList()
+    FullListRefreshBtn.Text = string.format("✅ %d ORDENADOS POR CERCANÍA", #State.FilteredObjects)
+    task.wait(1.0)
+    FullListRefreshBtn.Text = "🔄 ACTUALIZAR LISTA POR CERCANÍA"
 end)
 
 FloatBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
 
--- Carga inicial + Equipar Arma 2 por defecto
-scanAndRankTerrain("")
-updateScrollList()
+-- Carga inicial (mantiene resplandor amarillo) + Ordenar por cercanía + Arma 2
+scanInitialTerrainWithHighlights()
+sortObjectsByProximityFast()
+updateFullScrollList()
 if Config.AutoEquipSlot2 then
     equipSlotWeapon(2)
 end
