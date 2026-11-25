@@ -1,5 +1,5 @@
 -- ==============================================================================
--- EXPLORADOR FORENSE DE TERRENO V11.3 (TOP 5 CERCANAS + 4 PESTAÑAS + UI PRO)
+-- EXPLORADOR FORENSE DE TERRENO V11.4 (LISTA ORIGINAL V11.2 + BOTONES REUBICADOS)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -25,9 +25,9 @@ local Config = {
     AutoEvadeBloaters = true,
     BloaterThreshold = 1,
     BloaterPreDelay = 0.0,
-    BloaterSideStuds = 16,
-    BloaterDropStuds = 14,
-    BloaterHoldDown = 4.0,
+    BloaterSideStuds = 16,      -- Distancia restaurada (16 studs lado)
+    BloaterDropStuds = 14,      -- Distancia restaurada (14 studs abajo)
+    BloaterHoldDown = 4.0,      -- +1 segundo extra (4.0s en total)
     BloaterScanRadius = 55,
 
     -- Repulsión Diagonal a Variantes (Independiente de Bloaters, desactivable)
@@ -568,7 +568,7 @@ local function fullEmergencyResetAll()
     end
     if UIRefs.ClickBtn then
         UIRefs.ClickBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 50)
-        UIRefs.ClickBtn.Text = "🎯 CLICK INSPECCIONAR: OFF"
+        UIRefs.ClickBtn.Text = "🎯 CLICK: OFF"
     end
 end
 
@@ -1375,26 +1375,27 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 9. ESCÁNER INICIAL (MANTIENE RESPLANDOR) + ORDENAMIENTO POR CERCANÍA (0% LAG)
+-- 9. CLASIFICADOR Y RANKING DE PROFUNDIDAD (ORIGINAL V11.2 INTACTO)
 -- ==============================================================================
 
-local function scanInitialTerrainWithHighlights()
+local function scanAndRankTerrain(keyword)
     clearAllHighlights()
     State.FilteredObjects = {}
     local baseCenter = Vector3.new(0, 0, 0)
+    keyword = (keyword or ""):lower()
 
     for _, desc in ipairs(workspace:GetDescendants()) do
         if desc:IsA("BasePart") then
             local pos = desc.Position
             local dist = (pos - baseCenter).Magnitude
             if dist <= 350 then
+                local nLower = desc.Name:lower()
                 local isCharacterPart = lp.Character and desc:IsDescendantOf(lp.Character)
-                if not isCharacterPart then
+                if not isCharacterPart and (keyword == "" or nLower:find(keyword, 1, true)) then
                     local bottomY = getPartBottomDepth(desc)
                     table.insert(State.FilteredObjects, {
                         Part = desc, Name = desc.Name, Class = desc.ClassName,
-                        Pos = pos, Size = desc.Size, BottomY = bottomY, CenterY = pos.Y,
-                        DistToPlayer = 999
+                        Pos = pos, Size = desc.Size, BottomY = bottomY, CenterY = pos.Y
                     })
                 end
             end
@@ -1403,7 +1404,6 @@ local function scanInitialTerrainWithHighlights()
 
     table.sort(State.FilteredObjects, function(a, b) return a.BottomY < b.BottomY end)
 
-    -- Mantener el resplandor amarillo inicial en los primeros 40 objetos
     for i = 1, math.min(40, #State.FilteredObjects) do
         local obj = State.FilteredObjects[i]
         local hl = Instance.new("Highlight")
@@ -1420,43 +1420,16 @@ local function scanInitialTerrainWithHighlights()
     end
 end
 
--- Ordena por cercanía al jugador sin recorrer todo workspace (0% lag)
-local function sortObjectsByProximityFast()
-    if #State.FilteredObjects == 0 then
-        scanInitialTerrainWithHighlights()
-    end
-
-    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    local myPos = root and root.Position or Vector3.new(0, 0, 0)
-
-    -- Filtrar piezas eliminadas y calcular distancia al jugador
-    local validList = {}
-    for _, obj in ipairs(State.FilteredObjects) do
-        if obj.Part and obj.Part.Parent then
-            local pPos = obj.Part.Position
-            obj.Pos = pPos
-            obj.CenterY = pPos.Y
-            obj.DistToPlayer = (pPos - myPos).Magnitude
-            table.insert(validList, obj)
-        end
-    end
-    State.FilteredObjects = validList
-
-    table.sort(State.FilteredObjects, function(a, b)
-        return a.DistToPlayer < b.DistToPlayer
-    end)
-end
-
 -- ==============================================================================
--- 10. INTERFAZ GRÁFICA FLOTANTE NATIVA (4 PESTAÑAS REORGANIZADAS)
+-- 10. INTERFAZ GRÁFICA FLOTANTE NATIVA (3 PESTAÑAS)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV113")
+local existing = GuiParent:FindFirstChild("TerrainInspectorGuiV114")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "TerrainInspectorGuiV113"
+ScreenGui.Name = "TerrainInspectorGuiV114"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -1464,7 +1437,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.40, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(25, 120, 110)
-FloatBtn.Text = "🔍\nV11.3"
+FloatBtn.Text = "🔍\nV11.4"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -1474,8 +1447,8 @@ FloatBtn.Parent = ScreenGui
 Instance.new("UICorner", FloatBtn).CornerRadius = UDim.new(1, 0)
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 545, 0, 520)
-MainFrame.Position = UDim2.new(0.5, -272, 0.5, -260)
+MainFrame.Size = UDim2.new(0, 535, 0, 520)
+MainFrame.Position = UDim2.new(0.5, -267, 0.5, -260)
 MainFrame.BackgroundColor3 = Color3.fromRGB(15, 18, 24)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -1486,7 +1459,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(25, 30, 42)
-TitleBar.Text = "  🔍 EXPLORADOR TERRENO V11.3 | TOP 5 CERCANAS & CONTROL"
+TitleBar.Text = "  🔍 EXPLORADOR TERRENO V11.4 | PARAR TODO & ÓRBITA PRO"
 TitleBar.TextColor3 = Color3.fromRGB(0, 255, 190)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -1494,47 +1467,35 @@ TitleBar.TextXAlignment = Enum.TextXAlignment.Left
 TitleBar.Parent = MainFrame
 Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
--- Barra de 4 Pestañas
 local TabExplorerBtn = Instance.new("TextButton")
-TabExplorerBtn.Size = UDim2.new(0.25, -7, 0, 28)
+TabExplorerBtn.Size = UDim2.new(0.34, -8, 0, 28)
 TabExplorerBtn.Position = UDim2.new(0, 10, 0, 40)
 TabExplorerBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
 TabExplorerBtn.Text = "📊 EXPLORADOR"
 TabExplorerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-TabExplorerBtn.TextSize = 9
+TabExplorerBtn.TextSize = 10
 TabExplorerBtn.Font = Enum.Font.GothamBold
 TabExplorerBtn.Parent = MainFrame
 Instance.new("UICorner", TabExplorerBtn).CornerRadius = UDim.new(0, 6)
 
-local TabFullListBtn = Instance.new("TextButton")
-TabFullListBtn.Size = UDim2.new(0.25, -7, 0, 28)
-TabFullListBtn.Position = UDim2.new(0.25, 5, 0, 40)
-TabFullListBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
-TabFullListBtn.Text = "📋 LISTA COMPLETA"
-TabFullListBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-TabFullListBtn.TextSize = 9
-TabFullListBtn.Font = Enum.Font.GothamBold
-TabFullListBtn.Parent = MainFrame
-Instance.new("UICorner", TabFullListBtn).CornerRadius = UDim.new(0, 6)
-
 local TabConfigBtn = Instance.new("TextButton")
-TabConfigBtn.Size = UDim2.new(0.25, -7, 0, 28)
-TabConfigBtn.Position = UDim2.new(0.50, 2, 0, 40)
+TabConfigBtn.Size = UDim2.new(0.33, -8, 0, 28)
+TabConfigBtn.Position = UDim2.new(0.34, 4, 0, 40)
 TabConfigBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
-TabConfigBtn.Text = "⚙️ CONFIG"
+TabConfigBtn.Text = "⚙️ CONFIGURACIÓN"
 TabConfigBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-TabConfigBtn.TextSize = 9
+TabConfigBtn.TextSize = 10
 TabConfigBtn.Font = Enum.Font.GothamBold
 TabConfigBtn.Parent = MainFrame
 Instance.new("UICorner", TabConfigBtn).CornerRadius = UDim.new(0, 6)
 
 local TabCoordsBtn = Instance.new("TextButton")
-TabCoordsBtn.Size = UDim2.new(0.25, -7, 0, 28)
-TabCoordsBtn.Position = UDim2.new(0.75, -1, 0, 40)
+TabCoordsBtn.Size = UDim2.new(0.33, -8, 0, 28)
+TabCoordsBtn.Position = UDim2.new(0.67, 0, 0, 40)
 TabCoordsBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
 TabCoordsBtn.Text = "📍 INSPECTOR"
 TabCoordsBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-TabCoordsBtn.TextSize = 9
+TabCoordsBtn.TextSize = 10
 TabCoordsBtn.Font = Enum.Font.GothamBold
 TabCoordsBtn.Parent = MainFrame
 Instance.new("UICorner", TabCoordsBtn).CornerRadius = UDim.new(0, 6)
@@ -1545,13 +1506,6 @@ ExplorerPage.Position = UDim2.new(0, 0, 0, 74)
 ExplorerPage.BackgroundTransparency = 1
 ExplorerPage.Visible = true
 ExplorerPage.Parent = MainFrame
-
-local FullListPage = Instance.new("Frame")
-FullListPage.Size = UDim2.new(1, 0, 1, -74)
-FullListPage.Position = UDim2.new(0, 0, 0, 74)
-FullListPage.BackgroundTransparency = 1
-FullListPage.Visible = false
-FullListPage.Parent = MainFrame
 
 local ConfigPage = Instance.new("ScrollingFrame")
 ConfigPage.Size = UDim2.new(1, 0, 1, -74)
@@ -1572,11 +1526,10 @@ CoordsPage.Parent = MainFrame
 
 local function switchTab(activeBtn, activePage)
     ExplorerPage.Visible = (activePage == ExplorerPage)
-    FullListPage.Visible = (activePage == FullListPage)
     ConfigPage.Visible   = (activePage == ConfigPage)
     CoordsPage.Visible   = (activePage == CoordsPage)
 
-    for _, btn in ipairs({TabExplorerBtn, TabFullListBtn, TabConfigBtn, TabCoordsBtn}) do
+    for _, btn in ipairs({TabExplorerBtn, TabConfigBtn, TabCoordsBtn}) do
         if btn == activeBtn then
             btn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
             btn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1588,16 +1541,15 @@ local function switchTab(activeBtn, activePage)
 end
 
 TabExplorerBtn.MouseButton1Click:Connect(function() switchTab(TabExplorerBtn, ExplorerPage) end)
-TabFullListBtn.MouseButton1Click:Connect(function() switchTab(TabFullListBtn, FullListPage) end)
 TabConfigBtn.MouseButton1Click:Connect(function() switchTab(TabConfigBtn, ConfigPage) end)
 TabCoordsBtn.MouseButton1Click:Connect(function() switchTab(TabCoordsBtn, CoordsPage) end)
 
 -- ==============================================================================
--- 11. PESTAÑA 1: EXPLORADOR (BOTONES PRINCIPALES + ANCLAR AFK + TOP 5 CERCANAS)
+-- 11. PESTAÑA 1: EXPLORADOR (BOTONES REORDENADOS + LISTA ORIGINAL INTACTA)
 -- ==============================================================================
 
 local InfoCard = Instance.new("Frame")
-InfoCard.Size = UDim2.new(1, -20, 0, 68)
+InfoCard.Size = UDim2.new(1, -20, 0, 72)
 InfoCard.Position = UDim2.new(0, 10, 0, 4)
 InfoCard.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
 InfoCard.Parent = ExplorerPage
@@ -1630,8 +1582,8 @@ task.spawn(function()
 end)
 
 local InfoDetails = Instance.new("TextLabel")
-InfoDetails.Size = UDim2.new(1, -12, 0, 40)
-InfoDetails.Position = UDim2.new(0, 6, 0, 24)
+InfoDetails.Size = UDim2.new(1, -12, 0, 42)
+InfoDetails.Position = UDim2.new(0, 6, 0, 25)
 InfoDetails.BackgroundTransparency = 1
 InfoDetails.Text = "Bloater (16/14m, 4s) y Órbita de Jefes/Variantes activos. Pulsa '🛑 PARAR TODO' para detener todo."
 InfoDetails.TextColor3 = Color3.fromRGB(200, 200, 200)
@@ -1649,7 +1601,7 @@ end
 -- Fila 1: Bajar Aquí + Subir y Soltar
 local DropHereBtn = Instance.new("TextButton")
 DropHereBtn.Size = UDim2.new(0.55, -12, 0, 30)
-DropHereBtn.Position = UDim2.new(0, 10, 0, 78)
+DropHereBtn.Position = UDim2.new(0, 10, 0, 82)
 DropHereBtn.BackgroundColor3 = Color3.fromRGB(115, 55, 175)
 DropHereBtn.Text = "⬇️ BAJAR AQUÍ (PIES)"
 DropHereBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1664,7 +1616,7 @@ end)
 
 local AscendReleaseBtn = Instance.new("TextButton")
 AscendReleaseBtn.Size = UDim2.new(0.45, -12, 0, 30)
-AscendReleaseBtn.Position = UDim2.new(0.55, 2, 0, 78)
+AscendReleaseBtn.Position = UDim2.new(0.55, 2, 0, 82)
 AscendReleaseBtn.BackgroundColor3 = Color3.fromRGB(25, 145, 95)
 AscendReleaseBtn.Text = "⬆️ SUBIR Y SOLTAR TODO"
 AscendReleaseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1679,8 +1631,8 @@ end)
 
 -- Fila 2: Botón GRANDE de "🛑 PARAR TODO"
 local StopAllBtn = Instance.new("TextButton")
-StopAllBtn.Size = UDim2.new(1, -20, 0, 36)
-StopAllBtn.Position = UDim2.new(0, 10, 0, 114)
+StopAllBtn.Size = UDim2.new(1, -20, 0, 34)
+StopAllBtn.Position = UDim2.new(0, 10, 0, 118)
 StopAllBtn.BackgroundColor3 = Color3.fromRGB(205, 45, 45)
 StopAllBtn.Text = "🛑 PARAR TODO (DETENER VUELO, BLOATER, ÓRBITA Y VARIANTES)"
 StopAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1689,14 +1641,14 @@ StopAllBtn.Font = Enum.Font.GothamBold
 StopAllBtn.Parent = ExplorerPage
 Instance.new("UICorner", StopAllBtn).CornerRadius = UDim.new(0, 6)
 
--- Fila 3: Botón ANCLAR POSICIÓN AFK (Movido aquí por ser muy importante)
+-- Fila 3: Botón ANCLAR POSICIÓN AFK (Movido aquí desde Configuración)
 local AnchorAfkMainBtn = Instance.new("TextButton")
-AnchorAfkMainBtn.Size = UDim2.new(1, -20, 0, 30)
-AnchorAfkMainBtn.Position = UDim2.new(0, 10, 0, 156)
+AnchorAfkMainBtn.Size = UDim2.new(1, -20, 0, 28)
+AnchorAfkMainBtn.Position = UDim2.new(0, 10, 0, 158)
 AnchorAfkMainBtn.BackgroundColor3 = Color3.fromRGB(45, 85, 155)
 AnchorAfkMainBtn.Text = "⚓ ANCLAR POSICIÓN AFK: OFF"
 AnchorAfkMainBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-AnchorAfkMainBtn.TextSize = 10
+AnchorAfkMainBtn.TextSize = 9
 AnchorAfkMainBtn.Font = Enum.Font.GothamBold
 AnchorAfkMainBtn.Parent = ExplorerPage
 Instance.new("UICorner", AnchorAfkMainBtn).CornerRadius = UDim.new(0, 6)
@@ -1720,54 +1672,39 @@ AnchorAfkMainBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Separación amplia + Botón centrado de 5 Rocas Cercanas
-local Nearest5Btn = Instance.new("TextButton")
-Nearest5Btn.Size = UDim2.new(0.68, 0, 0, 32)
-Nearest5Btn.Position = UDim2.new(0.16, 0, 0, 204)
-Nearest5Btn.BackgroundColor3 = Color3.fromRGB(0, 130, 110)
-Nearest5Btn.Text = "📡 ACTUALIZAR 5 ROCAS MÁS CERCANAS"
-Nearest5Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-Nearest5Btn.TextSize = 10
-Nearest5Btn.Font = Enum.Font.GothamBold
-Nearest5Btn.Parent = ExplorerPage
-Instance.new("UICorner", Nearest5Btn).CornerRadius = UDim.new(0, 8)
+-- Fila 4: Buscador y Ordenar Profundidad (Original intacto)
+local SearchBox = Instance.new("TextBox")
+SearchBox.Size = UDim2.new(0.55, -10, 0, 28)
+SearchBox.Position = UDim2.new(0, 10, 0, 192)
+SearchBox.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
+SearchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+SearchBox.PlaceholderText = "Filtrar (ej. rock, tree, ground)..."
+SearchBox.Text = ""
+SearchBox.TextSize = 10
+SearchBox.Font = Enum.Font.Code
+SearchBox.ClearTextOnFocus = false
+SearchBox.Parent = ExplorerPage
+Instance.new("UICorner", SearchBox).CornerRadius = UDim.new(0, 6)
 
--- Contenedor exclusivo para las 5 rocas más cercanas (aparece al presionar el botón)
-local Top5Container = Instance.new("Frame")
-Top5Container.Size = UDim2.new(1, -20, 0, 192)
-Top5Container.Position = UDim2.new(0, 10, 0, 244)
-Top5Container.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
-Top5Container.Visible = false
-Top5Container.Parent = ExplorerPage
-Instance.new("UICorner", Top5Container).CornerRadius = UDim.new(0, 6)
+local FilterBtn = Instance.new("TextButton")
+FilterBtn.Size = UDim2.new(0.45, -10, 0, 28)
+FilterBtn.Position = UDim2.new(0.55, 0, 0, 192)
+FilterBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 80)
+FilterBtn.Text = "📊 ORDENAR PROFUNDIDAD"
+FilterBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+FilterBtn.TextSize = 9
+FilterBtn.Font = Enum.Font.GothamBold
+FilterBtn.Parent = ExplorerPage
+Instance.new("UICorner", FilterBtn).CornerRadius = UDim.new(0, 6)
 
-local Top5Layout = Instance.new("UIListLayout")
-Top5Layout.SortOrder = Enum.SortOrder.LayoutOrder
-Top5Layout.Padding = UDim.new(0, 4)
-Top5Layout.Parent = Top5Container
-
--- ==============================================================================
--- 12. PESTAÑA 2: LISTA COMPLETA (SEPARADA EN SU PROPIA PESTAÑA)
--- ==============================================================================
-
-local FullListRefreshBtn = Instance.new("TextButton")
-FullListRefreshBtn.Size = UDim2.new(0.64, 0, 0, 30)
-FullListRefreshBtn.Position = UDim2.new(0.18, 0, 0, 8)
-FullListRefreshBtn.BackgroundColor3 = Color3.fromRGB(30, 140, 80)
-FullListRefreshBtn.Text = "🔄 ACTUALIZAR LISTA POR CERCANÍA"
-FullListRefreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-FullListRefreshBtn.TextSize = 10
-FullListRefreshBtn.Font = Enum.Font.GothamBold
-FullListRefreshBtn.Parent = FullListPage
-Instance.new("UICorner", FullListRefreshBtn).CornerRadius = UDim.new(0, 6)
-
+-- Fila 5: Lista ScrollFrame (Original intacta)
 local ScrollFrame = Instance.new("ScrollingFrame")
-ScrollFrame.Size = UDim2.new(1, -20, 1, -50)
-ScrollFrame.Position = UDim2.new(0, 10, 0, 44)
+ScrollFrame.Size = UDim2.new(1, -20, 1, -232)
+ScrollFrame.Position = UDim2.new(0, 10, 0, 226)
 ScrollFrame.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
 ScrollFrame.BorderSizePixel = 0
 ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-ScrollFrame.Parent = FullListPage
+ScrollFrame.Parent = ExplorerPage
 Instance.new("UICorner", ScrollFrame).CornerRadius = UDim.new(0, 6)
 
 local UIListLayout = Instance.new("UIListLayout")
@@ -1776,140 +1713,7 @@ UIListLayout.Padding = UDim.new(0, 4)
 UIListLayout.Parent = ScrollFrame
 
 -- ==============================================================================
--- 13. RENDERIZADO DE TOP 5 Y LISTA COMPLETA
--- ==============================================================================
-
-local RowButtons = {}
-local InspectorSelectedLabel = nil
-
-local function refreshRowSelectionVisuals()
-    for part, rowFrame in pairs(RowButtons) do
-        if rowFrame and rowFrame.Parent then
-            rowFrame.BackgroundColor3 = (part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
-        end
-    end
-end
-
-local function renderTop5List()
-    for _, child in ipairs(Top5Container:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
-    end
-
-    local count = math.min(5, #State.FilteredObjects)
-    for rank = 1, count do
-        local obj = State.FilteredObjects[rank]
-        local row = Instance.new("Frame")
-        row.Size = UDim2.new(1, -4, 0, 34)
-        row.BackgroundColor3 = (obj.Part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
-        row.Parent = Top5Container
-        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
-
-        local selectBtn = Instance.new("TextButton")
-        selectBtn.Size = UDim2.new(1, -80, 1, 0)
-        selectBtn.Position = UDim2.new(0, 6, 0, 0)
-        selectBtn.BackgroundTransparency = 1
-        selectBtn.Text = string.format("#%d [%s] Dist: %.0fm | Base Y: %.1f", rank, obj.Name, obj.DistToPlayer, obj.BottomY)
-        selectBtn.TextColor3 = Color3.fromRGB(0, 255, 185)
-        selectBtn.TextSize = 9
-        selectBtn.Font = Enum.Font.Code
-        selectBtn.TextXAlignment = Enum.TextXAlignment.Left
-        selectBtn.Parent = row
-
-        selectBtn.MouseButton1Click:Connect(function()
-            selectTargetPart(obj.Part)
-            refreshRowSelectionVisuals()
-            InfoTitle.Text = string.format("📌 #%d Cercana: '%s' (a %.0fm)", rank, obj.Name, obj.DistToPlayer)
-            InfoDetails.Text = string.format("Base Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)", obj.BottomY, obj.Size.X, obj.Size.Y, obj.Size.Z)
-            if InspectorSelectedLabel then
-                InspectorSelectedLabel.Text = string.format("Seleccionado: '%s' (%s)", obj.Name, obj.Class)
-            end
-        end)
-
-        local goBtn = Instance.new("TextButton")
-        goBtn.Size = UDim2.new(0, 70, 0, 26)
-        goBtn.Position = UDim2.new(1, -74, 0, 4)
-        goBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
-        goBtn.Text = "⬇️ BAJAR"
-        goBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        goBtn.TextSize = 9
-        goBtn.Font = Enum.Font.GothamBold
-        goBtn.Parent = row
-        Instance.new("UICorner", goBtn).CornerRadius = UDim.new(0, 4)
-
-        goBtn.MouseButton1Click:Connect(function()
-            selectTargetPart(obj.Part)
-            refreshRowSelectionVisuals()
-            InfoTitle.Text = string.format("📌 #%d Destino: '%s'", rank, obj.Name)
-            task.spawn(function()
-                executeRefugeEntry(obj.Part, StatusDisplayCallback, false)
-            end)
-        end)
-    end
-
-    Top5Container.Visible = (count > 0)
-end
-
-local function updateFullScrollList()
-    for _, child in ipairs(ScrollFrame:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
-    end
-    RowButtons = {}
-
-    for rank, obj in ipairs(State.FilteredObjects) do
-        local row = Instance.new("Frame")
-        row.Size = UDim2.new(1, -6, 0, 36)
-        row.BackgroundColor3 = (obj.Part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
-        row.Parent = ScrollFrame
-        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
-        RowButtons[obj.Part] = row
-
-        local selectBtn = Instance.new("TextButton")
-        selectBtn.Size = UDim2.new(1, -82, 1, 0)
-        selectBtn.Position = UDim2.new(0, 6, 0, 0)
-        selectBtn.BackgroundTransparency = 1
-        selectBtn.Text = string.format("#%d [%s] Dist: %.0fm | Base Y: %.1f", rank, obj.Name, obj.DistToPlayer, obj.BottomY)
-        selectBtn.TextColor3 = (obj.BottomY <= -5) and Color3.fromRGB(0, 255, 180) or Color3.fromRGB(220, 220, 220)
-        selectBtn.TextSize = 9
-        selectBtn.Font = Enum.Font.Code
-        selectBtn.TextXAlignment = Enum.TextXAlignment.Left
-        selectBtn.Parent = row
-
-        selectBtn.MouseButton1Click:Connect(function()
-            selectTargetPart(obj.Part)
-            refreshRowSelectionVisuals()
-            InfoTitle.Text = string.format("📌 #%d Seleccionado: '%s' (a %.0fm)", rank, obj.Name, obj.DistToPlayer)
-            InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)", obj.BottomY, obj.CenterY, obj.Size.X, obj.Size.Y, obj.Size.Z)
-            if InspectorSelectedLabel then
-                InspectorSelectedLabel.Text = string.format("Seleccionado: '%s' (%s)", obj.Name, obj.Class)
-            end
-        end)
-
-        local goBtn = Instance.new("TextButton")
-        goBtn.Size = UDim2.new(0, 72, 0, 28)
-        goBtn.Position = UDim2.new(1, -76, 0, 4)
-        goBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
-        goBtn.Text = "⬇️ BAJAR"
-        goBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        goBtn.TextSize = 9
-        goBtn.Font = Enum.Font.GothamBold
-        goBtn.Parent = row
-        Instance.new("UICorner", goBtn).CornerRadius = UDim.new(0, 4)
-
-        goBtn.MouseButton1Click:Connect(function()
-            selectTargetPart(obj.Part)
-            refreshRowSelectionVisuals()
-            InfoTitle.Text = string.format("📌 #%d Destino: '%s'", rank, obj.Name)
-            task.spawn(function()
-                executeRefugeEntry(obj.Part, StatusDisplayCallback, false)
-            end)
-        end)
-    end
-
-    ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, #State.FilteredObjects * 40)
-end
-
--- ==============================================================================
--- 14. PESTAÑA 3: CONFIGURACIÓN (SIN ANCLAR AFK)
+-- 12. PESTAÑA 2: PANEL DE CONFIGURACIÓN (SIN ANCLAR AFK)
 -- ==============================================================================
 
 local function createToggleBtn(yPos, text, color, onClick)
@@ -2099,7 +1903,7 @@ createToggleBtn(828, "🚶 CAMINAR PRIMERO ANTES DE BAJAR: ON", Color3.fromRGB(0
 end)
 
 -- ==============================================================================
--- 15. PESTAÑA 4: INSPECTOR & COORDENADAS (CON CLICK: OFF Y COPIAR NOMBRE)
+-- 13. PESTAÑA 3: INSPECTOR & COORDENADAS (CON CLICK: OFF Y COPIAR NOMBRE)
 -- ==============================================================================
 
 local InspectCard = Instance.new("Frame")
@@ -2120,7 +1924,7 @@ InspectHeader.Font = Enum.Font.GothamBold
 InspectHeader.TextXAlignment = Enum.TextXAlignment.Left
 InspectHeader.Parent = InspectCard
 
-InspectorSelectedLabel = Instance.new("TextLabel")
+local InspectorSelectedLabel = Instance.new("TextLabel")
 InspectorSelectedLabel.Size = UDim2.new(1, -20, 0, 20)
 InspectorSelectedLabel.Position = UDim2.new(0, 10, 0, 30)
 InspectorSelectedLabel.BackgroundTransparency = 1
@@ -2135,7 +1939,7 @@ local ClickModeBtn = Instance.new("TextButton")
 ClickModeBtn.Size = UDim2.new(0.5, -14, 0, 34)
 ClickModeBtn.Position = UDim2.new(0, 10, 0, 58)
 ClickModeBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 50)
-ClickModeBtn.Text = "🎯 CLICK INSPECCIONAR: OFF"
+ClickModeBtn.Text = "🎯 CLICK: OFF"
 ClickModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 ClickModeBtn.TextSize = 9
 ClickModeBtn.Font = Enum.Font.GothamBold
@@ -2220,8 +2024,75 @@ CopyVecBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 16. EVENTOS DE BOTONES Y CLIC EN EL MUNDO
+-- 14. RENDERIZADO DE LISTA Y EVENTOS (ORIGINAL V11.2 INTACTO)
 -- ==============================================================================
+
+local RowButtons = {}
+
+local function refreshRowSelectionVisuals()
+    for part, rowFrame in pairs(RowButtons) do
+        if rowFrame and rowFrame.Parent then
+            rowFrame.BackgroundColor3 = (part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
+        end
+    end
+end
+
+local function updateScrollList()
+    for _, child in ipairs(ScrollFrame:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+    RowButtons = {}
+
+    for rank, obj in ipairs(State.FilteredObjects) do
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -6, 0, 36)
+        row.BackgroundColor3 = (obj.Part == State.SelectedPart) and Color3.fromRGB(20, 65, 115) or Color3.fromRGB(22, 26, 36)
+        row.Parent = ScrollFrame
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 4)
+        RowButtons[obj.Part] = row
+
+        local selectBtn = Instance.new("TextButton")
+        selectBtn.Size = UDim2.new(1, -82, 1, 0)
+        selectBtn.Position = UDim2.new(0, 6, 0, 0)
+        selectBtn.BackgroundTransparency = 1
+        selectBtn.Text = string.format("#%d [%s] Base Y: %.1f | (%.0f, %.0f, %.0f)", rank, obj.Name, obj.BottomY, obj.Pos.X, obj.CenterY, obj.Pos.Z)
+        selectBtn.TextColor3 = (obj.BottomY <= -5) and Color3.fromRGB(0, 255, 180) or Color3.fromRGB(220, 220, 220)
+        selectBtn.TextSize = 9
+        selectBtn.Font = Enum.Font.Code
+        selectBtn.TextXAlignment = Enum.TextXAlignment.Left
+        selectBtn.Parent = row
+
+        selectBtn.MouseButton1Click:Connect(function()
+            selectTargetPart(obj.Part)
+            refreshRowSelectionVisuals()
+            InfoTitle.Text = string.format("📌 #%d Seleccionado: '%s' (%s)", rank, obj.Name, obj.Class)
+            InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)\nRuta: %s", obj.BottomY, obj.CenterY, obj.Size.X, obj.Size.Y, obj.Size.Z, obj.Part:GetFullName())
+            InspectorSelectedLabel.Text = string.format("Seleccionado: '%s' (%s)", obj.Name, obj.Class)
+        end)
+
+        local goBtn = Instance.new("TextButton")
+        goBtn.Size = UDim2.new(0, 72, 0, 28)
+        goBtn.Position = UDim2.new(1, -76, 0, 4)
+        goBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
+        goBtn.Text = "⬇️ BAJAR"
+        goBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        goBtn.TextSize = 9
+        goBtn.Font = Enum.Font.GothamBold
+        goBtn.Parent = row
+        Instance.new("UICorner", goBtn).CornerRadius = UDim.new(0, 4)
+
+        goBtn.MouseButton1Click:Connect(function()
+            selectTargetPart(obj.Part)
+            refreshRowSelectionVisuals()
+            InfoTitle.Text = string.format("📌 #%d Destino: '%s' (%s)", rank, obj.Name, obj.Class)
+            task.spawn(function()
+                executeRefugeEntry(obj.Part, StatusDisplayCallback, false)
+            end)
+        end)
+    end
+
+    ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, #State.FilteredObjects * 40)
+end
 
 mouse.Button1Down:Connect(function()
     if not State.ClickInspect then return end
@@ -2232,15 +2103,16 @@ mouse.Button1Down:Connect(function()
         refreshRowSelectionVisuals()
         local bottomY = getPartBottomDepth(targetPart)
         InfoTitle.Text = string.format("📌 Click en: '%s' (%s)", targetPart.Name, targetPart.ClassName)
-        InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)", bottomY, targetPart.Position.Y, targetPart.Size.X, targetPart.Size.Y, targetPart.Size.Z)
+        InfoDetails.Text = string.format("Base Y: %.2f | Centro Y: %.2f | Tamaño: (%.1f, %.1f, %.1f)\nRuta: %s", bottomY, targetPart.Position.Y, targetPart.Size.X, targetPart.Size.Y, targetPart.Size.Z, targetPart:GetFullName())
         InspectorSelectedLabel.Text = string.format("Seleccionado: '%s' (%s)", targetPart.Name, targetPart.ClassName)
+        SearchBox.Text = targetPart.Name
     end
 end)
 
 ClickModeBtn.MouseButton1Click:Connect(function()
     State.ClickInspect = not State.ClickInspect
     ClickModeBtn.BackgroundColor3 = State.ClickInspect and Color3.fromRGB(30, 160, 80) or Color3.fromRGB(160, 40, 50)
-    ClickModeBtn.Text = State.ClickInspect and "🎯 CLICK INSPECCIONAR: ON" or "🎯 CLICK INSPECCIONAR: OFF"
+    ClickModeBtn.Text = State.ClickInspect and "🎯 CLICK: ON" or "🎯 CLICK: OFF"
 end)
 
 CopyNameBtn.MouseButton1Click:Connect(function()
@@ -2248,10 +2120,6 @@ CopyNameBtn.MouseButton1Click:Connect(function()
         local txt = State.SelectedPart.Name
         if setclipboard then setclipboard(txt) elseif toclipboard then toclipboard(txt) end
         CopyNameBtn.Text = "✅ ¡COPIADO!"
-        task.wait(1.2)
-        CopyNameBtn.Text = "📋 COPIAR NOMBRE"
-    else
-        CopyNameBtn.Text = "⚠️ SIN SELECCIÓN"
         task.wait(1.2)
         CopyNameBtn.Text = "📋 COPIAR NOMBRE"
     end
@@ -2262,33 +2130,22 @@ StopAllBtn.MouseButton1Click:Connect(function()
     InfoDetails.Text = "🛑 PARAR TODO: Vuelo, Noclip, Bloater, Órbita y Variantes detenidos. Pulsa 'BAJAR' para reactivar."
 end)
 
--- Botón central de Explorador: Ordena por cercanía (0% lag) y despliega las 5 más cercanas
-Nearest5Btn.MouseButton1Click:Connect(function()
-    sortObjectsByProximityFast()
-    renderTop5List()
-    updateFullScrollList()
-    Nearest5Btn.Text = "✅ TOP 5 CERCANAS ACTUALIZADAS"
-    task.wait(1.0)
-    Nearest5Btn.Text = "📡 ACTUALIZAR 5 ROCAS MÁS CERCANAS"
-end)
-
--- Botón de la pestaña Lista Completa
-FullListRefreshBtn.MouseButton1Click:Connect(function()
-    sortObjectsByProximityFast()
-    updateFullScrollList()
-    FullListRefreshBtn.Text = string.format("✅ %d ORDENADOS POR CERCANÍA", #State.FilteredObjects)
-    task.wait(1.0)
-    FullListRefreshBtn.Text = "🔄 ACTUALIZAR LISTA POR CERCANÍA"
+FilterBtn.MouseButton1Click:Connect(function()
+    FilterBtn.Text = "⏳ ANALIZANDO..."
+    scanAndRankTerrain(SearchBox.Text)
+    updateScrollList()
+    FilterBtn.Text = string.format("✅ %d ORDENADOS", #State.FilteredObjects)
+    task.wait(1.2)
+    FilterBtn.Text = "📊 ORDENAR PROFUNDIDAD"
 end)
 
 FloatBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
 
--- Carga inicial (mantiene resplandor amarillo) + Ordenar por cercanía + Arma 2
-scanInitialTerrainWithHighlights()
-sortObjectsByProximityFast()
-updateFullScrollList()
+-- Carga inicial + Equipar Arma 2 por defecto
+scanAndRankTerrain("")
+updateScrollList()
 if Config.AutoEquipSlot2 then
     equipSlotWeapon(2)
 end
