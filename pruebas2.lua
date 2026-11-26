@@ -1,5 +1,5 @@
 -- ==============================================================================
--- PILOTO AÉREO DE TECHO & PIRUETAS V1.0 (NATIVO ROBLOX - SIN LIBRERÍAS EXTERNAS)
+-- PILOTO AÉREO DE TECHO V2.0 (WAYPOINTS PRECALCULADOS 0% LAG + I INVERTIDA)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -9,7 +9,6 @@ local RunService = game:GetService("RunService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local lp = Players.LocalPlayer
 
--- Mantener cursor visible
 RunService.RenderStepped:Connect(function()
     pcall(function()
         UserInputService.MouseIconEnabled = true
@@ -18,29 +17,30 @@ end)
 
 local Config = {
     Active = false,
-    Direction = "NORTE",        -- "NORTE", "SUR", "ESTE", "OESTE"
-    Pattern = "Círculo",        -- "Círculo", "Cuadrado", "Zigzag", "Rombo"
+    Direction = "ESTE",         -- Por defecto hacia el ESTE (+X)
+    Pattern = "Círculo",        -- "Círculo", "Cuadrado", "Zigzag", "Rombo", "I Invertida"
 
     -- Distancias y alturas configurables
-    ForwardStuds = 30,          -- Studs que avanza hacia adelante antes de hacer piruetas
-    PatternRadius = 22,         -- Amplitud/radio de Círculo, Cuadrado, Zigzag y Rombo
-    VerticalDipStuds = 3.5,     -- Cuántos studs baja y sube suavemente durante la pirueta
-    FlySpeed = 65,              -- Velocidad de vuelo en studs/s
-    RubberbandThreshold = 14,   -- Si el juego te devuelve a menos de 14 studs del inicio, vuelve a salir
+    ForwardStuds = 30,          -- Studs que avanza recto antes de iniciar la figura
+    PatternRadius = 24,         -- Amplitud/radio real de la figura en studs
+    VerticalDipStuds = 3.0,     -- Studs que baja y sube suavemente durante la figura
+    FlySpeed = 65,              -- Velocidad de desplazamiento en studs/s
+    RubberbandThreshold = 14,   -- Si el servidor te regresa a <14 studs del origen, vuelve a salir
 
     -- Gestión de Poder 5 y Arma 2
     AutoWeaponCycle = true,
-    Power5Mode = "CooldownHUD", -- "CooldownHUD" (detecta fin de recarga) o "TimerFixed" (cada X seg)
-    Power5Interval = 120,       -- Segundos de espera en modo temporizador fijo
+    Power5Mode = "CooldownHUD", -- "CooldownHUD" (solo Slot 5 exacto) o "TimerFixed" (120s)
+    Power5Interval = 120,
     EquipSlot2Default = true
 }
 
 local State = {
-    StartOrigin = nil,          -- Punto exacto en la orilla del techo donde iniciaste
-    Phase = "Idle",             -- "Idle", "Advancing", "Orbiting"
+    StartOrigin = nil,
+    Waypoints = {},             -- Lista precalculada de coordenadas Vector3 (0% lag)
+    CurrentWpIndex = 1,
+    VirtualPos = nil,           -- Posición guía independiente del tirón del servidor
+    Phase = "Idle",             -- "Idle", "Advancing", "Pattern"
     StatusText = "En espera (Detenido)",
-    Angle = 0,
-    StepIndex = 1,
     LastPower5Tick = 0,
     Power5CooldownText = "Listo"
 }
@@ -53,15 +53,72 @@ local DIRECTION_VECTORS = {
 }
 
 -- ==============================================================================
--- 1. GESTIÓN DE ARMAS (SLOT 2 Y DETECCIÓN DE RECARGA DE SLOT 5)
+-- 1. GENERADOR DE COORDENADAS PRECALCULADAS (SE EJECUTA 1 SOLA VEZ = 0% LAG)
+-- ==============================================================================
+
+local function buildPatternWaypoints(originPos)
+    local fwd = DIRECTION_VECTORS[Config.Direction] or Vector3.new(1, 0, 0)
+    local right = Vector3.new(-fwd.Z, 0, fwd.X)
+    local center = originPos + (fwd * Config.ForwardStuds)
+    local r = Config.PatternRadius
+    local dip = Config.VerticalDipStuds
+    local pts = {}
+
+    if Config.Pattern == "Círculo" then
+        -- 16 puntos exactos alrededor del centro formando un círculo amplio real
+        local segments = 16
+        for i = 0, segments - 1 do
+            local theta = (i / segments) * (math.pi * 2)
+            local yOff = -math.abs(math.sin(theta)) * dip
+            local p = center + (fwd * (math.cos(theta) * r)) + (right * (math.sin(theta) * r)) + Vector3.new(0, yOff, 0)
+            table.insert(pts, p)
+        end
+
+    elseif Config.Pattern == "Cuadrado" then
+        table.insert(pts, center + (fwd * r) + (right * r) + Vector3.new(0, -dip, 0))
+        table.insert(pts, center + (fwd * r) - (right * r))
+        table.insert(pts, center - (fwd * r) - (right * r) + Vector3.new(0, -dip, 0))
+        table.insert(pts, center - (fwd * r) + (right * r))
+
+    elseif Config.Pattern == "Zigzag" then
+        local steps = 4
+        for i = 0, steps do
+            local t = (i / steps) * 2 - 1 -- de -1 a +1 en avance
+            local side = ((i % 2 == 0) and 1 or -1) * r
+            local yOff = ((i % 2 == 0) and -dip or 0)
+            table.insert(pts, center + (fwd * (t * (r * 0.75))) + (right * side) + Vector3.new(0, yOff, 0))
+        end
+        for i = steps - 1, 1, -1 do
+            local t = (i / steps) * 2 - 1
+            local side = ((i % 2 == 0) and -1 or 1) * r
+            table.insert(pts, center + (fwd * (t * (r * 0.75))) + (right * side))
+        end
+
+    elseif Config.Pattern == "Rombo" then
+        table.insert(pts, center + (fwd * r) + Vector3.new(0, -dip, 0))
+        table.insert(pts, center + (right * r))
+        table.insert(pts, center - (fwd * r) + Vector3.new(0, -dip, 0))
+        table.insert(pts, center - (right * r))
+
+    elseif Config.Pattern == "I Invertida" then
+        -- Forma una I invertida (⊥): llega al frente (center), barre todo hacia un lado,
+        -- cruza todo hacia el otro lado y vuelve al centro para repetir
+        table.insert(pts, center)
+        table.insert(pts, center + (right * r) + Vector3.new(0, -dip, 0))
+        table.insert(pts, center)
+        table.insert(pts, center - (right * r) + Vector3.new(0, -dip, 0))
+    end
+
+    State.Waypoints = pts
+    State.CurrentWpIndex = 1
+end
+
+-- ==============================================================================
+-- 2. GESTIÓN ESTRICTA DE PODER 5 (SIN CONFUNDIR CON SLOT 4) Y ARMA 2
 -- ==============================================================================
 
 local function pressNumberKey(num)
-    local map = {
-        [2] = Enum.KeyCode.Two,
-        [5] = Enum.KeyCode.Five
-    }
-    local kc = map[num]
+    local kc = (num == 2 and Enum.KeyCode.Two) or (num == 5 and Enum.KeyCode.Five)
     if kc then
         pcall(function()
             VirtualInputManager:SendKeyEvent(true, kc, false, game)
@@ -71,25 +128,32 @@ local function pressNumberKey(num)
     end
 end
 
-local function getSlotGuiAndTool(slotNum)
+-- Busca EXCLUSIVAMENTE la ranura exacta (ej. "5" o "Slot5", nunca "4")
+local function getExactSlotFrameAndTool(slotNum)
     local slotStr = tostring(slotNum)
     local pg = lp:FindFirstChild("PlayerGui")
     local bpg = pg and pg:FindFirstChild("BackpackGui")
-    local foundFrame = nil
+    local exactFrame = nil
     local toolName = nil
 
     if bpg then
-        for _, desc in ipairs(bpg:GetDescendants()) do
-            if (desc.Name == slotStr or desc.Name == "Slot" .. slotStr) and desc:IsA("GuiObject") then
-                foundFrame = desc
-                for _, child in ipairs(desc:GetChildren()) do
-                    if child:IsA("ObjectValue") and child.Value and child.Value:IsA("Tool") then
-                        return child.Value, foundFrame
-                    elseif child:IsA("TextLabel") and child.Text ~= "" and child.Text ~= slotStr and not child.Text:match("^%d+$") and not child.Text:find("s") then
-                        toolName = child.Text
-                    end
-                end
+        -- Buscar primero en Hotbar directo para no leer otras ranuras
+        local hotbar = bpg:FindFirstChild("Hotbar", true)
+        local searchRoot = hotbar or bpg
+        for _, child in ipairs(searchRoot:GetChildren()) do
+            if child:IsA("GuiObject") and (child.Name == slotStr or child.Name == "Slot" .. slotStr) then
+                exactFrame = child
                 break
+            end
+        end
+
+        if exactFrame then
+            for _, desc in ipairs(exactFrame:GetDescendants()) do
+                if desc:IsA("ObjectValue") and desc.Value and desc.Value:IsA("Tool") then
+                    return desc.Value, exactFrame
+                elseif desc:IsA("TextLabel") and desc.Text ~= "" and desc.Text ~= slotStr and not desc.Text:match("^[%d:%.s]+$") then
+                    toolName = desc.Text
+                end
             end
         end
     end
@@ -102,20 +166,19 @@ local function getSlotGuiAndTool(slotNum)
     local bp = lp:FindFirstChild("Backpack")
 
     if toolName then
-        if char and char:FindFirstChild(toolName) then return char[toolName], foundFrame end
-        if bp and bp:FindFirstChild(toolName) then return bp[toolName], foundFrame end
+        if char and char:FindFirstChild(toolName) then return char[toolName], exactFrame end
+        if bp and bp:FindFirstChild(toolName) then return bp[toolName], exactFrame end
     end
 
-    -- Respaldo por orden de herramientas
-    local all = {}
+    local allTools = {}
     if char then
-        for _, t in ipairs(char:GetChildren()) do if t:IsA("Tool") then table.insert(all, t) end end
+        for _, t in ipairs(char:GetChildren()) do if t:IsA("Tool") then table.insert(allTools, t) end end
     end
     if bp then
-        for _, t in ipairs(bp:GetChildren()) do if t:IsA("Tool") then table.insert(all, t) end end
+        for _, t in ipairs(bp:GetChildren()) do if t:IsA("Tool") then table.insert(allTools, t) end end
     end
 
-    return all[slotNum], foundFrame
+    return allTools[slotNum], exactFrame
 end
 
 local function equipSlot2Only()
@@ -123,7 +186,7 @@ local function equipSlot2Only()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not char or not hum or hum.Health <= 0 then return end
 
-    local tool2 = getSlotGuiAndTool(2)
+    local tool2 = getExactSlotFrameAndTool(2)
     if tool2 then
         if char:FindFirstChildOfClass("Tool") ~= tool2 then
             hum:EquipTool(tool2)
@@ -133,19 +196,18 @@ local function equipSlot2Only()
     end
 end
 
--- Revisa si el 5to poder tiene un cronómetro activo en el HUD o atributos
-local function isPower5Ready()
-    local tool5, slotFrame = getSlotGuiAndTool(5)
+-- Solo inspecciona el frame de la ranura 5 (ignora el 4to poder por completo)
+local function isPower5ReadyStrict()
+    local tool5, slot5Frame = getExactSlotFrameAndTool(5)
 
-    -- 1. Revisar textos dentro del cuadro del Slot 5 en BackpackGui (ej. "118", "1:55", "45s")
-    if slotFrame then
-        for _, desc in ipairs(slotFrame:GetDescendants()) do
+    if slot5Frame then
+        for _, desc in ipairs(slot5Frame:GetDescendants()) do
             if desc:IsA("TextLabel") and desc.Visible and desc.Text ~= "" and desc.Text ~= "5" then
                 local txt = desc.Text:gsub("%s+", "")
-                if txt:match("%d+:%d+") or txt:match("^%d+s?$") or txt:match("^%d+%.%d+s?$") then
-                    local num = tonumber(txt:match("%d+"))
-                    if num and num > 0 then
-                        State.Power5CooldownText = "Recargando (" .. txt .. ")"
+                if txt:match("^%d+:%d+$") or txt:match("^%d+s?$") or txt:match("^%d+%.%d+s?$") then
+                    local val = tonumber(txt:match("%d+"))
+                    if val and val > 0 then
+                        State.Power5CooldownText = "Slot 5 en CD (" .. txt .. ")"
                         return false
                     end
                 end
@@ -153,20 +215,19 @@ local function isPower5Ready()
         end
     end
 
-    -- 2. Revisar atributos de Cooldown en la herramienta 5
     if tool5 then
         local cd = tool5:GetAttribute("Cooldown") or tool5:GetAttribute("RemainingCooldown")
         if type(cd) == "number" and cd > 0 then
-            State.Power5CooldownText = string.format("Recargando (%.0fs)", cd)
+            State.Power5CooldownText = string.format("Slot 5 en CD (%.0fs)", cd)
             return false
         end
         if tool5:GetAttribute("OnCooldown") == true then
-            State.Power5CooldownText = "En Cooldown"
+            State.Power5CooldownText = "Slot 5 en Cooldown"
             return false
         end
     end
 
-    State.Power5CooldownText = "Listo"
+    State.Power5CooldownText = "Slot 5 Listo"
     return true
 end
 
@@ -175,7 +236,7 @@ local function triggerPower5AndReturnSlot2()
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not char or not hum or hum.Health <= 0 then return end
 
-    local tool5 = getSlotGuiAndTool(5)
+    local tool5 = getExactSlotFrameAndTool(5)
     if tool5 then
         hum:EquipTool(tool5)
         task.wait(0.06)
@@ -200,7 +261,6 @@ local function triggerPower5AndReturnSlot2()
     end
 end
 
--- Bucle de gestión del 5to Poder y Arma 2
 task.spawn(function()
     while true do
         task.wait(0.5)
@@ -211,8 +271,7 @@ task.spawn(function()
         if not char or not hum or hum.Health <= 0 then continue end
 
         if Config.Power5Mode == "CooldownHUD" then
-            -- Modo 1: Verifica si el cronómetro de recarga terminó (con mínimo 3s entre disparos)
-            if (tick() - State.LastPower5Tick) >= 3.0 and isPower5Ready() then
+            if (tick() - State.LastPower5Tick) >= 3.0 and isPower5ReadyStrict() then
                 triggerPower5AndReturnSlot2()
             else
                 if Config.EquipSlot2Default then
@@ -220,12 +279,11 @@ task.spawn(function()
                 end
             end
         else
-            -- Modo 2: Temporizador fijo cada X segundos (120s por defecto)
             local elapsed = tick() - State.LastPower5Tick
             if State.LastPower5Tick == 0 or elapsed >= Config.Power5Interval then
                 triggerPower5AndReturnSlot2()
             else
-                State.Power5CooldownText = string.format("Espera: %ds / %ds", math.floor(Config.Power5Interval - elapsed), Config.Power5Interval)
+                State.Power5CooldownText = string.format("Timer: %ds / %ds", math.floor(Config.Power5Interval - elapsed), Config.Power5Interval)
                 if Config.EquipSlot2Default then
                     equipSlot2Only()
                 end
@@ -235,11 +293,12 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 2. CONTROL DE FÍSICAS DE VUELO (INICIAR Y DETENER CON REINICIO DE FÍSICAS)
+-- 3. FÍSICAS DE VUELO Y SEGUIMIENTO DE COORDENADAS PRECALCULADAS
 -- ==============================================================================
 
 local function resetPhysicsCompletely()
     State.Phase = "Idle"
+    State.VirtualPos = nil
     local char = lp.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -275,8 +334,8 @@ local function ensureFlightForces(root)
         bp = Instance.new("BodyPosition")
         bp.Name = "RoofFlyBP"
         bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-        bp.P = 38000
-        bp.D = 950
+        bp.P = 42000
+        bp.D = 900
         bp.Position = root.Position
         bp.Parent = root
     end
@@ -293,10 +352,6 @@ local function ensureFlightForces(root)
     return bp, bg
 end
 
--- ==============================================================================
--- 3. MOTOR DE VUELO: AVANCE + DETECCIÓN DE RUBBERBAND + PIRUETAS AMPLIAS
--- ==============================================================================
-
 RunService.Heartbeat:Connect(function(dt)
     if not Config.Active then return end
 
@@ -307,96 +362,62 @@ RunService.Heartbeat:Connect(function(dt)
 
     if not State.StartOrigin then
         State.StartOrigin = root.Position
+        State.VirtualPos = root.Position
         State.Phase = "Advancing"
+        buildPatternWaypoints(State.StartOrigin)
     end
 
     hum.PlatformStand = true
     local bp, bg = ensureFlightForces(root)
 
-    local fwdDir = DIRECTION_VECTORS[Config.Direction] or Vector3.new(0, 0, -1)
-    local rightDir = Vector3.new(-fwdDir.Z, 0, fwdDir.X)
-    local advanceCenter = State.StartOrigin + (fwdDir * Config.ForwardStuds)
+    local fwdDir = DIRECTION_VECTORS[Config.Direction] or Vector3.new(1, 0, 0)
+    local advanceDest = State.StartOrigin + (fwdDir * Config.ForwardStuds)
 
-    -- DETECTOR DE REGRESO DEL JUEGO: Si estabas orbitando y el servidor te devolvió cerca del inicio
-    local distFromStartHoriz = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(State.StartOrigin.X, 0, State.StartOrigin.Z)).Magnitude
-    if State.Phase == "Orbiting" and distFromStartHoriz < Config.RubberbandThreshold and Config.ForwardStuds > Config.RubberbandThreshold then
+    -- Si el servidor regresó al personaje al punto inicial del techo mientras hacía la figura:
+    -- reiniciar el cursor al inicio y volver a avanzar los 30 studs
+    local distToStart = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(State.StartOrigin.X, 0, State.StartOrigin.Z)).Magnitude
+    if State.Phase == "Pattern" and distToStart < Config.RubberbandThreshold and Config.ForwardStuds > Config.RubberbandThreshold then
         State.Phase = "Advancing"
-        State.StepIndex = 1
-        State.Angle = 0
+        State.VirtualPos = root.Position
+        State.CurrentWpIndex = 1
     end
 
-    local desiredTarget = advanceCenter
+    local targetWp = advanceDest
 
-    -- FASE 1: Avanzar los studs configurados desde la orilla hacia el aire
     if State.Phase == "Advancing" then
-        State.StatusText = string.format("✈️ Avanzando hacia %s (%d studs)...", Config.Direction, Config.ForwardStuds)
-        desiredTarget = advanceCenter
+        State.StatusText = string.format("➡️ Avanzando al %s (%d studs)...", Config.Direction, Config.ForwardStuds)
+        targetWp = advanceDest
 
-        if (root.Position - advanceCenter).Magnitude <= 2.2 then
-            State.Phase = "Orbiting"
-            State.Angle = 0
-            State.StepIndex = 1
+        if (State.VirtualPos - advanceDest).Magnitude <= 1.0 then
+            State.Phase = "Pattern"
+            State.CurrentWpIndex = 1
         end
 
-    -- FASE 2: Ejecutar piruetas amplias combinadas con oscilación vertical (bajar/subir)
-    elseif State.Phase == "Orbiting" then
-        local r = Config.PatternRadius
-        local angularRate = Config.FlySpeed / math.max(r, 8)
-        State.Angle = (State.Angle + (angularRate * dt)) % (math.pi * 2)
+    elseif State.Phase == "Pattern" then
+        local wps = State.Waypoints
+        if #wps == 0 then
+            buildPatternWaypoints(State.StartOrigin)
+            wps = State.Waypoints
+        end
 
-        -- Oscilación vertical suave (baja y sube los studs configurados)
-        local verticalWave = -math.abs(math.sin(State.Angle * 1.5)) * Config.VerticalDipStuds
+        targetWp = wps[State.CurrentWpIndex] or advanceDest
+        State.StatusText = string.format("🌪️ %s (%d/%d) | %s", Config.Pattern, State.CurrentWpIndex, #wps, Config.Direction)
 
-        if Config.Pattern == "Círculo" then
-            State.StatusText = string.format("🔄 Círculo amplio en %s (Radio: %dm | Bajada: -%.1fm)", Config.Direction, r, Config.VerticalDipStuds)
-            local offsetFwd = fwdDir * (math.cos(State.Angle) * r)
-            local offsetSide = rightDir * (math.sin(State.Angle) * r)
-            desiredTarget = advanceCenter + offsetFwd + offsetSide + Vector3.new(0, verticalWave, 0)
-
-        elseif Config.Pattern == "Cuadrado" then
-            State.StatusText = string.format("🟦 Cuadrado amplio en %s (Lado: %dm | Bajada: -%.1fm)", Config.Direction, r * 2, Config.VerticalDipStuds)
-            local corners = {
-                advanceCenter + (fwdDir * r) + (rightDir * r),
-                advanceCenter + (fwdDir * r) - (rightDir * r),
-                advanceCenter - (fwdDir * r) - (rightDir * r),
-                advanceCenter - (fwdDir * r) + (rightDir * r)
-            }
-            local curCorner = corners[State.StepIndex] + Vector3.new(0, verticalWave, 0)
-            if (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(curCorner.X, 0, curCorner.Z)).Magnitude <= 3.0 then
-                State.StepIndex = (State.StepIndex % 4) + 1
-            end
-            desiredTarget = corners[State.StepIndex] + Vector3.new(0, verticalWave, 0)
-
-        elseif Config.Pattern == "Zigzag" then
-            State.StatusText = string.format("⚡ Zigzag amplio en %s (Amplitud: %dm | Bajada: -%.1fm)", Config.Direction, r, Config.VerticalDipStuds)
-            local sideSwing = math.sin(State.Angle * 2.0) * r
-            local fwdSwing = math.cos(State.Angle) * (r * 0.65)
-            desiredTarget = advanceCenter + (fwdDir * fwdSwing) + (rightDir * sideSwing) + Vector3.new(0, verticalWave, 0)
-
-        elseif Config.Pattern == "Rombo" then
-            State.StatusText = string.format("💠 Rombo amplio en %s (Radio: %dm | Bajada: -%.1fm)", Config.Direction, r, Config.VerticalDipStuds)
-            local diamondPts = {
-                advanceCenter + (fwdDir * r),
-                advanceCenter + (rightDir * r),
-                advanceCenter - (fwdDir * r),
-                advanceCenter - (rightDir * r)
-            }
-            local curPt = diamondPts[State.StepIndex] + Vector3.new(0, verticalWave, 0)
-            if (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(curPt.X, 0, curPt.Z)).Magnitude <= 3.0 then
-                State.StepIndex = (State.StepIndex % 4) + 1
-            end
-            desiredTarget = diamondPts[State.StepIndex] + Vector3.new(0, verticalWave, 0)
+        if (State.VirtualPos - targetWp).Magnitude <= 1.2 then
+            State.CurrentWpIndex = (State.CurrentWpIndex % #wps) + 1
+            targetWp = wps[State.CurrentWpIndex]
         end
     end
 
-    -- Mover suavemente el BodyPosition hacia el siguiente punto a velocidad constante
-    local diff = desiredTarget - root.Position
+    -- Mover el cursor virtual sin depender de la fricción del servidor (evita que el círculo se encoja)
+    local diff = targetWp - State.VirtualPos
     local dist = diff.Magnitude
-    if dist > 0.05 then
-        local step = math.min(dist, Config.FlySpeed * dt)
-        bp.Position = root.Position + (diff.Unit * step)
-        bg.CFrame = CFrame.lookAt(root.Position, root.Position + fwdDir)
+    if dist > 0.01 then
+        State.VirtualPos = State.VirtualPos + (diff.Unit * math.min(dist, Config.FlySpeed * dt))
     end
+
+    bp.Position = State.VirtualPos
+    bg.CFrame = CFrame.lookAt(root.Position, root.Position + fwdDir)
 end)
 
 -- ==============================================================================
@@ -404,11 +425,11 @@ end)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV1")
+local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV2")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RoofAerialPilotGuiV1"
+ScreenGui.Name = "RoofAerialPilotGuiV2"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -416,7 +437,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.35, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(20, 125, 175)
-FloatBtn.Text = "✈️\nVUELO"
+FloatBtn.Text = "✈️\nV2.0"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -426,8 +447,8 @@ FloatBtn.Parent = ScreenGui
 Instance.new("UICorner", FloatBtn).CornerRadius = UDim.new(1, 0)
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 480, 0, 460)
-MainFrame.Position = UDim2.new(0.5, -240, 0.5, -230)
+MainFrame.Size = UDim2.new(0, 510, 0, 440)
+MainFrame.Position = UDim2.new(0.5, -255, 0.5, -220)
 MainFrame.BackgroundColor3 = Color3.fromRGB(16, 19, 26)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -438,7 +459,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 29, 40)
-TitleBar.Text = "  ✈️ PILOTO AÉREO DE TECHO V1.0 | BUCLE & PODER 5"
+TitleBar.Text = "  ✈️ PILOTO AÉREO V2.0 | COORDENADAS PRECALCULADAS (0% LAG)"
 TitleBar.TextColor3 = Color3.fromRGB(0, 235, 255)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -446,7 +467,6 @@ TitleBar.TextXAlignment = Enum.TextXAlignment.Left
 TitleBar.Parent = MainFrame
 Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
--- Pestañas
 local TabMainBtn = Instance.new("TextButton")
 TabMainBtn.Size = UDim2.new(0.5, -12, 0, 28)
 TabMainBtn.Position = UDim2.new(0, 10, 0, 40)
@@ -481,7 +501,7 @@ ConfigPage.Size = UDim2.new(1, 0, 1, -74)
 ConfigPage.Position = UDim2.new(0, 0, 0, 74)
 ConfigPage.BackgroundTransparency = 1
 ConfigPage.BorderSizePixel = 0
-ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 460)
+ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 350)
 ConfigPage.ScrollBarThickness = 5
 ConfigPage.Visible = false
 ConfigPage.Parent = MainFrame
@@ -503,7 +523,7 @@ TabConfigBtn.MouseButton1Click:Connect(function() switchTab(TabConfigBtn, Config
 -- ==============================================================================
 
 local StatusCard = Instance.new("Frame")
-StatusCard.Size = UDim2.new(1, -20, 0, 68)
+StatusCard.Size = UDim2.new(1, -20, 0, 66)
 StatusCard.Position = UDim2.new(0, 10, 0, 4)
 StatusCard.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
 StatusCard.Parent = MainPage
@@ -513,7 +533,7 @@ local StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, -12, 1, -8)
 StatusLabel.Position = UDim2.new(0, 6, 0, 4)
 StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Estado: En espera (Detenido)\nPoder 5: Listo | Arma 2: Activa"
+StatusLabel.Text = "Estado: En espera (Detenido)"
 StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 180)
 StatusLabel.TextSize = 10
 StatusLabel.Font = Enum.Font.Code
@@ -524,9 +544,9 @@ StatusLabel.Parent = StatusCard
 
 task.spawn(function()
     while true do
-        task.wait(0.3)
+        task.wait(0.35)
         StatusLabel.Text = string.format(
-            "Estado: %s\nDirección: %s | Patrón: %s\nPoder 5: %s | Arma 2: %s",
+            "Estado: %s\nDirección: %s | Forma: %s\nPoder 5: %s | Arma 2: %s",
             State.StatusText,
             Config.Direction,
             Config.Pattern,
@@ -536,10 +556,9 @@ task.spawn(function()
     end
 end)
 
--- Botones INICIAR y DETENER
 local StartBtn = Instance.new("TextButton")
-StartBtn.Size = UDim2.new(0.5, -12, 0, 42)
-StartBtn.Position = UDim2.new(0, 10, 0, 80)
+StartBtn.Size = UDim2.new(0.5, -12, 0, 40)
+StartBtn.Position = UDim2.new(0, 10, 0, 78)
 StartBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 80)
 StartBtn.Text = "▶️ INICIAR VUELO"
 StartBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -549,8 +568,8 @@ StartBtn.Parent = MainPage
 Instance.new("UICorner", StartBtn).CornerRadius = UDim.new(0, 8)
 
 local StopBtn = Instance.new("TextButton")
-StopBtn.Size = UDim2.new(0.5, -12, 0, 42)
-StopBtn.Position = UDim2.new(0.5, 2, 0, 80)
+StopBtn.Size = UDim2.new(0.5, -12, 0, 40)
+StopBtn.Position = UDim2.new(0.5, 2, 0, 78)
 StopBtn.BackgroundColor3 = Color3.fromRGB(195, 45, 55)
 StopBtn.Text = "⏹️ DETENER (QUITAR FLY)"
 StopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -563,9 +582,9 @@ StartBtn.MouseButton1Click:Connect(function()
     local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
     if root then
         State.StartOrigin = root.Position
+        State.VirtualPos = root.Position
         State.Phase = "Advancing"
-        State.Angle = 0
-        State.StepIndex = 1
+        buildPatternWaypoints(State.StartOrigin)
         Config.Active = true
         if Config.EquipSlot2Default then
             equipSlot2Only()
@@ -580,10 +599,10 @@ StopBtn.MouseButton1Click:Connect(function()
     resetPhysicsCompletely()
 end)
 
--- Selector de Dirección Cardinal (Norte, Sur, Este, Oeste)
+-- Dirección Cardinal (ESTE seleccionado por defecto)
 local DirTitle = Instance.new("TextLabel")
-DirTitle.Size = UDim2.new(1, -20, 0, 20)
-DirTitle.Position = UDim2.new(0, 10, 0, 132)
+DirTitle.Size = UDim2.new(1, -20, 0, 18)
+DirTitle.Position = UDim2.new(0, 10, 0, 126)
 DirTitle.BackgroundTransparency = 1
 DirTitle.Text = "🧭 DIRECCIÓN DE AVANCE INICIAL:"
 DirTitle.TextColor3 = Color3.fromRGB(180, 200, 220)
@@ -596,8 +615,8 @@ local dirButtons = {}
 local dirs = {"NORTE", "SUR", "ESTE", "OESTE"}
 for i, dName in ipairs(dirs) do
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0.25, -7, 0, 34)
-    b.Position = UDim2.new((i - 1) * 0.25, 10 - ((i - 1) * 2), 0, 154)
+    b.Size = UDim2.new(0.25, -7, 0, 32)
+    b.Position = UDim2.new((i - 1) * 0.25, 10 - ((i - 1) * 2), 0, 146)
     b.BackgroundColor3 = (Config.Direction == dName) and Color3.fromRGB(0, 145, 215) or Color3.fromRGB(30, 35, 48)
     b.Text = dName
     b.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -609,8 +628,9 @@ for i, dName in ipairs(dirs) do
 
     b.MouseButton1Click:Connect(function()
         Config.Direction = dName
-        if Config.Active then
-            State.Phase = "Advancing"
+        if State.StartOrigin then
+            buildPatternWaypoints(State.StartOrigin)
+            if Config.Active then State.Phase = "Advancing" end
         end
         for k, btn in pairs(dirButtons) do
             btn.BackgroundColor3 = (k == dName) and Color3.fromRGB(0, 145, 215) or Color3.fromRGB(30, 35, 48)
@@ -618,12 +638,12 @@ for i, dName in ipairs(dirs) do
     end)
 end
 
--- Selector de Modo de Pirueta (Círculo, Cuadrado, Zigzag, Rombo)
+-- 5 Modos de Pirueta (Incluyendo "I Invertida")
 local PatTitle = Instance.new("TextLabel")
-PatTitle.Size = UDim2.new(1, -20, 0, 20)
-PatTitle.Position = UDim2.new(0, 10, 0, 198)
+PatTitle.Size = UDim2.new(1, -20, 0, 18)
+PatTitle.Position = UDim2.new(0, 10, 0, 186)
 PatTitle.BackgroundTransparency = 1
-PatTitle.Text = "🌪️ MODO DE PIRUETA EN EL AIRE (CON SUBIDA/BAJADA):"
+PatTitle.Text = "🌪️ FORMA EN EL AIRE (WAYPOINTS PRECALCULADOS):"
 PatTitle.TextColor3 = Color3.fromRGB(180, 200, 220)
 PatTitle.TextSize = 10
 PatTitle.Font = Enum.Font.GothamBold
@@ -631,15 +651,15 @@ PatTitle.TextXAlignment = Enum.TextXAlignment.Left
 PatTitle.Parent = MainPage
 
 local patButtons = {}
-local patterns = {"Círculo", "Cuadrado", "Zigzag", "Rombo"}
+local patterns = {"Círculo", "Cuadrado", "Zigzag", "Rombo", "I Invertida"}
 for i, pName in ipairs(patterns) do
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0.25, -7, 0, 34)
-    b.Position = UDim2.new((i - 1) * 0.25, 10 - ((i - 1) * 2), 0, 220)
+    b.Size = UDim2.new(0.20, -5, 0, 32)
+    b.Position = UDim2.new((i - 1) * 0.20, 10 - ((i - 1) * 1.5), 0, 206)
     b.BackgroundColor3 = (Config.Pattern == pName) and Color3.fromRGB(125, 65, 185) or Color3.fromRGB(30, 35, 48)
     b.Text = pName
     b.TextColor3 = Color3.fromRGB(255, 255, 255)
-    b.TextSize = 10
+    b.TextSize = 9
     b.Font = Enum.Font.GothamBold
     b.Parent = MainPage
     Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
@@ -647,7 +667,9 @@ for i, pName in ipairs(patterns) do
 
     b.MouseButton1Click:Connect(function()
         Config.Pattern = pName
-        State.StepIndex = 1
+        if State.StartOrigin then
+            buildPatternWaypoints(State.StartOrigin)
+        end
         for k, btn in pairs(patButtons) do
             btn.BackgroundColor3 = (k == pName) and Color3.fromRGB(125, 65, 185) or Color3.fromRGB(30, 35, 48)
         end
@@ -657,7 +679,7 @@ end
 -- Controles de Poder 5 y Arma 2
 local WeaponToggleBtn = Instance.new("TextButton")
 WeaponToggleBtn.Size = UDim2.new(1, -20, 0, 34)
-WeaponToggleBtn.Position = UDim2.new(0, 10, 0, 266)
+WeaponToggleBtn.Position = UDim2.new(0, 10, 0, 250)
 WeaponToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 145, 80)
 WeaponToggleBtn.Text = "🔫 AUTO PODER 5 + SELECCIONAR ARMA 2: ON"
 WeaponToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -674,9 +696,9 @@ end)
 
 local Power5ModeBtn = Instance.new("TextButton")
 Power5ModeBtn.Size = UDim2.new(1, -20, 0, 34)
-Power5ModeBtn.Position = UDim2.new(0, 10, 0, 306)
+Power5ModeBtn.Position = UDim2.new(0, 10, 0, 290)
 Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(0, 125, 185)
-Power5ModeBtn.Text = "⏱️ MODO PODER 5: DETECTAR RECARGA HUD (AUTOMÁTICO)"
+Power5ModeBtn.Text = "⏱️ MODO PODER 5: DETECTAR RECARGA SLOT 5 (EXACTO)"
 Power5ModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 Power5ModeBtn.TextSize = 9
 Power5ModeBtn.Font = Enum.Font.GothamBold
@@ -692,12 +714,12 @@ Power5ModeBtn.MouseButton1Click:Connect(function()
     else
         Config.Power5Mode = "CooldownHUD"
         Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(0, 125, 185)
-        Power5ModeBtn.Text = "⏱️ MODO PODER 5: DETECTAR RECARGA HUD (AUTOMÁTICO)"
+        Power5ModeBtn.Text = "⏱️ MODO PODER 5: DETECTAR RECARGA SLOT 5 (EXACTO)"
     end
 end)
 
 -- ==============================================================================
--- 6. PESTAÑA 2: CONFIGURACIÓN ORDENADA (DISTANCIAS, VELOCIDAD Y BAJADA)
+-- 6. PESTAÑA 2: CONFIGURACIÓN (RECALCULA WAYPOINTS AL INSTANTE AL EDITAR)
 -- ==============================================================================
 
 local function createStepper(yPos, title, getSubText, onMinus, onPlus)
@@ -743,11 +765,13 @@ local function createStepper(yPos, title, getSubText, onMinus, onPlus)
 
     minusBtn.MouseButton1Click:Connect(function()
         onMinus()
+        if State.StartOrigin then buildPatternWaypoints(State.StartOrigin) end
         lbl.Text = title .. "\n" .. getSubText()
     end)
 
     plusBtn.MouseButton1Click:Connect(function()
         onPlus()
+        if State.StartOrigin then buildPatternWaypoints(State.StartOrigin) end
         lbl.Text = title .. "\n" .. getSubText()
     end)
 end
@@ -758,9 +782,9 @@ createStepper(6, "➡️ DISTANCIA AVANCE INICIAL (STUDS)",
     function() Config.ForwardStuds = math.min(150, Config.ForwardStuds + 5) end
 )
 
-createStepper(60, "🔄 AMPLITUD CÍRCULO / CUADRADO / ZIGZAG / ROMBO",
+createStepper(60, "🔄 AMPLITUD DE FORMA (CÍRCULO / I INVERTIDA / ETC.)",
     function() return string.format("Actual: %d studs de radio / amplitud", Config.PatternRadius) end,
-    function() Config.PatternRadius = math.max(6, Config.PatternRadius - 2) end,
+    function() Config.PatternRadius = math.max(8, Config.PatternRadius - 2) end,
     function() Config.PatternRadius = math.min(80, Config.PatternRadius + 2) end
 )
 
