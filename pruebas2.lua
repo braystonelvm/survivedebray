@@ -34,7 +34,7 @@ local Config = {
     AntiRubberMode = "TimerTouch6s",
     RubberbandThreshold = 14,   -- Distancia para detectar que el juego te jaló
     TouchRoofInterval = 6.0,    -- Segundos en el aire antes de bajar a pisar el techo
-    TouchRoofHoldTime = 0.5,    -- Tiempo pisando el techo (0.5s por defecto)
+    TouchRoofHoldTime = 1.2,    -- Tiempo pisando el techo (0.5s por defecto)
 
     -- Gestión de Poder 5 ("Anulación del Sistema") y Arma 2
     AutoWeaponCycle = true,
