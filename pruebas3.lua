@@ -1,5 +1,5 @@
 -- ==============================================================================
--- PILOTO AÉREO PARABÓLICO V7.0 (ARCO MANUAL + RÁFAGA MISILES + RELOJ NOCHE 15s)
+-- PILOTO AÉREO PARABÓLICO V7.1 (CONFIGURACIÓN CAPTURA + REACTIVACIÓN 120s NOCHE)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -20,40 +20,40 @@ local Config = {
     Direction = "ESTE",         -- "NORTE", "SUR", "ESTE", "OESTE"
     Pattern = "Círculo",        -- "Círculo", "Cuadrado", "Zigzag", "Rombo", "I Invertida", "Solo Adelante"
 
-    -- Distancias y Velocidades (Calibradas para recorridos amplios y giros ágiles)
-    ForwardStuds = 34,          -- Avance inicial hacia adelante
-    PatternRadius = 26,         -- Radio amplio para cubrir más terreno
-    VerticalDipStuds = 2.0,     -- Variación vertical en la forma
-    FlySpeed = 30.0,            -- Velocidad crucero segura (idéntica a tu Sprint manual)
-    ReturnSpeed = 30.0,         -- Velocidad de retorno al techo (Modo 1)
+    -- Distancias y Velocidades
+    ForwardStuds = 34,
+    PatternRadius = 26,
+    VerticalDipStuds = 2.0,
+    FlySpeed = 30.0,
+    ReturnSpeed = 30.0,
 
-    -- Física Parabólica idéntica a tu salto manual (Vel.Y = 53.0 con arco amplio)
-    JumpImpulseY = 53.0,        -- Fuerza vertical exacta de tu salto
-    JumpPulseInterval = 1.05,   -- Arco largo (~1.05s entre impulsos, como en tu registro manual)
+    -- Física Parabólica (Valores de tu captura)
+    JumpImpulseY = 53.0,
+    JumpPulseInterval = 1.05,   -- Actual: Cada 1.05 segundos (Fuerza Y: 53)
 
-    -- Modos Anti-Rubberband
-    AntiRubberMode = "WaitRubber", -- "WaitRubber" (Esperar jalón y reiniciar) o "ReturnAndStep" (Pisar techo)
-    MaxAirTimeBeforeReturn = 4.8,
-    TouchRoofHoldTime = 1.2,
+    -- Modos Anti-Rubberband (Valores exactos de tu captura)
+    AntiRubberMode = "WaitRubber", -- MODO: ESPERAR JALÓN Y REINICIAR DESDE TECHO
+    MaxAirTimeBeforeReturn = 4.8,  -- Actual: 4.8 segundos en aire
+    TouchRoofHoldTime = 1.2,       -- Actual: 1.2 segundos confirmando pisada
     RubberbandDetectDist = 12,
-    PostRubberWaitTime = 0.5,
+    PostRubberWaitTime = 0.5,      -- Actual: 0.5 segundos antes de volver a salir
 
     -- Radar Anti-Misiles / Ácido con Ráfaga Rápida
     AutoDodgeObjects = true,
     RadarHorizRadius = 22,
     RadarDownDepth = 50,
     DodgeTriggerDist = 22,
-    DodgeBurstSpeed = 68,       -- Ráfaga rápida para escapar del misil antes de que explote
+    DodgeBurstSpeed = 68,
     DodgeSideStuds = 15,
     DodgeUpStuds = 8,
     DodgeHoldSeconds = 1.6,
 
-    -- Poder 5 ("Anulación del Sistema") vinculado al Reloj de Noche Larga ("Survived: 12:00")
+    -- Poder 5 ("Anulación del Sistema") vinculado al Reloj de Noche Larga
     AutoWeaponCycle = true,
-    Power5Mode = "EternalNightStop", -- "EternalNightStop" (Reloj detenido -> 15s) o "TimerFixed"
-    TimeCheckInterval = 1.5,         -- Cada cuánto revisa si el reloj se detuvo
-    TimeStopDelay = 15,              -- 15 segundos por defecto tras detenerse el reloj de noche larga
-    Power5Interval = 120,            -- Para el modo temporizador fijo alternativo
+    Power5Mode = "EternalNightStop", -- "EternalNightStop" o "TimerFixed"
+    TimeCheckInterval = 1.5,
+    TimeStopDelay = 15,              -- Actual: 15 segundos tras detenerse Survived
+    Power5Interval = 120,            -- Actual: Cada 120 segundos (recarga del 5to poder)
     Power5CastWait = 0.18,
     EquipSlot2Default = true
 }
@@ -64,7 +64,7 @@ local State = {
     Waypoints = {},
     CurrentWpIndex = 1,
     LastRealPos = nil,
-    Phase = "Idle",             -- "Idle", "Advancing", "Pattern", "ReturningToRoof", "SteppingOnRoof", "RubberCooldown"
+    Phase = "Idle",
     AirStartTime = 0,
     LastJumpPulse = 0,
     GroundedConfirmedSince = nil,
@@ -275,7 +275,6 @@ local function buildPatternWaypoints(originPos)
         table.insert(pts, center)
 
     elseif Config.Pattern == "Círculo" then
-        -- 12 segmentos amplios para girar rápido sin perder velocidad en curvas
         local segments = 12
         for i = 0, segments - 1 do
             local theta = (i / segments) * (math.pi * 2)
@@ -322,7 +321,7 @@ local function buildPatternWaypoints(originPos)
 end
 
 -- ==============================================================================
--- 4. LECTOR DEL RELOJ DE NOCHE LARGA ("Survived: 12:00") + ANULACIÓN DEL SISTEMA
+-- 4. LECTOR DEL RELOJ DE NOCHE LARGA + REACTIVACIÓN CADA 120s SI SIGUE DETENIDO
 -- ==============================================================================
 
 local function pressNumberKey(num)
@@ -475,7 +474,6 @@ local function triggerSystemOverrideAndReturnSlot2()
     end
 end
 
--- Lector exacto de EternalNightTime / TopUI.DayCounter ("Survived: 12:00" -> el reloj que sube y se detiene)
 local function getSurvivalTimeSecondsAndLabel()
     local attrSec = workspace:GetAttribute("EternalNightTime")
     local pg = lp:FindFirstChild("PlayerGui")
@@ -507,7 +505,6 @@ end
 
 task.spawn(function()
     local lastSeconds = nil
-    local alreadyTriggeredThisFreeze = false
     local lastFixedTimerTick = 0
 
     while true do
@@ -517,7 +514,6 @@ task.spawn(function()
 
         if not Config.Active or not Config.AutoWeaponCycle then
             lastSeconds = nil
-            alreadyTriggeredThisFreeze = false
             continue
         end
 
@@ -528,40 +524,54 @@ task.spawn(function()
             end
 
             if lastSeconds then
-                -- Si el reloj que va hacia adelante se detuvo
+                -- Detecta si el reloj de supervivencia (que va hacia adelante) se detuvo
                 if math.abs(curSec - lastSeconds) < 0.01 then
-                    if not alreadyTriggeredThisFreeze then
-                        alreadyTriggeredThisFreeze = true
-                        State.Power5StatusText = string.format("Reloj (%s) quieto: Esperando %ds...", labelStr, Config.TimeStopDelay)
+                    -- 1. Esperar los 15s iniciales tras detenerse el reloj
+                    local waitEnd = tick() + Config.TimeStopDelay
+                    while tick() < waitEnd do
+                        task.wait(0.25)
+                        if not Config.Active or not Config.AutoWeaponCycle or Config.Power5Mode ~= "EternalNightStop" then
+                            break
+                        end
+                        local checkNow = getSurvivalTimeSecondsAndLabel()
+                        if checkNow and math.abs(checkNow - curSec) >= 0.01 then
+                            break -- El reloj volvió a moverse
+                        end
+                        local rem = math.max(0, math.ceil(waitEnd - tick()))
+                        State.Power5StatusText = string.format("Noche (%s): Activando en %ds", labelStr, rem)
+                    end
 
-                        local waitEnd = tick() + Config.TimeStopDelay
-                        while tick() < waitEnd do
-                            task.wait(0.25)
+                    -- 2. Bucle continuo: Mientras el reloj SIGA detenido, activar Poder 5 y esperar recarga (120s)
+                    while Config.Active and Config.AutoWeaponCycle and Config.Power5Mode == "EternalNightStop" do
+                        local checkSec = getSurvivalTimeSecondsAndLabel()
+                        if not checkSec or math.abs(checkSec - curSec) >= 0.01 then
+                            break -- Salió de la noche larga
+                        end
+
+                        State.Power5StatusText = "⚡ ¡Activando Anulación -> Arma 2!"
+                        triggerSystemOverrideAndReturnSlot2()
+
+                        -- Esperar los 120s de recarga del 5to poder verificando que el reloj siga quieto
+                        local rechargeEnd = tick() + Config.Power5Interval
+                        while tick() < rechargeEnd do
+                            task.wait(0.5)
                             if not Config.Active or not Config.AutoWeaponCycle or Config.Power5Mode ~= "EternalNightStop" then
                                 break
                             end
-                            local rem = math.max(0, math.ceil(waitEnd - tick()))
-                            State.Power5StatusText = string.format("Reloj (%s) detenido: Activando en %ds", labelStr, rem)
-                        end
-
-                        if Config.Active and Config.AutoWeaponCycle and Config.Power5Mode == "EternalNightStop" then
-                            local checkSec = getSurvivalTimeSecondsAndLabel()
-                            if checkSec and math.abs(checkSec - curSec) < 0.01 then
-                                State.Power5StatusText = "⚡ ¡Activando Anulación -> Arma 2!"
-                                triggerSystemOverrideAndReturnSlot2()
-                                State.Power5StatusText = "Activado en esta noche (" .. labelStr .. ")"
+                            local stillFrozenSec = getSurvivalTimeSecondsAndLabel()
+                            if not stillFrozenSec or math.abs(stillFrozenSec - curSec) >= 0.01 then
+                                break -- El reloj volvió a avanzar durante la recarga
                             end
+                            local remCd = math.max(0, math.ceil(rechargeEnd - tick()))
+                            State.Power5StatusText = string.format("Noche (%s): Recarga 5to poder (%ds)", labelStr, remCd)
                         end
                     end
                 elseif curSec > lastSeconds then
-                    -- El reloj volvió a avanzar (salió de la noche larga)
-                    alreadyTriggeredThisFreeze = false
                     State.Power5StatusText = string.format("Reloj corriendo (%s)", labelStr)
                 end
             end
             lastSeconds = curSec
         else
-            -- Modo alternativo: Temporizador fijo cada X segundos
             local elapsed = tick() - lastFixedTimerTick
             if lastFixedTimerTick == 0 or elapsed >= Config.Power5Interval then
                 lastFixedTimerTick = tick()
@@ -716,7 +726,6 @@ RunService.Heartbeat:Connect(function()
 
     State.LastRealPos = root.Position
 
-    -- Cálculo de destino
     local targetWp = advanceDest
     local moveSpeed = State.IsBurstDodging and Config.DodgeBurstSpeed or Config.FlySpeed
 
@@ -761,7 +770,6 @@ RunService.Heartbeat:Connect(function()
             State.StatusText = string.format("🌪️ %s (%d/%d) | Modo Esperar Jalón", Config.Pattern, State.CurrentWpIndex, #wps)
         end
 
-        -- Umbral amplio (3.8 studs) para encadenar los puntos del círculo sin frenar en las esquinas
         local horizDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(targetWp.X, 0, targetWp.Z)).Magnitude
         if horizDist <= 3.8 then
             State.CurrentWpIndex = (State.CurrentWpIndex % #wps) + 1
@@ -769,14 +777,12 @@ RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- 1. Velocidad horizontal (crucero 30.0 o ráfaga 68 al esquivar misiles)
     local toTargetHoriz = Vector3.new(targetWp.X - root.Position.X, 0, targetWp.Z - root.Position.Z)
     local horizVel = Vector3.zero
     if toTargetHoriz.Magnitude > 0.15 then
         horizVel = toTargetHoriz.Unit * moveSpeed
     end
 
-    -- 2. Salto vertical parabólico amplio (Vel.Y = 53.0)
     local curVelY = root.AssemblyLinearVelocity.Y
     local desiredY = targetWp.Y
 
@@ -801,15 +807,15 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ==============================================================================
--- 6. INTERFAZ GRÁFICA NATIVA ROBLOX (3 PESTAÑAS + RELOJ NOCHE LARGA)
+-- 6. INTERFAZ GRÁFICA NATIVA ROBLOX (3 PESTAÑAS + CONFIGURACIÓN POR DEFECTO)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV7")
+local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV71")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RoofAerialPilotGuiV7"
+ScreenGui.Name = "RoofAerialPilotGuiV71"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -817,7 +823,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.35, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(20, 125, 175)
-FloatBtn.Text = "✈️\nV7.0"
+FloatBtn.Text = "✈️\nV7.1"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -839,7 +845,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 29, 40)
-TitleBar.Text = "  ✈️ PILOTO PARABÓLICO V7.0 | RÁFAGA MISILES & NOCHE LARGA"
+TitleBar.Text = "  ✈️ PILOTO PARABÓLICO V7.1 | RÁFAGA MISILES & RECARGA 120s"
 TitleBar.TextColor3 = Color3.fromRGB(0, 235, 255)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -1165,7 +1171,7 @@ local Power5ModeBtn = Instance.new("TextButton")
 Power5ModeBtn.Size = UDim2.new(1, -20, 0, 32)
 Power5ModeBtn.Position = UDim2.new(0, 10, 0, 318)
 Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(0, 125, 185)
-Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: RELOJ NOCHE DETENIDO (%ds)", Config.TimeStopDelay)
+Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: NOCHE DETENIDA (%ds + RECARGA %ds)", Config.TimeStopDelay, Config.Power5Interval)
 Power5ModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 Power5ModeBtn.TextSize = 9
 Power5ModeBtn.Font = Enum.Font.GothamBold
@@ -1180,7 +1186,7 @@ Power5ModeBtn.MouseButton1Click:Connect(function()
     else
         Config.Power5Mode = "EternalNightStop"
         Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(0, 125, 185)
-        Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: RELOJ NOCHE DETENIDO (%ds)", Config.TimeStopDelay)
+        Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: NOCHE DETENIDA (%ds + RECARGA %ds)", Config.TimeStopDelay, Config.Power5Interval)
     end
 end)
 
@@ -1258,7 +1264,7 @@ createStepper(RadarPage, 322, "⏱️ DURACIÓN DE ESQUIVA (PARA ÁCIDO DE 1.5s)
 )
 
 -- ==============================================================================
--- 9. PESTAÑA 3: CONFIGURACIÓN DE VUELO (CADA TIEMPO POR SEPARADO)
+-- 9. PESTAÑA 3: CONFIGURACIÓN DE VUELO (VALORES DE CAPTURA POR DEFECTO)
 -- ==============================================================================
 
 local AntiRubberModes = {
@@ -1288,25 +1294,25 @@ AntiRubberBtn.MouseButton1Click:Connect(function()
     State.Phase = "Advancing"
 end)
 
--- TIEMPO 1: Espera tras detenerse el reloj Survived (15s por defecto)
+-- TIEMPO 1: 15 segundos tras detenerse Survived
 createStepper(ConfigPage, 52, "⏱️ ESPERA TRAS DETENERSE RELOJ NOCHE (PODER 5)",
     function() return string.format("Actual: %d segundos tras detenerse Survived", Config.TimeStopDelay) end,
     function()
         Config.TimeStopDelay = math.max(5, Config.TimeStopDelay - 5)
         if Config.Power5Mode == "EternalNightStop" then
-            Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: RELOJ NOCHE DETENIDO (%ds)", Config.TimeStopDelay)
+            Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: NOCHE DETENIDA (%ds + RECARGA %ds)", Config.TimeStopDelay, Config.Power5Interval)
         end
     end,
     function()
         Config.TimeStopDelay = math.min(90, Config.TimeStopDelay + 5)
         if Config.Power5Mode == "EternalNightStop" then
-            Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: RELOJ NOCHE DETENIDO (%ds)", Config.TimeStopDelay)
+            Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: NOCHE DETENIDA (%ds + RECARGA %ds)", Config.TimeStopDelay, Config.Power5Interval)
         end
     end,
     false
 )
 
--- TIEMPO 2: Espera tras recibir Rubberband antes de salir de nuevo
+-- TIEMPO 2: 0.5 segundos tras jalón rubberband
 createStepper(ConfigPage, 106, "⏳ ESPERA TRAS JALÓN RUBBERBAND (MODO ESPERAR)",
     function() return string.format("Actual: %.1f segundos antes de volver a salir", Config.PostRubberWaitTime) end,
     function() Config.PostRubberWaitTime = math.max(0.1, Config.PostRubberWaitTime - 0.1) end,
@@ -1314,7 +1320,7 @@ createStepper(ConfigPage, 106, "⏳ ESPERA TRAS JALÓN RUBBERBAND (MODO ESPERAR)
     false
 )
 
--- TIEMPO 3: Tiempo máximo en el aire antes de volver (Modo Retornar)
+-- TIEMPO 3: 4.8 segundos máximo en aire
 createStepper(ConfigPage, 160, "⏱️ TIEMPO MÁX. EN EL AIRE (MODO RETORNAR TECHO)",
     function() return string.format("Actual: %.1f segundos en aire (límite ~6.2s)", Config.MaxAirTimeBeforeReturn) end,
     function() Config.MaxAirTimeBeforeReturn = math.max(1.5, Config.MaxAirTimeBeforeReturn - 0.2) end,
@@ -1322,7 +1328,7 @@ createStepper(ConfigPage, 160, "⏱️ TIEMPO MÁX. EN EL AIRE (MODO RETORNAR TE
     false
 )
 
--- TIEMPO 4: Tiempo pisando el techo sólido (Modo Retornar)
+-- TIEMPO 4: 1.2 segundos pisando techo sólido
 createStepper(ConfigPage, 214, "👣 TIEMPO PISANDO EL TECHO SÓLIDO (MODO RETORNAR)",
     function() return string.format("Actual: %.1f segundos confirmando pisada", Config.TouchRoofHoldTime) end,
     function() Config.TouchRoofHoldTime = math.max(0.2, Config.TouchRoofHoldTime - 0.1) end,
@@ -1330,7 +1336,7 @@ createStepper(ConfigPage, 214, "👣 TIEMPO PISANDO EL TECHO SÓLIDO (MODO RETOR
     false
 )
 
--- TIEMPO 5: Intervalo entre impulsos de salto
+-- TIEMPO 5: 1.05 segundos entre impulsos de salto
 createStepper(ConfigPage, 268, "🦘 INTERVALO ENTRE IMPULSOS DE SALTO (ARCO)",
     function() return string.format("Actual: Cada %.2f segundos (Fuerza Y: %.0f)", Config.JumpPulseInterval, Config.JumpImpulseY) end,
     function() Config.JumpPulseInterval = math.max(0.40, Config.JumpPulseInterval - 0.05) end,
@@ -1338,19 +1344,23 @@ createStepper(ConfigPage, 268, "🦘 INTERVALO ENTRE IMPULSOS DE SALTO (ARCO)",
     false
 )
 
--- TIEMPO 6: Temporizador fijo alternativo Poder 5
-createStepper(ConfigPage, 322, "⚡ TEMPORIZADOR FIJO ALTERNATIVO PODER 5",
+-- TIEMPO 6: 120 segundos de recarga del Poder 5 (reactiva en noche o modo fijo)
+createStepper(ConfigPage, 322, "⚡ RECARGA / TEMPORIZADOR PODER 5 (SEGUNDOS)",
     function() return string.format("Actual: Cada %d segundos", Config.Power5Interval) end,
     function()
         Config.Power5Interval = math.max(10, Config.Power5Interval - 10)
         if Config.Power5Mode == "TimerFixed" then
             Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: TEMPORIZADOR FIJO (CADA %ds)", Config.Power5Interval)
+        else
+            Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: NOCHE DETENIDA (%ds + RECARGA %ds)", Config.TimeStopDelay, Config.Power5Interval)
         end
     end,
     function()
         Config.Power5Interval = math.min(300, Config.Power5Interval + 10)
         if Config.Power5Mode == "TimerFixed" then
             Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: TEMPORIZADOR FIJO (CADA %ds)", Config.Power5Interval)
+        else
+            Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: NOCHE DETENIDA (%ds + RECARGA %ds)", Config.TimeStopDelay, Config.Power5Interval)
         end
     end,
     false
