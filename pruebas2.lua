@@ -1,5 +1,5 @@
 -- ==============================================================================
--- PILOTO AÉREO DE TECHO V3.0 (MODOS PISAR TECHO 6s + ANULACIÓN DEL SISTEMA)
+-- PILOTO AÉREO PARABÓLICO V5.0 (FÍSICA NATURAL + 2 MODOS + TIEMPOS SEPARADOS)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -20,39 +20,65 @@ local Config = {
     Direction = "ESTE",         -- "NORTE", "SUR", "ESTE", "OESTE"
     Pattern = "Círculo",        -- "Círculo", "Cuadrado", "Zigzag", "Rombo", "I Invertida", "Solo Adelante"
 
-    -- Distancias y alturas configurables
-    ForwardStuds = 30,          -- Studs que avanza hacia adelante
-    PatternRadius = 24,         -- Amplitud/radio de la figura en studs
-    VerticalDipStuds = 3.0,     -- Studs de bajada/subida suave en la pirueta
-    FlySpeed = 65,              -- Velocidad de vuelo en studs/s
+    -- Distancias y Velocidades
+    ForwardStuds = 30,          -- Studs de avance inicial
+    PatternRadius = 24,         -- Radio / amplitud de la forma
+    VerticalDipStuds = 3.0,     -- Variación vertical en la forma
+    FlySpeed = 65,              -- Velocidad horizontal en studs/s
+    ReturnSpeed = 135,          -- Velocidad rápida de retorno al techo (Modo 1)
 
-    -- Modos Anti-Rubberband (Pisar techo para evitar bucle de regreso)
-    -- "Disabled"       = 1. Desactivado (vuelo continuo sin volver al techo)
-    -- "DistanceReset"  = 2. Reiniciar avance si el juego te devuelve cerca del inicio
-    -- "PullbackTouch"  = 3. Detectar jalón en pirueta -> ir al techo y pisar 0.5s
-    -- "TimerTouch6s"   = 4. Cada 6s (configurable) ir al techo, pisar 0.5s y salir de nuevo
-    AntiRubberMode = "TimerTouch6s",
-    RubberbandThreshold = 14,   -- Distancia para detectar que el juego te jaló
-    TouchRoofInterval = 6.0,    -- Segundos en el aire antes de bajar a pisar el techo
-    TouchRoofHoldTime = 1.2,    -- Tiempo pisando el techo (0.5s por defecto)
+    -- Física Parabólica (Imita salto natural para evitar el corte a los 3s)
+    JumpImpulseY = 26,          -- Fuerza vertical de cada impulso de salto en el aire
+    JumpPulseInterval = 0.85,   -- Cada cuántos segundos da un impulso vertical (configurable)
+
+    -- Modos Anti-Rubberband (2 Modos solicitados)
+    -- "ReturnAndStep" = Modo 1: Volver rápido al techo antes del límite y pisarlo
+    -- "WaitRubber"    = Modo 2: No volver; esperar el rubberband, detectarlo y reiniciar
+    AntiRubberMode = "ReturnAndStep",
+    MaxAirTimeBeforeReturn = 4.5, -- Tiempo en el aire antes de volver al techo (Modo 1)
+    TouchRoofHoldTime = 1.2,      -- Tiempo pisando el techo sólido (Modo 1)
+    RubberbandDetectDist = 10,    -- Distancia mínima de tirón hacia atrás para detectar rubberband (Modo 2)
+    PostRubberWaitTime = 0.6,     -- Tiempo de espera tras el rubberband antes de volver a salir (Modo 2)
+
+    -- Radar Anti-Objetos / Misiles / Ácido (Pestaña separada)
+    AutoDodgeObjects = true,
+    RadarHorizRadius = 20,
+    RadarDownDepth = 50,
+    DodgeTriggerDist = 20,
+    DodgeSideStuds = 14,
+    DodgeUpStuds = 8,
+    DodgeHoldSeconds = 1.6,       -- Duración de esquiva (separado)
 
     -- Gestión de Poder 5 ("Anulación del Sistema") y Arma 2
     AutoWeaponCycle = true,
-    Power5Name = "Anulación del Sistema",
-    Power5Mode = "CooldownHUD", -- "CooldownHUD" o "TimerFixed"
-    Power5Interval = 120,
+    Power5Mode = "CooldownHUD",   -- "CooldownHUD" o "TimerFixed"
+    Power5Interval = 120,         -- Temporizador fijo (separado)
+    Power5CastWait = 0.18,        -- Pausa de activación antes de volver a Arma 2 (separado)
     EquipSlot2Default = true
 }
 
 local State = {
     StartOrigin = nil,
+    SafeLandingPos = nil,
+    RoofPart = nil,
     Waypoints = {},
     CurrentWpIndex = 1,
     VirtualPos = nil,
-    Phase = "Idle",             -- "Idle", "Advancing", "Pattern", "ReturningToRoof", "SteppingOnRoof"
+    LastRealPos = nil,
+    Phase = "Idle",             -- "Idle", "Advancing", "Pattern", "ReturningToRoof", "SteppingOnRoof", "RubberCooldown"
     AirStartTime = 0,
-    StepEndTime = 0,
+    LastJumpPulse = 0,
+    GroundedConfirmedSince = nil,
+    RubberWaitUntil = 0,
     StatusText = "En espera (Detenido)",
+
+    -- Radar
+    DodgeOffset = Vector3.zero,
+    DodgeUntil = 0,
+    LastThreatName = "Ninguno",
+    DetectedBelowCount = 0,
+
+    -- Poder 5
     LastPower5Tick = 0,
     Power5CooldownText = "Listo"
 }
@@ -65,7 +91,174 @@ local DIRECTION_VECTORS = {
 }
 
 -- ==============================================================================
--- 1. GENERADOR DE COORDENADAS PRECALCULADAS (0% LAG)
+-- 1. RADAR ESPACIAL 0% LAG (PROYECTILES Y ÁCIDO ALREDEDOR Y 50m ABAJO)
+-- ==============================================================================
+
+local overlapParams = OverlapParams.new()
+overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function isTeammateOrSelf(part)
+    local char = lp.Character
+    if char and part:IsDescendantOf(char) then return true end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character and part:IsDescendantOf(plr.Character) then
+            return true
+        end
+    end
+    return false
+end
+
+local function isHostileProjectileOrHazard(part)
+    if not part or not part:IsA("BasePart") then return false end
+    if part == State.RoofPart then return false end
+    if isTeammateOrSelf(part) then return false end
+
+    local maxDim = math.max(part.Size.X, part.Size.Y, part.Size.Z)
+    if maxDim > 28 and part.Anchored and part.AssemblyLinearVelocity.Magnitude < 0.5 then
+        return false
+    end
+
+    if not part.Anchored or part.AssemblyLinearVelocity.Magnitude > 1.5 then
+        return true
+    end
+
+    local lowName = part.Name:lower()
+    local parentName = part.Parent and part.Parent.Name:lower() or ""
+    if lowName:find("acid") or lowName:find("missile") or lowName:find("rocket")
+        or lowName:find("proj") or lowName:find("spit") or lowName:find("goo")
+        or lowName:find("liquid") or lowName:find("hazard") or lowName:find("bomb")
+        or parentName:find("projectiles") or parentName:find("effects") or parentName:find("debris") then
+        return true
+    end
+
+    return false
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.08)
+        if not Config.Active or not Config.AutoDodgeObjects then
+            State.DodgeOffset = Vector3.zero
+            State.DetectedBelowCount = 0
+            continue
+        end
+
+        local char = lp.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then continue end
+
+        local ignoreList = {}
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr.Character then table.insert(ignoreList, plr.Character) end
+        end
+        if State.RoofPart then table.insert(ignoreList, State.RoofPart) end
+        overlapParams.FilterDescendantsInstances = ignoreList
+
+        local myPos = root.Position
+        local maxHoriz = math.max(Config.RadarHorizRadius, Config.DodgeTriggerDist)
+        local downDepth = Config.RadarDownDepth
+
+        local boxSize = Vector3.new(maxHoriz * 2, downDepth + 14, maxHoriz * 2)
+        local boxCenter = myPos - Vector3.new(0, (downDepth - 14) * 0.5, 0)
+        local partsInBox = workspace:GetPartBoundsInBox(CFrame.new(boxCenter), boxSize, overlapParams)
+
+        local closestThreatPos = nil
+        local closestThreatVel = Vector3.zero
+        local closestDist = math.huge
+        local closestName = "Objeto"
+        local belowAlerts = 0
+
+        for _, part in ipairs(partsInBox) do
+            if isHostileProjectileOrHazard(part) then
+                local pPos = part.Position
+                local dist = (pPos - myPos).Magnitude
+
+                if pPos.Y < myPos.Y and (myPos.Y - pPos.Y) <= downDepth then
+                    belowAlerts = belowAlerts + 1
+                end
+
+                if dist <= Config.DodgeTriggerDist and dist < closestDist then
+                    closestDist = dist
+                    closestThreatPos = pPos
+                    closestThreatVel = part.AssemblyLinearVelocity
+                    closestName = part.Name
+                end
+            end
+        end
+
+        State.DetectedBelowCount = belowAlerts
+
+        if closestThreatPos then
+            local awayVec = Vector3.new(myPos.X - closestThreatPos.X, 0, myPos.Z - closestThreatPos.Z)
+            local sideDir
+            if closestThreatVel.Magnitude > 2.0 then
+                local velHoriz = Vector3.new(closestThreatVel.X, 0, closestThreatVel.Z)
+                if velHoriz.Magnitude > 0.2 then
+                    local perp = Vector3.new(-velHoriz.Z, 0, velHoriz.X).Unit
+                    sideDir = (perp:Dot(awayVec) >= 0) and perp or -perp
+                end
+            end
+
+            if not sideDir then
+                sideDir = (awayVec.Magnitude > 0.2) and awayVec.Unit or Vector3.new(1, 0, 0)
+            end
+
+            State.DodgeOffset = (sideDir * Config.DodgeSideStuds) + Vector3.new(0, Config.DodgeUpStuds, 0)
+            State.DodgeUntil = tick() + Config.DodgeHoldSeconds
+            State.LastThreatName = string.format("%s (%.0fm)", closestName, closestDist)
+        elseif tick() >= State.DodgeUntil then
+            State.DodgeOffset = Vector3.zero
+        end
+    end
+end)
+
+-- ==============================================================================
+-- 2. DETECCIÓN FÍSICA REAL DE TECHO / SUELO SÓLIDO
+-- ==============================================================================
+
+local function captureSafeRoofLandingPoint(root)
+    local char = lp.Character
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignore = {char}
+    local charsFolder = workspace:FindFirstChild("Characters")
+    if charsFolder then table.insert(ignore, charsFolder) end
+    params.FilterDescendantsInstances = ignore
+
+    local hit = workspace:Raycast(root.Position + Vector3.new(0, 2, 0), Vector3.new(0, -15, 0), params)
+    if hit and hit.Instance and hit.Instance:IsA("BasePart") then
+        State.RoofPart = hit.Instance
+        State.SafeLandingPos = Vector3.new(hit.Position.X, hit.Position.Y + 3.1, hit.Position.Z)
+    else
+        State.RoofPart = nil
+        State.SafeLandingPos = root.Position
+    end
+end
+
+local function isActuallyStandingOnSolid(root, hum)
+    if not root or not hum then return false end
+    if hum.FloorMaterial ~= Enum.Material.Air then
+        return true
+    end
+
+    local char = lp.Character
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local ignore = {char}
+    local charsFolder = workspace:FindFirstChild("Characters")
+    if charsFolder then table.insert(ignore, charsFolder) end
+    params.FilterDescendantsInstances = ignore
+
+    local footHit = workspace:Raycast(root.Position, Vector3.new(0, -3.8, 0), params)
+    if footHit and footHit.Instance and footHit.Instance:IsA("BasePart") and footHit.Instance.CanCollide then
+        return true
+    end
+
+    return false
+end
+
+-- ==============================================================================
+-- 3. GENERADOR DE COORDENADAS PRECALCULADAS (0% LAG)
 -- ==============================================================================
 
 local function buildPatternWaypoints(originPos)
@@ -77,7 +270,6 @@ local function buildPatternWaypoints(originPos)
     local pts = {}
 
     if Config.Pattern == "Solo Adelante" then
-        -- Se mantiene en el punto adelantado oscilando levemente
         table.insert(pts, center + Vector3.new(0, -dip, 0))
         table.insert(pts, center)
 
@@ -128,7 +320,7 @@ local function buildPatternWaypoints(originPos)
 end
 
 -- ==============================================================================
--- 2. ACTIVACIÓN DE "ANULACIÓN DEL SISTEMA" (PODER 5) Y ARMA 2
+-- 4. ACTIVACIÓN DE "ANULACIÓN DEL SISTEMA" (PODER 5) Y ARMA 2
 -- ==============================================================================
 
 local function pressNumberKey(num)
@@ -150,7 +342,6 @@ local function simulateMouseClick()
     end)
 end
 
--- Busca "Anulación del Sistema" por nombre exacto/parcial o por el Slot 5
 local function findSystemOverrideTool()
     local char = lp.Character
     local bp = lp:FindFirstChild("Backpack")
@@ -169,7 +360,6 @@ local function findSystemOverrideTool()
         end
     end
 
-    -- 1. Buscar por nombre "Anulación del Sistema" (con o sin tilde)
     for _, container in ipairs({char, bp}) do
         if container then
             for _, item in ipairs(container:GetChildren()) do
@@ -183,7 +373,6 @@ local function findSystemOverrideTool()
         end
     end
 
-    -- 2. Buscar por ObjectValue o TextLabel dentro del Slot 5
     if slot5Frame then
         for _, desc in ipairs(slot5Frame:GetDescendants()) do
             if desc:IsA("ObjectValue") and desc.Value and desc.Value:IsA("Tool") then
@@ -196,7 +385,6 @@ local function findSystemOverrideTool()
         end
     end
 
-    -- 3. Respaldo por 5ta posición
     local all = {}
     if char then for _, t in ipairs(char:GetChildren()) do if t:IsA("Tool") then table.insert(all, t) end end end
     if bp then for _, t in ipairs(bp:GetChildren()) do if t:IsA("Tool") then table.insert(all, t) end end end
@@ -288,7 +476,6 @@ local function isPower5ReadyStrict()
     return true
 end
 
--- Equipa y activa "Anulación del Sistema" por todas las vías posibles y vuelve al Arma 2
 local function triggerSystemOverrideAndReturnSlot2()
     local char = lp.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -298,12 +485,8 @@ local function triggerSystemOverrideAndReturnSlot2()
     if tool5 then
         hum:EquipTool(tool5)
         task.wait(0.08)
-
-        -- 1. Activación estándar de Tool
         pcall(function() tool5:Activate() end)
-        -- 2. Clic simulado por si requiere input directo del mouse
         simulateMouseClick()
-        -- 3. Disparar RemoteEvents o RemoteFunctions dentro de la herramienta
         for _, desc in ipairs(tool5:GetDescendants()) do
             if desc:IsA("RemoteEvent") then
                 pcall(function() desc:FireServer() end)
@@ -311,12 +494,12 @@ local function triggerSystemOverrideAndReturnSlot2()
                 task.spawn(function() pcall(function() desc:InvokeServer() end) end)
             end
         end
-        task.wait(0.18)
+        task.wait(Config.Power5CastWait)
     else
         pressNumberKey(5)
         task.wait(0.08)
         simulateMouseClick()
-        task.wait(0.15)
+        task.wait(Config.Power5CastWait)
     end
 
     State.LastPower5Tick = tick()
@@ -357,30 +540,30 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 3. FÍSICAS DE VUELO Y SOLTAR PARA PISAR TECHO (0.5s)
+-- 5. FÍSICA PARABÓLICA NATURAL (SIN PLATFORMSTAND NI BODYPOSITION ESTÁTICO)
 -- ==============================================================================
-
-local function removeFlightForcesOnly(root)
-    if not root then return end
-    for _, obj in ipairs(root:GetChildren()) do
-        if obj.Name == "RoofFlyBP" or obj.Name == "RoofFlyBG" then
-            obj:Destroy()
-        end
-    end
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.AssemblyAngularVelocity = Vector3.zero
-end
 
 local function resetPhysicsCompletely()
     State.Phase = "Idle"
     State.VirtualPos = nil
+    State.LastRealPos = nil
+    State.GroundedConfirmedSince = nil
+    State.DodgeOffset = Vector3.zero
+    State.DodgeUntil = 0
+
     local char = lp.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
 
     if root then
         root.Anchored = false
-        removeFlightForcesOnly(root)
+        for _, obj in ipairs(root:GetChildren()) do
+            if obj.Name == "RoofFlyBP" or obj.Name == "RoofFlyBG" then
+                obj:Destroy()
+            end
+        end
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
     end
 
     if char then
@@ -397,34 +580,6 @@ local function resetPhysicsCompletely()
     end
 end
 
-local function ensureFlightForces(root)
-    local bp = root:FindFirstChild("RoofFlyBP")
-    if not bp then
-        bp = Instance.new("BodyPosition")
-        bp.Name = "RoofFlyBP"
-        bp.MaxForce = Vector3.new(1e6, 1e6, 1e6)
-        bp.P = 42000
-        bp.D = 900
-        bp.Position = root.Position
-        bp.Parent = root
-    end
-
-    local bg = root:FindFirstChild("RoofFlyBG")
-    if not bg then
-        bg = Instance.new("BodyGyro")
-        bg.Name = "RoofFlyBG"
-        bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6)
-        bg.CFrame = root.CFrame
-        bg.Parent = root
-    end
-
-    return bp, bg
-end
-
--- ==============================================================================
--- 4. BUCLE PRINCIPAL DE VUELO CON LOS 4 MODOS ANTI-RUBBERBAND
--- ==============================================================================
-
 RunService.Heartbeat:Connect(function(dt)
     if not Config.Active then return end
 
@@ -436,86 +591,143 @@ RunService.Heartbeat:Connect(function(dt)
     if not State.StartOrigin then
         State.StartOrigin = root.Position
         State.VirtualPos = root.Position
+        State.LastRealPos = root.Position
+        captureSafeRoofLandingPoint(root)
         State.Phase = "Advancing"
         State.AirStartTime = tick()
+        State.LastJumpPulse = 0
         buildPatternWaypoints(State.StartOrigin)
     end
 
+    -- Asegurar que PlatformStand NUNCA esté activo (evita el detector anti-fly a los 3s)
+    if hum.PlatformStand then
+        hum.PlatformStand = false
+    end
+
+    local now = tick()
     local fwdDir = DIRECTION_VECTORS[Config.Direction] or Vector3.new(1, 0, 0)
     local advanceDest = State.StartOrigin + (fwdDir * Config.ForwardStuds)
     local mode = Config.AntiRubberMode
 
-    -- FASE ESPECIAL: PISANDO EL TECHO DURANTE 0.5s (Físicas sueltas para que el servidor valide)
+    -- ==========================================================================
+    -- MODO 1: FASE DE PISADA SÓLIDA EN EL TECHO
+    -- ==========================================================================
     if State.Phase == "SteppingOnRoof" then
-        removeFlightForcesOnly(root)
-        hum.PlatformStand = false
-        local remaining = math.max(0, State.StepEndTime - tick())
-        State.StatusText = string.format("👣 Pisando techo para evitar rubber (%.1fs)...", remaining)
+        for _, p in ipairs(char:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = true end
+        end
 
-        if tick() >= State.StepEndTime then
-            -- Medio segundo cumplido: volver a despegar hacia adelante
+        local onSolidGround = isActuallyStandingOnSolid(root, hum)
+        if onSolidGround then
+            if not State.GroundedConfirmedSince then
+                State.GroundedConfirmedSince = now
+            end
+            local heldFor = now - State.GroundedConfirmedSince
+            State.StatusText = string.format("✅ Pisando techo sólido (%.2fs / %.2fs)...", heldFor, Config.TouchRoofHoldTime)
+
+            if heldFor >= Config.TouchRoofHoldTime then
+                State.GroundedConfirmedSince = nil
+                State.VirtualPos = root.Position
+                State.LastRealPos = root.Position
+                State.Phase = "Advancing"
+                State.AirStartTime = now
+                State.LastJumpPulse = 0
+                State.CurrentWpIndex = 1
+            end
+        else
+            State.GroundedConfirmedSince = nil
+            local landingSpot = State.SafeLandingPos or State.StartOrigin
+            local horizDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(landingSpot.X, 0, landingSpot.Z)).Magnitude
+
+            if horizDist > 3.5 or root.Position.Y < (landingSpot.Y - 6.0) then
+                State.StatusText = "⚠️ Borde detectado: Recolocando sobre techo sólido..."
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.CFrame = CFrame.new(landingSpot + Vector3.new(0, 1.5, 0))
+            else
+                State.StatusText = "⬇️ Aterrizando sobre el techo..."
+            end
+        end
+        return
+    end
+
+    -- ==========================================================================
+    -- MODO 2: FASE DE ESPERA TRAS DETECTAR RUBBERBAND
+    -- ==========================================================================
+    if State.Phase == "RubberCooldown" then
+        local rem = math.max(0, State.RubberWaitUntil - now)
+        State.StatusText = string.format("⏳ Rubberband detectado: Reiniciando en %.2fs...", rem)
+        if now >= State.RubberWaitUntil then
             State.VirtualPos = root.Position
+            State.LastRealPos = root.Position
             State.Phase = "Advancing"
-            State.AirStartTime = tick()
+            State.AirStartTime = now
+            State.LastJumpPulse = 0
             State.CurrentWpIndex = 1
         end
         return
     end
 
-    -- Comprobar disparadores según el Modo Anti-Rubberband elegido
+    -- ==========================================================================
+    -- DETECCIÓN SEGÚN EL MODO ELEGIDO (MODO 1 VS MODO 2)
+    -- ==========================================================================
     if State.Phase == "Advancing" or State.Phase == "Pattern" then
-        -- MODO 4: Ciclo preventivo cada 6s (configurable) -> ir al techo y pisar 0.5s
-        if mode == "TimerTouch6s" and (tick() - State.AirStartTime) >= Config.TouchRoofInterval then
-            State.Phase = "ReturningToRoof"
-
-        -- MODO 3: Detectar jalón en pirueta (si tu muñeco real se desvió del cursor virtual) -> cancelar e ir a pisar techo
-        elseif mode == "PullbackTouch" and State.Phase == "Pattern" then
-            local serverDesync = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(State.VirtualPos.X, 0, State.VirtualPos.Z)).Magnitude
-            if serverDesync > 6.5 then
+        if mode == "ReturnAndStep" then
+            -- Modo 1: Volver al techo antes del límite para pisarlo
+            if (now - State.AirStartTime) >= Config.MaxAirTimeBeforeReturn then
                 State.Phase = "ReturningToRoof"
             end
 
-        -- MODO 2: Clásico por distancia (si el servidor te devolvió cerca del punto de inicio, volver a salir)
-        elseif mode == "DistanceReset" and State.Phase == "Pattern" then
-            local distToStart = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(State.StartOrigin.X, 0, State.StartOrigin.Z)).Magnitude
-            if distToStart < Config.RubberbandThreshold and Config.ForwardStuds > Config.RubberbandThreshold then
-                State.Phase = "Advancing"
-                State.VirtualPos = root.Position
-                State.CurrentWpIndex = 1
+        elseif mode == "WaitRubber" then
+            -- Modo 2: No vuelve al techo; detecta si el servidor te jaló repentinamente hacia atrás
+            if State.LastRealPos then
+                local jumpBackDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(State.LastRealPos.X, 0, State.LastRealPos.Z)).Magnitude
+                local distFromOrigin = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(State.StartOrigin.X, 0, State.StartOrigin.Z)).Magnitude
+
+                -- Si hubo un teletransporte/tirón repentino hacia el inicio (> RubberbandDetectDist en un frame)
+                if jumpBackDist >= Config.RubberbandDetectDist and distFromOrigin < (Config.ForwardStuds * 0.65) then
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    State.Phase = "RubberCooldown"
+                    State.RubberWaitUntil = now + Config.PostRubberWaitTime
+                    State.LastRealPos = root.Position
+                    return
+                end
             end
         end
-        -- MODO 1 ("Disabled"): No hace nada de regreso, sigue volando libremente
     end
 
-    hum.PlatformStand = true
-    local bp, bg = ensureFlightForces(root)
+    State.LastRealPos = root.Position
+
+    -- ==========================================================================
+    -- CÁLCULO DE DESTINO Y MOVIMIENTO PARABÓLICO NATURAL
+    -- ==========================================================================
     local targetWp = advanceDest
+    local moveSpeed = Config.FlySpeed
 
-    -- FASE DE REGRESO AL TECHO PARA PISARLO
     if State.Phase == "ReturningToRoof" then
-        State.StatusText = "🔙 Volviendo al punto inicial para pisar el techo..."
-        -- Apuntar ligeramente por encima del punto inicial del techo (Y + 1.5) para caer limpio sobre él
-        targetWp = State.StartOrigin + Vector3.new(0, 1.5, 0)
+        local landingSpot = State.SafeLandingPos or State.StartOrigin
+        State.StatusText = "🔙 Retorno rápido sobre el techo sólido..."
+        targetWp = landingSpot + Vector3.new(0, 1.5, 0)
+        moveSpeed = Config.ReturnSpeed
 
-        if (root.Position - targetWp).Magnitude <= 2.5 then
+        local horizToRoof = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(targetWp.X, 0, targetWp.Z)).Magnitude
+        if horizToRoof <= 2.2 and math.abs(root.Position.Y - targetWp.Y) <= 4.0 then
+            -- Soltar velocidad horizontal para caer limpio encima del techo
+            root.AssemblyLinearVelocity = Vector3.new(0, -10, 0)
             State.Phase = "SteppingOnRoof"
-            State.StepEndTime = tick() + Config.TouchRoofHoldTime
-            removeFlightForcesOnly(root)
-            hum.PlatformStand = false
+            State.GroundedConfirmedSince = nil
             return
         end
 
-    -- FASE 1: AVANZAR LOS STUDS CONFIGURADOS HACIA ADELANTE
     elseif State.Phase == "Advancing" then
-        State.StatusText = string.format("➡️ Avanzando al %s (%d studs)...", Config.Direction, Config.ForwardStuds)
+        State.StatusText = string.format("🦘 Avanzando al %s (%d studs)...", Config.Direction, Config.ForwardStuds)
         targetWp = advanceDest
 
-        if (State.VirtualPos - advanceDest).Magnitude <= 1.0 then
+        local horizDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(advanceDest.X, 0, advanceDest.Z)).Magnitude
+        if horizDist <= 2.0 then
             State.Phase = "Pattern"
             State.CurrentWpIndex = 1
         end
 
-    -- FASE 2: EJECUTAR FORMA PRECALCULADA (CÍRCULO, CUADRADO, ZIGZAG, ROMBO, I INVERTIDA, SOLO ADELANTE)
     elseif State.Phase == "Pattern" then
         local wps = State.Waypoints
         if #wps == 0 then
@@ -523,41 +735,67 @@ RunService.Heartbeat:Connect(function(dt)
             wps = State.Waypoints
         end
 
-        targetWp = wps[State.CurrentWpIndex] or advanceDest
-        if mode == "TimerTouch6s" then
-            local left = math.max(0, Config.TouchRoofInterval - (tick() - State.AirStartTime))
+        targetWp = (wps[State.CurrentWpIndex] or advanceDest) + State.DodgeOffset
+
+        if State.DodgeOffset.Magnitude > 0.1 then
+            State.StatusText = string.format("🚨 ¡EVADIENDO %s! | %s", State.LastThreatName, Config.Pattern)
+        elseif mode == "ReturnAndStep" then
+            local left = math.max(0, Config.MaxAirTimeBeforeReturn - (now - State.AirStartTime))
             State.StatusText = string.format("🌪️ %s (%d/%d) | Pisar techo en %.1fs", Config.Pattern, State.CurrentWpIndex, #wps, left)
         else
-            State.StatusText = string.format("🌪️ %s (%d/%d) | %s", Config.Pattern, State.CurrentWpIndex, #wps, Config.Direction)
+            State.StatusText = string.format("🌪️ %s (%d/%d) | Esperando Rubberband", Config.Pattern, State.CurrentWpIndex, #wps)
         end
 
-        if (State.VirtualPos - targetWp).Magnitude <= 1.2 then
+        local horizDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(targetWp.X, 0, targetWp.Z)).Magnitude
+        if horizDist <= 2.5 then
             State.CurrentWpIndex = (State.CurrentWpIndex % #wps) + 1
-            targetWp = wps[State.CurrentWpIndex]
+            targetWp = (wps[State.CurrentWpIndex] or advanceDest) + State.DodgeOffset
         end
     end
 
-    -- Desplazar el cursor virtual a velocidad constante sin tirones
-    local diff = targetWp - State.VirtualPos
-    local dist = diff.Magnitude
-    if dist > 0.01 then
-        State.VirtualPos = State.VirtualPos + (diff.Unit * math.min(dist, Config.FlySpeed * dt))
+    -- 1. Velocidad horizontal dirigida al punto objetivo
+    local toTargetHoriz = Vector3.new(targetWp.X - root.Position.X, 0, targetWp.Z - root.Position.Z)
+    local horizVel = Vector3.zero
+    if toTargetHoriz.Magnitude > 0.15 then
+        horizVel = toTargetHoriz.Unit * moveSpeed
     end
 
-    bp.Position = State.VirtualPos
-    bg.CFrame = CFrame.lookAt(root.Position, root.Position + fwdDir)
+    -- 2. Velocidad vertical parabólica (impulso de salto periódico + gravedad natural)
+    local curVelY = root.AssemblyLinearVelocity.Y
+    local desiredY = targetWp.Y
+
+    if State.Phase == "ReturningToRoof" then
+        -- En retorno al techo, ajustar altura directamente hacia el techo
+        local diffY = desiredY - root.Position.Y
+        curVelY = math.clamp(diffY * 6, -45, 45)
+    else
+        -- Imitar saltos reales en el aire cada JumpPulseInterval segundos
+        if (now - State.LastJumpPulse) >= Config.JumpPulseInterval or root.Position.Y < (desiredY - 1.5) then
+            State.LastJumpPulse = now
+            local heightBoost = math.clamp((desiredY - root.Position.Y) * 2.5, 0, 18)
+            curVelY = Config.JumpImpulseY + heightBoost
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+
+    root.AssemblyLinearVelocity = Vector3.new(horizVel.X, curVelY, horizVel.Z)
+
+    -- Orientar personaje hacia el avance sin usar BodyGyro
+    if horizVel.Magnitude > 1.0 then
+        root.CFrame = CFrame.lookAt(root.Position, root.Position + horizVel.Unit)
+    end
 end)
 
 -- ==============================================================================
--- 5. INTERFAZ GRÁFICA NATIVA ROBLOX (CONTROL + CONFIGURACIÓN)
+-- 6. INTERFAZ GRÁFICA NATIVA ROBLOX (3 PESTAÑAS + TODOS LOS TIEMPOS SEPARADOS)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV3")
+local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV5")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RoofAerialPilotGuiV3"
+ScreenGui.Name = "RoofAerialPilotGuiV5"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -565,7 +803,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.35, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(20, 125, 175)
-FloatBtn.Text = "✈️\nV3.0"
+FloatBtn.Text = "✈️\nV5.0"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -575,8 +813,8 @@ FloatBtn.Parent = ScreenGui
 Instance.new("UICorner", FloatBtn).CornerRadius = UDim.new(1, 0)
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 520, 0, 450)
-MainFrame.Position = UDim2.new(0.5, -260, 0.5, -225)
+MainFrame.Size = UDim2.new(0, 540, 0, 465)
+MainFrame.Position = UDim2.new(0.5, -270, 0.5, -232)
 MainFrame.BackgroundColor3 = Color3.fromRGB(16, 19, 26)
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -587,7 +825,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 29, 40)
-TitleBar.Text = "  ✈️ PILOTO AÉREO V3.0 | PISAR TECHO 6s & ANULACIÓN SISTEMA"
+TitleBar.Text = "  ✈️ PILOTO PARABÓLICO V5.0 | FÍSICA NATURAL & TIEMPOS"
 TitleBar.TextColor3 = Color3.fromRGB(0, 235, 255)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -596,23 +834,34 @@ TitleBar.Parent = MainFrame
 Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
 local TabMainBtn = Instance.new("TextButton")
-TabMainBtn.Size = UDim2.new(0.5, -12, 0, 28)
+TabMainBtn.Size = UDim2.new(0.34, -8, 0, 28)
 TabMainBtn.Position = UDim2.new(0, 10, 0, 40)
 TabMainBtn.BackgroundColor3 = Color3.fromRGB(0, 130, 170)
-TabMainBtn.Text = "🎮 CONTROL DE VUELO"
+TabMainBtn.Text = "🎮 CONTROL VUELO"
 TabMainBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-TabMainBtn.TextSize = 10
+TabMainBtn.TextSize = 9
 TabMainBtn.Font = Enum.Font.GothamBold
 TabMainBtn.Parent = MainFrame
 Instance.new("UICorner", TabMainBtn).CornerRadius = UDim.new(0, 6)
 
+local TabRadarBtn = Instance.new("TextButton")
+TabRadarBtn.Size = UDim2.new(0.33, -8, 0, 28)
+TabRadarBtn.Position = UDim2.new(0.34, 4, 0, 40)
+TabRadarBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
+TabRadarBtn.Text = "🛡️ RADAR OBJETOS"
+TabRadarBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+TabRadarBtn.TextSize = 9
+TabRadarBtn.Font = Enum.Font.GothamBold
+TabRadarBtn.Parent = MainFrame
+Instance.new("UICorner", TabRadarBtn).CornerRadius = UDim.new(0, 6)
+
 local TabConfigBtn = Instance.new("TextButton")
-TabConfigBtn.Size = UDim2.new(0.5, -12, 0, 28)
-TabConfigBtn.Position = UDim2.new(0.5, 2, 0, 40)
+TabConfigBtn.Size = UDim2.new(0.33, -8, 0, 28)
+TabConfigBtn.Position = UDim2.new(0.67, 0, 0, 40)
 TabConfigBtn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
-TabConfigBtn.Text = "⚙️ CONFIGURACIÓN"
+TabConfigBtn.Text = "⚙️ CONFIG VUELO"
 TabConfigBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-TabConfigBtn.TextSize = 10
+TabConfigBtn.TextSize = 9
 TabConfigBtn.Font = Enum.Font.GothamBold
 TabConfigBtn.Parent = MainFrame
 Instance.new("UICorner", TabConfigBtn).CornerRadius = UDim.new(0, 6)
@@ -624,270 +873,52 @@ MainPage.BackgroundTransparency = 1
 MainPage.Visible = true
 MainPage.Parent = MainFrame
 
+local RadarPage = Instance.new("ScrollingFrame")
+RadarPage.Size = UDim2.new(1, 0, 1, -74)
+RadarPage.Position = UDim2.new(0, 0, 0, 74)
+RadarPage.BackgroundTransparency = 1
+RadarPage.BorderSizePixel = 0
+RadarPage.CanvasSize = UDim2.new(0, 0, 0, 340)
+RadarPage.ScrollBarThickness = 5
+RadarPage.Visible = false
+RadarPage.Parent = MainFrame
+
 local ConfigPage = Instance.new("ScrollingFrame")
 ConfigPage.Size = UDim2.new(1, 0, 1, -74)
 ConfigPage.Position = UDim2.new(0, 0, 0, 74)
 ConfigPage.BackgroundTransparency = 1
 ConfigPage.BorderSizePixel = 0
-ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 500)
+ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 720)
 ConfigPage.ScrollBarThickness = 5
 ConfigPage.Visible = false
 ConfigPage.Parent = MainFrame
 
 local function switchTab(activeBtn, activePage)
-    MainPage.Visible = (activePage == MainPage)
+    MainPage.Visible   = (activePage == MainPage)
+    RadarPage.Visible  = (activePage == RadarPage)
     ConfigPage.Visible = (activePage == ConfigPage)
-    TabMainBtn.BackgroundColor3 = (activePage == MainPage) and Color3.fromRGB(0, 130, 170) or Color3.fromRGB(30, 35, 48)
-    TabMainBtn.TextColor3 = (activePage == MainPage) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(200, 200, 200)
-    TabConfigBtn.BackgroundColor3 = (activePage == ConfigPage) and Color3.fromRGB(0, 130, 170) or Color3.fromRGB(30, 35, 48)
-    TabConfigBtn.TextColor3 = (activePage == ConfigPage) and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(200, 200, 200)
+
+    for _, btn in ipairs({TabMainBtn, TabRadarBtn, TabConfigBtn}) do
+        if btn == activeBtn then
+            btn.BackgroundColor3 = Color3.fromRGB(0, 130, 170)
+            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        else
+            btn.BackgroundColor3 = Color3.fromRGB(30, 35, 48)
+            btn.TextColor3 = Color3.fromRGB(200, 200, 200)
+        end
+    end
 end
 
 TabMainBtn.MouseButton1Click:Connect(function() switchTab(TabMainBtn, MainPage) end)
+TabRadarBtn.MouseButton1Click:Connect(function() switchTab(TabRadarBtn, RadarPage) end)
 TabConfigBtn.MouseButton1Click:Connect(function() switchTab(TabConfigBtn, ConfigPage) end)
 
--- ==============================================================================
--- 6. PESTAÑA 1: CONTROL DE VUELO
--- ==============================================================================
-
-local StatusCard = Instance.new("Frame")
-StatusCard.Size = UDim2.new(1, -20, 0, 66)
-StatusCard.Position = UDim2.new(0, 10, 0, 4)
-StatusCard.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
-StatusCard.Parent = MainPage
-Instance.new("UICorner", StatusCard).CornerRadius = UDim.new(0, 6)
-
-local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Size = UDim2.new(1, -12, 1, -8)
-StatusLabel.Position = UDim2.new(0, 6, 0, 4)
-StatusLabel.BackgroundTransparency = 1
-StatusLabel.Text = "Estado: En espera (Detenido)"
-StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 180)
-StatusLabel.TextSize = 10
-StatusLabel.Font = Enum.Font.Code
-StatusLabel.TextWrapped = true
-StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
-StatusLabel.Parent = StatusCard
-
-task.spawn(function()
-    while true do
-        task.wait(0.30)
-        StatusLabel.Text = string.format(
-            "Estado: %s\nDirección: %s | Forma: %s\nPoder 5: %s | Arma 2: %s",
-            State.StatusText,
-            Config.Direction,
-            Config.Pattern,
-            State.Power5CooldownText,
-            Config.AutoWeaponCycle and "ON" or "OFF"
-        )
-    end
-end)
-
-local StartBtn = Instance.new("TextButton")
-StartBtn.Size = UDim2.new(0.5, -12, 0, 40)
-StartBtn.Position = UDim2.new(0, 10, 0, 78)
-StartBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 80)
-StartBtn.Text = "▶️ INICIAR VUELO"
-StartBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-StartBtn.TextSize = 11
-StartBtn.Font = Enum.Font.GothamBold
-StartBtn.Parent = MainPage
-Instance.new("UICorner", StartBtn).CornerRadius = UDim.new(0, 8)
-
-local StopBtn = Instance.new("TextButton")
-StopBtn.Size = UDim2.new(0.5, -12, 0, 40)
-StopBtn.Position = UDim2.new(0.5, 2, 0, 78)
-StopBtn.BackgroundColor3 = Color3.fromRGB(195, 45, 55)
-StopBtn.Text = "⏹️ DETENER (QUITAR FLY)"
-StopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-StopBtn.TextSize = 10
-StopBtn.Font = Enum.Font.GothamBold
-StopBtn.Parent = MainPage
-Instance.new("UICorner", StopBtn).CornerRadius = UDim.new(0, 8)
-
-StartBtn.MouseButton1Click:Connect(function()
-    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
-    if root then
-        State.StartOrigin = root.Position
-        State.VirtualPos = root.Position
-        State.Phase = "Advancing"
-        State.AirStartTime = tick()
-        buildPatternWaypoints(State.StartOrigin)
-        Config.Active = true
-        if Config.EquipSlot2Default then
-            equipSlot2Only()
-        end
-    end
-end)
-
-StopBtn.MouseButton1Click:Connect(function()
-    Config.Active = false
-    State.StartOrigin = nil
-    State.StatusText = "Detenido (Físicas reiniciadas)"
-    resetPhysicsCompletely()
-end)
-
--- Selector de Dirección Cardinal (ESTE por defecto)
-local DirTitle = Instance.new("TextLabel")
-DirTitle.Size = UDim2.new(1, -20, 0, 18)
-DirTitle.Position = UDim2.new(0, 10, 0, 126)
-DirTitle.BackgroundTransparency = 1
-DirTitle.Text = "🧭 DIRECCIÓN DE AVANCE INICIAL:"
-DirTitle.TextColor3 = Color3.fromRGB(180, 200, 220)
-DirTitle.TextSize = 10
-DirTitle.Font = Enum.Font.GothamBold
-DirTitle.TextXAlignment = Enum.TextXAlignment.Left
-DirTitle.Parent = MainPage
-
-local dirButtons = {}
-local dirs = {"NORTE", "SUR", "ESTE", "OESTE"}
-for i, dName in ipairs(dirs) do
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0.25, -7, 0, 32)
-    b.Position = UDim2.new((i - 1) * 0.25, 10 - ((i - 1) * 2), 0, 146)
-    b.BackgroundColor3 = (Config.Direction == dName) and Color3.fromRGB(0, 145, 215) or Color3.fromRGB(30, 35, 48)
-    b.Text = dName
-    b.TextColor3 = Color3.fromRGB(255, 255, 255)
-    b.TextSize = 10
-    b.Font = Enum.Font.GothamBold
-    b.Parent = MainPage
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-    dirButtons[dName] = b
-
-    b.MouseButton1Click:Connect(function()
-        Config.Direction = dName
-        if State.StartOrigin then
-            buildPatternWaypoints(State.StartOrigin)
-            if Config.Active then State.Phase = "Advancing" end
-        end
-        for k, btn in pairs(dirButtons) do
-            btn.BackgroundColor3 = (k == dName) and Color3.fromRGB(0, 145, 215) or Color3.fromRGB(30, 35, 48)
-        end
-    end)
-end
-
--- 6 Modos de Forma (Incluyendo "I Invertida" y "Solo Adelante")
-local PatTitle = Instance.new("TextLabel")
-PatTitle.Size = UDim2.new(1, -20, 0, 18)
-PatTitle.Position = UDim2.new(0, 10, 0, 186)
-PatTitle.BackgroundTransparency = 1
-PatTitle.Text = "🌪️ FORMA EN EL AIRE (WAYPOINTS PRECALCULADOS):"
-PatTitle.TextColor3 = Color3.fromRGB(180, 200, 220)
-PatTitle.TextSize = 10
-PatTitle.Font = Enum.Font.GothamBold
-PatTitle.TextXAlignment = Enum.TextXAlignment.Left
-PatTitle.Parent = MainPage
-
-local patButtons = {}
-local patterns = {"Círculo", "Cuadrado", "Zigzag", "Rombo", "I Invertida", "Solo Adelante"}
-for i, pName in ipairs(patterns) do
-    local col = (i - 1) % 3
-    local row = math.floor((i - 1) / 3)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0.333, -9, 0, 28)
-    b.Position = UDim2.new(col * 0.333, 10 - (col * 2), 0, 206 + (row * 32))
-    b.BackgroundColor3 = (Config.Pattern == pName) and Color3.fromRGB(125, 65, 185) or Color3.fromRGB(30, 35, 48)
-    b.Text = pName
-    b.TextColor3 = Color3.fromRGB(255, 255, 255)
-    b.TextSize = 9
-    b.Font = Enum.Font.GothamBold
-    b.Parent = MainPage
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-    patButtons[pName] = b
-
-    b.MouseButton1Click:Connect(function()
-        Config.Pattern = pName
-        if State.StartOrigin then
-            buildPatternWaypoints(State.StartOrigin)
-        end
-        for k, btn in pairs(patButtons) do
-            btn.BackgroundColor3 = (k == pName) and Color3.fromRGB(125, 65, 185) or Color3.fromRGB(30, 35, 48)
-        end
-    end)
-end
-
--- Controles de Poder 5 ("Anulación del Sistema") y Arma 2
-local WeaponToggleBtn = Instance.new("TextButton")
-WeaponToggleBtn.Size = UDim2.new(1, -20, 0, 32)
-WeaponToggleBtn.Position = UDim2.new(0, 10, 0, 278)
-WeaponToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 145, 80)
-WeaponToggleBtn.Text = "🔫 AUTO 'ANULACIÓN DEL SISTEMA' (5) + ARMA 2: ON"
-WeaponToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-WeaponToggleBtn.TextSize = 9
-WeaponToggleBtn.Font = Enum.Font.GothamBold
-WeaponToggleBtn.Parent = MainPage
-Instance.new("UICorner", WeaponToggleBtn).CornerRadius = UDim.new(0, 6)
-
-WeaponToggleBtn.MouseButton1Click:Connect(function()
-    Config.AutoWeaponCycle = not Config.AutoWeaponCycle
-    WeaponToggleBtn.BackgroundColor3 = Config.AutoWeaponCycle and Color3.fromRGB(30, 145, 80) or Color3.fromRGB(65, 70, 85)
-    WeaponToggleBtn.Text = Config.AutoWeaponCycle and "🔫 AUTO 'ANULACIÓN DEL SISTEMA' (5) + ARMA 2: ON" or "🔫 AUTO PODER 5 + ARMA 2: OFF"
-end)
-
-local Power5ModeBtn = Instance.new("TextButton")
-Power5ModeBtn.Size = UDim2.new(1, -20, 0, 32)
-Power5ModeBtn.Position = UDim2.new(0, 10, 0, 316)
-Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(0, 125, 185)
-Power5ModeBtn.Text = "⏱️ MODO PODER 5: DETECTAR RECARGA SLOT 5 (EXACTO)"
-Power5ModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-Power5ModeBtn.TextSize = 9
-Power5ModeBtn.Font = Enum.Font.GothamBold
-Power5ModeBtn.Parent = MainPage
-Instance.new("UICorner", Power5ModeBtn).CornerRadius = UDim.new(0, 6)
-
-Power5ModeBtn.MouseButton1Click:Connect(function()
-    if Config.Power5Mode == "CooldownHUD" then
-        Config.Power5Mode = "TimerFixed"
-        State.LastPower5Tick = 0
-        Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(175, 105, 25)
-        Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: TEMPORIZADOR FIJO (CADA %ds)", Config.Power5Interval)
-    else
-        Config.Power5Mode = "CooldownHUD"
-        Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(0, 125, 185)
-        Power5ModeBtn.Text = "⏱️ MODO PODER 5: DETECTAR RECARGA SLOT 5 (EXACTO)"
-    end
-end)
-
--- ==============================================================================
--- 7. PESTAÑA 2: CONFIGURACIÓN (MODOS ANTI-RUBBER + DISTANCIAS + VELOCIDAD)
--- ==============================================================================
-
--- Selector de los 4 Modos Anti-Rubberband
-local AntiRubberModes = {
-    { Id = "TimerTouch6s",  Label = "🛡️ ANTI-RUBBER: CADA 6s IR Y PISAR TECHO (0.5s)",     Color = Color3.fromRGB(30, 150, 95) },
-    { Id = "PullbackTouch", Label = "🛡️ ANTI-RUBBER: SI JALA EN PIRUETA -> PISAR TECHO",    Color = Color3.fromRGB(0, 130, 185) },
-    { Id = "DistanceReset", Label = "🛡️ ANTI-RUBBER: REINICIAR AVANCE POR DISTANCIA",       Color = Color3.fromRGB(145, 75, 180) },
-    { Id = "Disabled",      Label = "🛡️ ANTI-RUBBER: DESACTIVADO (VUELO LIBRE CONTINUO)",   Color = Color3.fromRGB(70, 75, 90) }
-}
-local curRubberIdx = 1
-
-local AntiRubberBtn = Instance.new("TextButton")
-AntiRubberBtn.Size = UDim2.new(1, -24, 0, 38)
-AntiRubberBtn.Position = UDim2.new(0, 10, 0, 6)
-AntiRubberBtn.BackgroundColor3 = AntiRubberModes[1].Color
-AntiRubberBtn.Text = AntiRubberModes[1].Label
-AntiRubberBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-AntiRubberBtn.TextSize = 9
-AntiRubberBtn.Font = Enum.Font.GothamBold
-AntiRubberBtn.Parent = ConfigPage
-Instance.new("UICorner", AntiRubberBtn).CornerRadius = UDim.new(0, 8)
-
-AntiRubberBtn.MouseButton1Click:Connect(function()
-    curRubberIdx = (curRubberIdx % #AntiRubberModes) + 1
-    local m = AntiRubberModes[curRubberIdx]
-    Config.AntiRubberMode = m.Id
-    AntiRubberBtn.Text = m.Label
-    AntiRubberBtn.BackgroundColor3 = m.Color
-    State.AirStartTime = tick()
-end)
-
-local function createStepper(yPos, title, getSubText, onMinus, onPlus)
+local function createStepper(parent, yPos, title, getSubText, onMinus, onPlus, rebuildOnEdit)
     local row = Instance.new("Frame")
     row.Size = UDim2.new(1, -24, 0, 48)
     row.Position = UDim2.new(0, 10, 0, yPos)
     row.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
-    row.Parent = ConfigPage
+    row.Parent = parent
     Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
 
     local lbl = Instance.new("TextLabel")
@@ -925,48 +956,353 @@ local function createStepper(yPos, title, getSubText, onMinus, onPlus)
 
     minusBtn.MouseButton1Click:Connect(function()
         onMinus()
-        if State.StartOrigin then buildPatternWaypoints(State.StartOrigin) end
+        if rebuildOnEdit and State.StartOrigin then buildPatternWaypoints(State.StartOrigin) end
         lbl.Text = title .. "\n" .. getSubText()
     end)
 
     plusBtn.MouseButton1Click:Connect(function()
         onPlus()
-        if State.StartOrigin then buildPatternWaypoints(State.StartOrigin) end
+        if rebuildOnEdit and State.StartOrigin then buildPatternWaypoints(State.StartOrigin) end
         lbl.Text = title .. "\n" .. getSubText()
     end)
 end
 
-createStepper(52, "⏱️ INTERVALO PARA PISAR TECHO (SEGUNDOS)",
-    function() return string.format("Actual: Cada %.1f seg baja y pisa %.1fs", Config.TouchRoofInterval, Config.TouchRoofHoldTime) end,
-    function() Config.TouchRoofInterval = math.max(2.0, Config.TouchRoofInterval - 0.5) end,
-    function() Config.TouchRoofInterval = math.min(20.0, Config.TouchRoofInterval + 0.5) end
+-- ==============================================================================
+-- 7. PESTAÑA 1: CONTROL DE VUELO
+-- ==============================================================================
+
+local StatusCard = Instance.new("Frame")
+StatusCard.Size = UDim2.new(1, -20, 0, 68)
+StatusCard.Position = UDim2.new(0, 10, 0, 4)
+StatusCard.BackgroundColor3 = Color3.fromRGB(20, 24, 34)
+StatusCard.Parent = MainPage
+Instance.new("UICorner", StatusCard).CornerRadius = UDim.new(0, 6)
+
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, -12, 1, -8)
+StatusLabel.Position = UDim2.new(0, 6, 0, 4)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "Estado: En espera (Detenido)"
+StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 180)
+StatusLabel.TextSize = 10
+StatusLabel.Font = Enum.Font.Code
+StatusLabel.TextWrapped = true
+StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+StatusLabel.TextYAlignment = Enum.TextYAlignment.Top
+StatusLabel.Parent = StatusCard
+
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+        StatusLabel.Text = string.format(
+            "Estado: %s\nRadar: %s (Abajo <50m: %d) | Último: %s\nPoder 5: %s | Arma 2: %s",
+            State.StatusText,
+            Config.AutoDodgeObjects and "ON" or "OFF",
+            State.DetectedBelowCount,
+            State.LastThreatName,
+            State.Power5CooldownText,
+            Config.AutoWeaponCycle and "ON" or "OFF"
+        )
+    end
+end)
+
+local StartBtn = Instance.new("TextButton")
+StartBtn.Size = UDim2.new(0.5, -12, 0, 40)
+StartBtn.Position = UDim2.new(0, 10, 0, 80)
+StartBtn.BackgroundColor3 = Color3.fromRGB(30, 160, 80)
+StartBtn.Text = "▶️ INICIAR VUELO"
+StartBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+StartBtn.TextSize = 11
+StartBtn.Font = Enum.Font.GothamBold
+StartBtn.Parent = MainPage
+Instance.new("UICorner", StartBtn).CornerRadius = UDim.new(0, 8)
+
+local StopBtn = Instance.new("TextButton")
+StopBtn.Size = UDim2.new(0.5, -12, 0, 40)
+StopBtn.Position = UDim2.new(0.5, 2, 0, 80)
+StopBtn.BackgroundColor3 = Color3.fromRGB(195, 45, 55)
+StopBtn.Text = "⏹️ DETENER (QUITAR FLY)"
+StopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+StopBtn.TextSize = 10
+StopBtn.Font = Enum.Font.GothamBold
+StopBtn.Parent = MainPage
+Instance.new("UICorner", StopBtn).CornerRadius = UDim.new(0, 8)
+
+StartBtn.MouseButton1Click:Connect(function()
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if root then
+        State.StartOrigin = root.Position
+        State.VirtualPos = root.Position
+        State.LastRealPos = root.Position
+        captureSafeRoofLandingPoint(root)
+        State.Phase = "Advancing"
+        State.AirStartTime = tick()
+        State.LastJumpPulse = 0
+        State.GroundedConfirmedSince = nil
+        buildPatternWaypoints(State.StartOrigin)
+        Config.Active = true
+        if Config.EquipSlot2Default then
+            equipSlot2Only()
+        end
+    end
+end)
+
+StopBtn.MouseButton1Click:Connect(function()
+    Config.Active = false
+    State.StartOrigin = nil
+    State.SafeLandingPos = nil
+    State.StatusText = "Detenido (Físicas reiniciadas)"
+    resetPhysicsCompletely()
+end)
+
+local DirTitle = Instance.new("TextLabel")
+DirTitle.Size = UDim2.new(1, -20, 0, 18)
+DirTitle.Position = UDim2.new(0, 10, 0, 128)
+DirTitle.BackgroundTransparency = 1
+DirTitle.Text = "🧭 DIRECCIÓN DE AVANCE INICIAL:"
+DirTitle.TextColor3 = Color3.fromRGB(180, 200, 220)
+DirTitle.TextSize = 10
+DirTitle.Font = Enum.Font.GothamBold
+DirTitle.TextXAlignment = Enum.TextXAlignment.Left
+DirTitle.Parent = MainPage
+
+local dirButtons = {}
+local dirs = {"NORTE", "SUR", "ESTE", "OESTE"}
+for i, dName in ipairs(dirs) do
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0.25, -7, 0, 32)
+    b.Position = UDim2.new((i - 1) * 0.25, 10 - ((i - 1) * 2), 0, 148)
+    b.BackgroundColor3 = (Config.Direction == dName) and Color3.fromRGB(0, 145, 215) or Color3.fromRGB(30, 35, 48)
+    b.Text = dName
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.TextSize = 10
+    b.Font = Enum.Font.GothamBold
+    b.Parent = MainPage
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    dirButtons[dName] = b
+
+    b.MouseButton1Click:Connect(function()
+        Config.Direction = dName
+        if State.StartOrigin then
+            buildPatternWaypoints(State.StartOrigin)
+            if Config.Active then State.Phase = "Advancing" end
+        end
+        for k, btn in pairs(dirButtons) do
+            btn.BackgroundColor3 = (k == dName) and Color3.fromRGB(0, 145, 215) or Color3.fromRGB(30, 35, 48)
+        end
+    end)
+end
+
+local PatTitle = Instance.new("TextLabel")
+PatTitle.Size = UDim2.new(1, -20, 0, 18)
+PatTitle.Position = UDim2.new(0, 10, 0, 188)
+PatTitle.BackgroundTransparency = 1
+PatTitle.Text = "🌪️ FORMA EN EL AIRE (WAYPOINTS PRECALCULADOS):"
+PatTitle.TextColor3 = Color3.fromRGB(180, 200, 220)
+PatTitle.TextSize = 10
+PatTitle.Font = Enum.Font.GothamBold
+PatTitle.TextXAlignment = Enum.TextXAlignment.Left
+PatTitle.Parent = MainPage
+
+local patButtons = {}
+local patterns = {"Círculo", "Cuadrado", "Zigzag", "Rombo", "I Invertida", "Solo Adelante"}
+for i, pName in ipairs(patterns) do
+    local col = (i - 1) % 3
+    local row = math.floor((i - 1) / 3)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0.333, -9, 0, 28)
+    b.Position = UDim2.new(col * 0.333, 10 - (col * 2), 0, 208 + (row * 32))
+    b.BackgroundColor3 = (Config.Pattern == pName) and Color3.fromRGB(125, 65, 185) or Color3.fromRGB(30, 35, 48)
+    b.Text = pName
+    b.TextColor3 = Color3.fromRGB(255, 255, 255)
+    b.TextSize = 9
+    b.Font = Enum.Font.GothamBold
+    b.Parent = MainPage
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    patButtons[pName] = b
+
+    b.MouseButton1Click:Connect(function()
+        Config.Pattern = pName
+        if State.StartOrigin then
+            buildPatternWaypoints(State.StartOrigin)
+        end
+        for k, btn in pairs(patButtons) do
+            btn.BackgroundColor3 = (k == pName) and Color3.fromRGB(125, 65, 185) or Color3.fromRGB(30, 35, 48)
+        end
+    end)
+end
+
+local WeaponToggleBtn = Instance.new("TextButton")
+WeaponToggleBtn.Size = UDim2.new(1, -20, 0, 32)
+WeaponToggleBtn.Position = UDim2.new(0, 10, 0, 280)
+WeaponToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 145, 80)
+WeaponToggleBtn.Text = "🔫 AUTO 'ANULACIÓN DEL SISTEMA' (5) + ARMA 2: ON"
+WeaponToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+WeaponToggleBtn.TextSize = 9
+WeaponToggleBtn.Font = Enum.Font.GothamBold
+WeaponToggleBtn.Parent = MainPage
+Instance.new("UICorner", WeaponToggleBtn).CornerRadius = UDim.new(0, 6)
+
+WeaponToggleBtn.MouseButton1Click:Connect(function()
+    Config.AutoWeaponCycle = not Config.AutoWeaponCycle
+    WeaponToggleBtn.BackgroundColor3 = Config.AutoWeaponCycle and Color3.fromRGB(30, 145, 80) or Color3.fromRGB(65, 70, 85)
+    WeaponToggleBtn.Text = Config.AutoWeaponCycle and "🔫 AUTO 'ANULACIÓN DEL SISTEMA' (5) + ARMA 2: ON" or "🔫 AUTO PODER 5 + ARMA 2: OFF"
+end)
+
+local Power5ModeBtn = Instance.new("TextButton")
+Power5ModeBtn.Size = UDim2.new(1, -20, 0, 32)
+Power5ModeBtn.Position = UDim2.new(0, 10, 0, 318)
+Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(0, 125, 185)
+Power5ModeBtn.Text = "⏱️ MODO PODER 5: DETECTAR RECARGA SLOT 5 (EXACTO)"
+Power5ModeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+Power5ModeBtn.TextSize = 9
+Power5ModeBtn.Font = Enum.Font.GothamBold
+Power5ModeBtn.Parent = MainPage
+Instance.new("UICorner", Power5ModeBtn).CornerRadius = UDim.new(0, 6)
+
+Power5ModeBtn.MouseButton1Click:Connect(function()
+    if Config.Power5Mode == "CooldownHUD" then
+        Config.Power5Mode = "TimerFixed"
+        State.LastPower5Tick = 0
+        Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(175, 105, 25)
+        Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: TEMPORIZADOR FIJO (CADA %ds)", Config.Power5Interval)
+    else
+        Config.Power5Mode = "CooldownHUD"
+        Power5ModeBtn.BackgroundColor3 = Color3.fromRGB(0, 125, 185)
+        Power5ModeBtn.Text = "⏱️ MODO PODER 5: DETECTAR RECARGA SLOT 5 (EXACTO)"
+    end
+end)
+
+-- ==============================================================================
+-- 8. PESTAÑA 2: RADAR OBJETOS / PROYECTILES / ÁCIDO
+-- ==============================================================================
+
+local RadarToggleBtn = Instance.new("TextButton")
+RadarToggleBtn.Size = UDim2.new(1, -24, 0, 38)
+RadarToggleBtn.Position = UDim2.new(0, 10, 0, 6)
+RadarToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 155, 95)
+RadarToggleBtn.Text = "🛡️ EVADIR OBJETOS, MISILES Y ÁCIDO (IGNORA COMPAÑEROS): ON"
+RadarToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+RadarToggleBtn.TextSize = 9
+RadarToggleBtn.Font = Enum.Font.GothamBold
+RadarToggleBtn.Parent = RadarPage
+Instance.new("UICorner", RadarToggleBtn).CornerRadius = UDim.new(0, 8)
+
+RadarToggleBtn.MouseButton1Click:Connect(function()
+    Config.AutoDodgeObjects = not Config.AutoDodgeObjects
+    RadarToggleBtn.BackgroundColor3 = Config.AutoDodgeObjects and Color3.fromRGB(30, 155, 95) or Color3.fromRGB(65, 70, 85)
+    RadarToggleBtn.Text = Config.AutoDodgeObjects and "🛡️ EVADIR OBJETOS, MISILES Y ÁCIDO (IGNORA COMPAÑEROS): ON" or "🛡️ EVADIR OBJETOS, MISILES Y ÁCIDO: OFF"
+    if not Config.AutoDodgeObjects then
+        State.DodgeOffset = Vector3.zero
+    end
+end)
+
+createStepper(RadarPage, 52, "📡 RADIO VIGILANCIA ALREDEDOR (STUDS)",
+    function() return string.format("Actual: %d studs alrededor de tu personaje", Config.RadarHorizRadius) end,
+    function() Config.RadarHorizRadius = math.max(8, Config.RadarHorizRadius - 2) end,
+    function() Config.RadarHorizRadius = math.min(60, Config.RadarHorizRadius + 2) end,
+    false
 )
 
-createStepper(106, "➡️ DISTANCIA AVANCE INICIAL (STUDS)",
-    function() return string.format("Actual: %d studs hacia delante", Config.ForwardStuds) end,
-    function() Config.ForwardStuds = math.max(5, Config.ForwardStuds - 5) end,
-    function() Config.ForwardStuds = math.min(150, Config.ForwardStuds + 5) end
+createStepper(RadarPage, 106, "⬇️ VIGILANCIA CONSTANTE HACIA ABAJO (STUDS)",
+    function() return string.format("Actual: %d studs debajo de ti", Config.RadarDownDepth) end,
+    function() Config.RadarDownDepth = math.max(15, Config.RadarDownDepth - 5) end,
+    function() Config.RadarDownDepth = math.min(120, Config.RadarDownDepth + 5) end,
+    false
 )
 
-createStepper(160, "🔄 AMPLITUD DE FORMA (CÍRCULO / I INVERTIDA / ETC.)",
-    function() return string.format("Actual: %d studs de radio / amplitud", Config.PatternRadius) end,
-    function() Config.PatternRadius = math.max(8, Config.PatternRadius - 2) end,
-    function() Config.PatternRadius = math.min(80, Config.PatternRadius + 2) end
+createStepper(RadarPage, 160, "🚨 DISTANCIA DE ESQUIVA INMEDIATA (STUDS)",
+    function() return string.format("Actual: Esquiva cuando el objeto esté a <%d studs", Config.DodgeTriggerDist) end,
+    function() Config.DodgeTriggerDist = math.max(8, Config.DodgeTriggerDist - 2) end,
+    function() Config.DodgeTriggerDist = math.min(45, Config.DodgeTriggerDist + 2) end,
+    false
 )
 
-createStepper(214, "↕️ BAJADA / SUBIDA EN PIRUETA (STUDS)",
-    function() return string.format("Actual: %.1f studs de oscilación vertical", Config.VerticalDipStuds) end,
-    function() Config.VerticalDipStuds = math.max(0.0, Config.VerticalDipStuds - 0.5) end,
-    function() Config.VerticalDipStuds = math.min(15.0, Config.VerticalDipStuds + 0.5) end
+createStepper(RadarPage, 214, "↗️ DESPLAZAMIENTO AL ESQUIVAR (LADO / ARRIBA)",
+    function() return string.format("Actual: %d studs lateral / +%d studs arriba", Config.DodgeSideStuds, Config.DodgeUpStuds) end,
+    function()
+        Config.DodgeSideStuds = math.max(6, Config.DodgeSideStuds - 2)
+        Config.DodgeUpStuds = math.max(2, Config.DodgeUpStuds - 1)
+    end,
+    function()
+        Config.DodgeSideStuds = math.min(35, Config.DodgeSideStuds + 2)
+        Config.DodgeUpStuds = math.min(18, Config.DodgeUpStuds + 1)
+    end,
+    false
 )
 
-createStepper(268, "✈️ VELOCIDAD DE VUELO (STUDS/S)",
-    function() return string.format("Actual: %d studs/s", Config.FlySpeed) end,
-    function() Config.FlySpeed = math.max(15, Config.FlySpeed - 5) end,
-    function() Config.FlySpeed = math.min(200, Config.FlySpeed + 5) end
+createStepper(RadarPage, 268, "⏱️ DURACIÓN DE ESQUIVA (PARA ÁCIDO DE 1.5s)",
+    function() return string.format("Actual: Mantiene esquiva por %.1f segundos", Config.DodgeHoldSeconds) end,
+    function() Config.DodgeHoldSeconds = math.max(0.6, Config.DodgeHoldSeconds - 0.2) end,
+    function() Config.DodgeHoldSeconds = math.min(5.0, Config.DodgeHoldSeconds + 0.2) end,
+    false
 )
 
-createStepper(322, "⏱️ TIEMPO DE ESPERA MODO TEMPORIZADOR (PODER 5)",
+-- ==============================================================================
+-- 9. PESTAÑA 3: CONFIGURACIÓN DE VUELO (CADA TIEMPO POR SEPARADO)
+-- ==============================================================================
+
+local AntiRubberModes = {
+    { Id = "ReturnAndStep", Label = "🛡️ MODO 1: RETORNAR Y PISAR TECHO SÓLIDO",           Color = Color3.fromRGB(30, 150, 95) },
+    { Id = "WaitRubber",    Label = "🛡️ MODO 2: ESPERAR RUBBERBAND Y REINICIAR",         Color = Color3.fromRGB(0, 130, 185) }
+}
+local curRubberIdx = 1
+
+local AntiRubberBtn = Instance.new("TextButton")
+AntiRubberBtn.Size = UDim2.new(1, -24, 0, 38)
+AntiRubberBtn.Position = UDim2.new(0, 10, 0, 6)
+AntiRubberBtn.BackgroundColor3 = AntiRubberModes[1].Color
+AntiRubberBtn.Text = AntiRubberModes[1].Label
+AntiRubberBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AntiRubberBtn.TextSize = 10
+AntiRubberBtn.Font = Enum.Font.GothamBold
+AntiRubberBtn.Parent = ConfigPage
+Instance.new("UICorner", AntiRubberBtn).CornerRadius = UDim.new(0, 8)
+
+AntiRubberBtn.MouseButton1Click:Connect(function()
+    curRubberIdx = (curRubberIdx % #AntiRubberModes) + 1
+    local m = AntiRubberModes[curRubberIdx]
+    Config.AntiRubberMode = m.Id
+    AntiRubberBtn.Text = m.Label
+    AntiRubberBtn.BackgroundColor3 = m.Color
+    State.AirStartTime = tick()
+    State.Phase = "Advancing"
+end)
+
+-- TIEMPO 1 (Separado): Tiempo máximo en el aire antes de volver al techo (Modo 1)
+createStepper(ConfigPage, 52, "⏱️ TIEMPO MÁX. EN EL AIRE ANTES DE VOLVER (MODO 1)",
+    function() return string.format("Actual: %.1f segundos volando antes de retornar", Config.MaxAirTimeBeforeReturn) end,
+    function() Config.MaxAirTimeBeforeReturn = math.max(1.5, Config.MaxAirTimeBeforeReturn - 0.3) end,
+    function() Config.MaxAirTimeBeforeReturn = math.min(15.0, Config.MaxAirTimeBeforeReturn + 0.3) end,
+    false
+)
+
+-- TIEMPO 2 (Separado): Tiempo pisando el techo sólido (Modo 1)
+createStepper(ConfigPage, 106, "👣 TIEMPO PISANDO EL TECHO SÓLIDO (MODO 1)",
+    function() return string.format("Actual: %.1f segundos confirmando pisada", Config.TouchRoofHoldTime) end,
+    function() Config.TouchRoofHoldTime = math.max(0.2, Config.TouchRoofHoldTime - 0.1) end,
+    function() Config.TouchRoofHoldTime = math.min(5.0, Config.TouchRoofHoldTime + 0.1) end,
+    false
+)
+
+-- TIEMPO 3 (Separado): Tiempo de espera tras recibir rubberband (Modo 2)
+createStepper(ConfigPage, 160, "⏳ ESPERA TRAS RUBBERBAND ANTES DE SALIR (MODO 2)",
+    function() return string.format("Actual: %.1f segundos de pausa al volver", Config.PostRubberWaitTime) end,
+    function() Config.PostRubberWaitTime = math.max(0.1, Config.PostRubberWaitTime - 0.1) end,
+    function() Config.PostRubberWaitTime = math.min(4.0, Config.PostRubberWaitTime + 0.1) end,
+    false
+)
+
+-- TIEMPO 4 (Separado): Intervalo entre impulsos verticales parabólicos
+createStepper(ConfigPage, 214, "🦘 INTERVALO ENTRE IMPULSOS DE SALTO (PARÁBOLA)",
+    function() return string.format("Actual: Cada %.2f segundos (Fuerza Y: %d)", Config.JumpPulseInterval, Config.JumpImpulseY) end,
+    function() Config.JumpPulseInterval = math.max(0.30, Config.JumpPulseInterval - 0.05) end,
+    function() Config.JumpPulseInterval = math.min(2.00, Config.JumpPulseInterval + 0.05) end,
+    false
+)
+
+-- TIEMPO 5 (Separado): Temporizador fijo del Poder 5
+createStepper(ConfigPage, 268, "⚡ TEMPORIZADOR FIJO PODER 5 (SEGUNDOS)",
     function() return string.format("Actual: Cada %d segundos", Config.Power5Interval) end,
     function()
         Config.Power5Interval = math.max(10, Config.Power5Interval - 10)
@@ -979,7 +1315,52 @@ createStepper(322, "⏱️ TIEMPO DE ESPERA MODO TEMPORIZADOR (PODER 5)",
         if Config.Power5Mode == "TimerFixed" then
             Power5ModeBtn.Text = string.format("⏱️ MODO PODER 5: TEMPORIZADOR FIJO (CADA %ds)", Config.Power5Interval)
         end
-    end
+    end,
+    false
+)
+
+-- TIEMPO 6 (Separado): Pausa de activación del Poder 5 antes de cambiar a Arma 2
+createStepper(ConfigPage, 322, "⏳ PAUSA ACTIVACIÓN 'ANULACIÓN DEL SISTEMA' (SEG)",
+    function() return string.format("Actual: %.2f segundos antes de equipar Arma 2", Config.Power5CastWait) end,
+    function() Config.Power5CastWait = math.max(0.05, Config.Power5CastWait - 0.05) end,
+    function() Config.Power5CastWait = math.min(1.50, Config.Power5CastWait + 0.05) end,
+    false
+)
+
+-- DISTANCIAS Y VELOCIDADES
+createStepper(ConfigPage, 376, "➡️ DISTANCIA AVANCE INICIAL (STUDS)",
+    function() return string.format("Actual: %d studs hacia delante", Config.ForwardStuds) end,
+    function() Config.ForwardStuds = math.max(5, Config.ForwardStuds - 5) end,
+    function() Config.ForwardStuds = math.min(150, Config.ForwardStuds + 5) end,
+    true
+)
+
+createStepper(ConfigPage, 430, "🔄 AMPLITUD DE FORMA (CÍRCULO / I INVERTIDA / ETC.)",
+    function() return string.format("Actual: %d studs de radio / amplitud", Config.PatternRadius) end,
+    function() Config.PatternRadius = math.max(8, Config.PatternRadius - 2) end,
+    function() Config.PatternRadius = math.min(80, Config.PatternRadius + 2) end,
+    true
+)
+
+createStepper(ConfigPage, 484, "✈️ VELOCIDAD DE VUELO HORIZONTAL (STUDS/S)",
+    function() return string.format("Actual: %d studs/s", Config.FlySpeed) end,
+    function() Config.FlySpeed = math.max(15, Config.FlySpeed - 5) end,
+    function() Config.FlySpeed = math.min(200, Config.FlySpeed + 5) end,
+    false
+)
+
+createStepper(ConfigPage, 538, "🔙 VELOCIDAD RETORNO AL TECHO (STUDS/S)",
+    function() return string.format("Actual: %d studs/s (Modo 1)", Config.ReturnSpeed) end,
+    function() Config.ReturnSpeed = math.max(40, Config.ReturnSpeed - 10) end,
+    function() Config.ReturnSpeed = math.min(250, Config.ReturnSpeed + 10) end,
+    false
+)
+
+createStepper(ConfigPage, 592, "📏 UMBRAL DETECCIÓN TIRÓN RUBBERBAND (STUDS)",
+    function() return string.format("Actual: >%d studs de retroceso repentino (Modo 2)", Config.RubberbandDetectDist) end,
+    function() Config.RubberbandDetectDist = math.max(4, Config.RubberbandDetectDist - 2) end,
+    function() Config.RubberbandDetectDist = math.min(40, Config.RubberbandDetectDist + 2) end,
+    false
 )
 
 FloatBtn.MouseButton1Click:Connect(function()
