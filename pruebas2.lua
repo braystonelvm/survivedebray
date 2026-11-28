@@ -1,5 +1,5 @@
 -- ==============================================================================
--- PILOTO AÉREO PARABÓLICO V10.0 (CUADRADO APARTMENTBROKEN + CUALQUIER ALTURA + 0% LAG)
+-- PILOTO AÉREO PARABÓLICO V10.1 (VALORES DE CAPTURA POR DEFECTO)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -23,28 +23,28 @@ local Config = {
     -- Visualización del cuadrado del edificio (Tile_120 en ApartmentBroken)
     ShowApartmentBoxDefault = true,
 
-    -- Distancias y Velocidades (Funciona en cualquier altura / techo / Tile_120)
-    ForwardStuds = 34,
-    PatternRadius = 26,
+    -- Distancias y Velocidades (Calibradas según tus capturas)
+    ForwardStuds = 34,          -- Actual: 34 studs hacia delante
+    PatternRadius = 34,         -- Actual: 34 studs de radio / amplitud
     VerticalDipStuds = 2.0,
-    FlySpeed = 30.0,
+    FlySpeed = 30.0,            -- Actual: 30.0 studs/s
     ReturnSpeed = 30.0,
 
-    -- Física Parabólica (Valores de tu captura)
-    JumpImpulseY = 53.0,
-    JumpPulseInterval = 1.05,
+    -- Física Parabólica (Calibrada según tus capturas)
+    JumpImpulseY = 53.0,        -- Fuerza Y: 53
+    JumpPulseInterval = 0.40,   -- Actual: Cada 0.40 segundos
 
     -- Escudo Anti-Pisada de otros techos al ampliar radio/avance (0% lag)
     AvoidOtherRoofs = true,
     FloorClearanceStuds = 7.5,
     WallDetectStuds = 9.0,
 
-    -- Modos Anti-Rubberband (Valores exactos de tu captura)
+    -- Modos Anti-Rubberband (Calibrados según tus capturas)
     AntiRubberMode = "WaitRubber", -- "WaitRubber" o "ReturnAndStep"
-    MaxAirTimeBeforeReturn = 4.8,
-    TouchRoofHoldTime = 1.2,
-    RubberbandDetectDist = 12,
-    PostRubberWaitTime = 0.5,
+    MaxAirTimeBeforeReturn = 4.8,  -- Actual: 4.8 segundos en aire
+    TouchRoofHoldTime = 1.2,       -- Actual: 1.2 segundos confirmando pisada
+    RubberbandDetectDist = 12,     -- Actual: >12 studs de retroceso repentino
+    PostRubberWaitTime = 0.5,      -- Actual: 0.5 segundos antes de volver a salir
 
     -- Radar Anti-Misiles (Tyrant) / Ácido Ancho (Experiment) con Ráfaga Rápida
     AutoDodgeObjects = true,
@@ -60,10 +60,10 @@ local Config = {
     -- Poder 5 ("Anulación del Sistema") vinculado al Reloj de Noche Larga
     AutoWeaponCycle = true,
     Power5Mode = "EternalNightStop", -- "EternalNightStop" o "TimerFixed"
-    TimeCheckInterval = 1.5,
-    TimeStopDelay = 15,
-    Power5Interval = 120,
-    Power5CastWait = 0.18,
+    TimeCheckInterval = 1.0,
+    TimeStopDelay = 15,              -- Actual: 15 segundos tras detenerse Survived
+    Power5Interval = 120,            -- Actual: Cada 120 segundos
+    Power5CastWait = 0.18,           -- Actual: 0.18 segundos antes de equipar Arma 2
     EquipSlot2Default = true
 }
 
@@ -146,7 +146,6 @@ local function setApartmentBoxesVisible(show)
                 end
                 count = count + 1
             else
-                -- Limpiar cualquier marca previa en basureros, carritos o carreteras
                 local stray = desc:FindFirstChild("CollisionBoxOutline") or desc:FindFirstChild("InvisibleBoxView")
                 if stray then
                     stray:Destroy()
@@ -158,7 +157,6 @@ local function setApartmentBoxesVisible(show)
     return count
 end
 
--- Mostrar por defecto al iniciar el script
 if Config.ShowApartmentBoxDefault then
     task.spawn(function()
         task.wait(0.3)
@@ -234,7 +232,6 @@ local function isHostileProjectileOrHazard(part)
     return false
 end
 
--- Rastreo de Tyrant y Experiment por eventos ChildAdded/ChildRemoved (0% bucle sobre 300 zombies)
 local trackedBossModels = {}
 local function refreshBossFlag()
     local foundTyrant, foundExp = false, false
@@ -312,7 +309,6 @@ task.spawn(function()
 
         local myPos = root.Position
 
-        -- Escudo anti-pisada de techos vecinos al ampliar radio/avance
         if Config.AvoidOtherRoofs and (State.Phase == "Advancing" or State.Phase == "Pattern") then
             local floorHit = workspace:Raycast(myPos, Vector3.new(0, -Config.FloorClearanceStuds, 0), envRayParams)
             State.RoofAvoidJumpNeeded = (floorHit ~= nil)
@@ -335,7 +331,6 @@ task.spawn(function()
             State.WallSideDodge = Vector3.zero
         end
 
-        -- Radar espacial de misiles / ácido
         if Config.AutoDodgeObjects then
             local maxHoriz = math.max(Config.RadarHorizRadius, Config.DodgeTriggerDist)
             local downDepth = Config.RadarDownDepth
@@ -499,7 +494,7 @@ local function buildPatternWaypoints(originPos)
 end
 
 -- ==============================================================================
--- 5. LECTOR DEL RELOJ DE NOCHE LARGA + REACTIVACIÓN CADA 120s SI SIGUE DETENIDO
+-- 5. CICLO ESTRICTO: ARMA 2 AL DETENERSE RELOJ -> PODER 5 -> REVISAR RELOJ / UNEQUIP
 -- ==============================================================================
 
 local function pressNumberKey(num)
@@ -621,7 +616,19 @@ local function equipSlot2Only()
     end
 end
 
-local function triggerSystemOverrideAndReturnSlot2()
+local function unequipSlot2OnceIfEquipped()
+    local char = lp.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not char or not hum then return end
+
+    local equipped = char:FindFirstChildOfClass("Tool")
+    local tool2 = findSlot2Tool()
+    if equipped and (equipped == tool2 or equipped.Name:lower():find("lmg")) then
+        pcall(function() hum:UnequipTools() end)
+    end
+end
+
+local function activatePower5Only()
     local char = lp.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not char or not hum or hum.Health <= 0 then return end
@@ -645,10 +652,6 @@ local function triggerSystemOverrideAndReturnSlot2()
         task.wait(0.08)
         simulateMouseClick()
         task.wait(Config.Power5CastWait)
-    end
-
-    if Config.EquipSlot2Default then
-        equipSlot2Only()
     end
 end
 
@@ -683,6 +686,7 @@ end
 
 task.spawn(function()
     local lastSeconds = nil
+    local didUnequipOnRunStart = false
     local lastFixedTimerTick = 0
 
     while true do
@@ -692,6 +696,7 @@ task.spawn(function()
 
         if not Config.Active or not Config.AutoWeaponCycle then
             lastSeconds = nil
+            didUnequipOnRunStart = false
             continue
         end
 
@@ -702,55 +707,102 @@ task.spawn(function()
             end
 
             if lastSeconds then
-                if math.abs(curSec - lastSeconds) < 0.01 then
+                local isClockFrozen = (math.abs(curSec - lastSeconds) < 0.01)
+
+                if isClockFrozen then
+                    didUnequipOnRunStart = false
+
+                    if Config.EquipSlot2Default then
+                        equipSlot2Only()
+                    end
+
                     local waitEnd = tick() + Config.TimeStopDelay
+                    local abortedByClock = false
                     while tick() < waitEnd do
                         task.wait(0.25)
                         if not Config.Active or not Config.AutoWeaponCycle or Config.Power5Mode ~= "EternalNightStop" then
+                            abortedByClock = true
                             break
                         end
-                        local checkNow = getSurvivalTimeSecondsAndLabel()
-                        if checkNow and math.abs(checkNow - curSec) >= 0.01 then
+                        if Config.EquipSlot2Default then
+                            equipSlot2Only()
+                        end
+                        local nowSec = getSurvivalTimeSecondsAndLabel()
+                        if nowSec and math.abs(nowSec - curSec) >= 0.01 then
+                            abortedByClock = true
                             break
                         end
                         local rem = math.max(0, math.ceil(waitEnd - tick()))
-                        State.Power5StatusText = string.format("Noche (%s): Activando en %ds", labelStr, rem)
+                        State.Power5StatusText = string.format("Reloj quieto (%s): Poder 5 en %ds", labelStr, rem)
                     end
 
-                    while Config.Active and Config.AutoWeaponCycle and Config.Power5Mode == "EternalNightStop" do
-                        local checkSec = getSurvivalTimeSecondsAndLabel()
-                        if not checkSec or math.abs(checkSec - curSec) >= 0.01 then
+                    while not abortedByClock and Config.Active and Config.AutoWeaponCycle and Config.Power5Mode == "EternalNightStop" do
+                        local checkBeforeCast = getSurvivalTimeSecondsAndLabel()
+                        if not checkBeforeCast or math.abs(checkBeforeCast - curSec) >= 0.01 then
                             break
                         end
 
-                        State.Power5StatusText = "⚡ ¡Activando Anulación -> Arma 2!"
-                        triggerSystemOverrideAndReturnSlot2()
+                        State.Power5StatusText = "⚡ Activando Poder 5..."
+                        activatePower5Only()
+
+                        local checkAfterCast = getSurvivalTimeSecondsAndLabel()
+                        if checkAfterCast and math.abs(checkAfterCast - curSec) >= 0.01 then
+                            unequipSlot2OnceIfEquipped()
+                            didUnequipOnRunStart = true
+                            State.Power5StatusText = "Reloj corriendo: Arma 2 liberada"
+                            break
+                        end
+
+                        if Config.EquipSlot2Default then
+                            equipSlot2Only()
+                        end
 
                         local rechargeEnd = tick() + Config.Power5Interval
+                        local clockStartedDuringCd = false
                         while tick() < rechargeEnd do
                             task.wait(0.5)
                             if not Config.Active or not Config.AutoWeaponCycle or Config.Power5Mode ~= "EternalNightStop" then
+                                clockStartedDuringCd = true
                                 break
                             end
-                            local stillFrozenSec = getSurvivalTimeSecondsAndLabel()
-                            if not stillFrozenSec or math.abs(stillFrozenSec - curSec) >= 0.01 then
+                            local stillFrozen = getSurvivalTimeSecondsAndLabel()
+                            if not stillFrozen or math.abs(stillFrozen - curSec) >= 0.01 then
+                                clockStartedDuringCd = true
                                 break
                             end
                             local remCd = math.max(0, math.ceil(rechargeEnd - tick()))
-                            State.Power5StatusText = string.format("Noche (%s): Recarga 5to poder (%ds)", labelStr, remCd)
+                            State.Power5StatusText = string.format("Noche (%s): Recarga 5to (%ds) -> Arma 2", labelStr, remCd)
+                        end
+
+                        if clockStartedDuringCd then
+                            local nowClock = getSurvivalTimeSecondsAndLabel()
+                            if nowClock and math.abs(nowClock - curSec) >= 0.01 then
+                                unequipSlot2OnceIfEquipped()
+                                didUnequipOnRunStart = true
+                                State.Power5StatusText = "Reloj corriendo: Arma 2 liberada"
+                            end
+                            break
                         end
                     end
-                elseif curSec > lastSeconds then
-                    State.Power5StatusText = string.format("Reloj corriendo (%s)", labelStr)
+                else
+                    if not didUnequipOnRunStart then
+                        unequipSlot2OnceIfEquipped()
+                        didUnequipOnRunStart = true
+                    end
+                    State.Power5StatusText = string.format("Tiempo corriendo (%s) - Libre", labelStr)
                 end
             end
+
             lastSeconds = curSec
         else
             local elapsed = tick() - lastFixedTimerTick
             if lastFixedTimerTick == 0 or elapsed >= Config.Power5Interval then
                 lastFixedTimerTick = tick()
-                State.Power5StatusText = "⚡ ¡Activando Anulación -> Arma 2!"
-                triggerSystemOverrideAndReturnSlot2()
+                State.Power5StatusText = "⚡ Activando Poder 5 -> Arma 2"
+                activatePower5Only()
+                if Config.EquipSlot2Default then
+                    equipSlot2Only()
+                end
             else
                 State.Power5StatusText = string.format("Timer fijo: %ds / %ds", math.floor(Config.Power5Interval - elapsed), Config.Power5Interval)
                 if Config.EquipSlot2Default then
@@ -812,6 +864,7 @@ RunService.Heartbeat:Connect(function()
         State.LastRealPos = root.Position
         refreshStaticFilter()
         refreshOverlapFilter()
+        refreshBossFlag()
         detectFloorBelow(root)
         State.Phase = "Advancing"
         State.AirStartTime = tick()
@@ -828,7 +881,6 @@ RunService.Heartbeat:Connect(function()
     local advanceDest = State.StartOrigin + (fwdDir * Config.ForwardStuds)
     local mode = Config.AntiRubberMode
 
-    -- MODO 1: PISANDO TECHO SÓLIDO (INCLUYENDO TILE_120 O CUALQUIER TECHO ALTO)
     if State.Phase == "SteppingOnRoof" then
         local onSolidGround = isActuallyStandingOnSolid(root, hum)
         if onSolidGround then
@@ -866,7 +918,6 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- MODO 2: ESPERA TRAS DETECTAR RUBBERBAND
     if State.Phase == "RubberCooldown" then
         local rem = math.max(0, State.RubberWaitUntil - now)
         State.StatusText = string.format("⏳ Rubberband detectado: Reiniciando en %.2fs...", rem)
@@ -996,11 +1047,11 @@ end)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV10")
+local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV101")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RoofAerialPilotGuiV10"
+ScreenGui.Name = "RoofAerialPilotGuiV101"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -1008,7 +1059,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.35, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(20, 125, 175)
-FloatBtn.Text = "✈️\nV10.0"
+FloatBtn.Text = "✈️\nV10.1"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -1030,7 +1081,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 29, 40)
-TitleBar.Text = "  ✈️ PILOTO PARABÓLICO V10.0 | CUADRADO EDIFICIO & CUALQUIER ALTURA"
+TitleBar.Text = "  ✈️ PILOTO PARABÓLICO V10.1 | CICLO RELOJ DETENIDO & UNEQUIP ARMA 2"
 TitleBar.TextColor3 = Color3.fromRGB(0, 235, 255)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -1454,7 +1505,7 @@ createStepper(RadarPage, 322, "⏱️ DURACIÓN DE ESQUIVA (PARA ÁCIDO DE 1.5s)
 )
 
 -- ==============================================================================
--- 10. PESTAÑA 3: CONFIGURACIÓN DE VUELO (CUADRADO EDIFICIO + TIEMPOS DE CAPTURA)
+-- 10. PESTAÑA 3: CONFIGURACIÓN DE VUELO (VALORES DE CAPTURA POR DEFECTO)
 -- ==============================================================================
 
 local AntiRubberModes = {
@@ -1502,7 +1553,6 @@ AptBoxBtn.MouseButton1Click:Connect(function()
     AptBoxBtn.Text = Config.ShowApartmentBoxDefault and "🏢 VER CUADRADO DE EDIFICIO (APARTMENTBROKEN): ON" or "🏢 VER CUADRADO DE EDIFICIO (APARTMENTBROKEN): OFF"
 end)
 
--- TIEMPO 1: 15 segundos tras detenerse Survived
 createStepper(ConfigPage, 92, "⏱️ ESPERA TRAS DETENERSE RELOJ NOCHE (PODER 5)",
     function() return string.format("Actual: %d segundos tras detenerse Survived", Config.TimeStopDelay) end,
     function()
@@ -1520,7 +1570,6 @@ createStepper(ConfigPage, 92, "⏱️ ESPERA TRAS DETENERSE RELOJ NOCHE (PODER 5
     false
 )
 
--- TIEMPO 2: 0.5 segundos tras jalón rubberband
 createStepper(ConfigPage, 146, "⏳ ESPERA TRAS JALÓN RUBBERBAND (MODO ESPERAR)",
     function() return string.format("Actual: %.1f segundos antes de volver a salir", Config.PostRubberWaitTime) end,
     function() Config.PostRubberWaitTime = math.max(0.1, Config.PostRubberWaitTime - 0.1) end,
@@ -1528,7 +1577,6 @@ createStepper(ConfigPage, 146, "⏳ ESPERA TRAS JALÓN RUBBERBAND (MODO ESPERAR)
     false
 )
 
--- TIEMPO 3: 4.8 segundos máximo en aire
 createStepper(ConfigPage, 200, "⏱️ TIEMPO MÁX. EN EL AIRE (MODO RETORNAR TECHO)",
     function() return string.format("Actual: %.1f segundos en aire (límite ~6.2s)", Config.MaxAirTimeBeforeReturn) end,
     function() Config.MaxAirTimeBeforeReturn = math.max(1.5, Config.MaxAirTimeBeforeReturn - 0.2) end,
@@ -1536,7 +1584,6 @@ createStepper(ConfigPage, 200, "⏱️ TIEMPO MÁX. EN EL AIRE (MODO RETORNAR TE
     false
 )
 
--- TIEMPO 4: 1.2 segundos pisando techo sólido
 createStepper(ConfigPage, 254, "👣 TIEMPO PISANDO EL TECHO SÓLIDO (MODO RETORNAR)",
     function() return string.format("Actual: %.1f segundos confirmando pisada", Config.TouchRoofHoldTime) end,
     function() Config.TouchRoofHoldTime = math.max(0.2, Config.TouchRoofHoldTime - 0.1) end,
@@ -1544,7 +1591,6 @@ createStepper(ConfigPage, 254, "👣 TIEMPO PISANDO EL TECHO SÓLIDO (MODO RETOR
     false
 )
 
--- TIEMPO 5: 1.05 segundos entre impulsos de salto
 createStepper(ConfigPage, 308, "🦘 INTERVALO ENTRE IMPULSOS DE SALTO (ARCO)",
     function() return string.format("Actual: Cada %.2f segundos (Fuerza Y: %.0f)", Config.JumpPulseInterval, Config.JumpImpulseY) end,
     function() Config.JumpPulseInterval = math.max(0.40, Config.JumpPulseInterval - 0.05) end,
@@ -1552,7 +1598,6 @@ createStepper(ConfigPage, 308, "🦘 INTERVALO ENTRE IMPULSOS DE SALTO (ARCO)",
     false
 )
 
--- TIEMPO 6: 120 segundos de recarga del Poder 5
 createStepper(ConfigPage, 362, "⚡ RECARGA / TEMPORIZADOR PODER 5 (SEGUNDOS)",
     function() return string.format("Actual: Cada %d segundos", Config.Power5Interval) end,
     function()
@@ -1574,7 +1619,6 @@ createStepper(ConfigPage, 362, "⚡ RECARGA / TEMPORIZADOR PODER 5 (SEGUNDOS)",
     false
 )
 
--- TIEMPO 7: Pausa activación Anulación del Sistema
 createStepper(ConfigPage, 416, "⏳ PAUSA ACTIVACIÓN 'ANULACIÓN DEL SISTEMA' (SEG)",
     function() return string.format("Actual: %.2f segundos antes de equipar Arma 2", Config.Power5CastWait) end,
     function() Config.Power5CastWait = math.max(0.05, Config.Power5CastWait - 0.05) end,
@@ -1582,7 +1626,6 @@ createStepper(ConfigPage, 416, "⏳ PAUSA ACTIVACIÓN 'ANULACIÓN DEL SISTEMA' (
     false
 )
 
--- DISTANCIAS Y VELOCIDADES
 createStepper(ConfigPage, 470, "➡️ DISTANCIA AVANCE INICIAL (STUDS)",
     function() return string.format("Actual: %d studs hacia delante", Config.ForwardStuds) end,
     function() Config.ForwardStuds = math.max(5, Config.ForwardStuds - 5) end,
