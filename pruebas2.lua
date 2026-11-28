@@ -1,5 +1,5 @@
 -- ==============================================================================
--- PILOTO AÉREO PARABÓLICO V7.1 (CONFIGURACIÓN CAPTURA + REACTIVACIÓN 120s NOCHE)
+-- PILOTO AÉREO PARABÓLICO V10.0 (CUADRADO APARTMENTBROKEN + CUALQUIER ALTURA + 0% LAG)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -20,7 +20,10 @@ local Config = {
     Direction = "ESTE",         -- "NORTE", "SUR", "ESTE", "OESTE"
     Pattern = "Círculo",        -- "Círculo", "Cuadrado", "Zigzag", "Rombo", "I Invertida", "Solo Adelante"
 
-    -- Distancias y Velocidades
+    -- Visualización del cuadrado del edificio (Tile_120 en ApartmentBroken)
+    ShowApartmentBoxDefault = true,
+
+    -- Distancias y Velocidades (Funciona en cualquier altura / techo / Tile_120)
     ForwardStuds = 34,
     PatternRadius = 26,
     VerticalDipStuds = 2.0,
@@ -29,31 +32,37 @@ local Config = {
 
     -- Física Parabólica (Valores de tu captura)
     JumpImpulseY = 53.0,
-    JumpPulseInterval = 1.05,   -- Actual: Cada 1.05 segundos (Fuerza Y: 53)
+    JumpPulseInterval = 1.05,
+
+    -- Escudo Anti-Pisada de otros techos al ampliar radio/avance (0% lag)
+    AvoidOtherRoofs = true,
+    FloorClearanceStuds = 7.5,
+    WallDetectStuds = 9.0,
 
     -- Modos Anti-Rubberband (Valores exactos de tu captura)
-    AntiRubberMode = "WaitRubber", -- MODO: ESPERAR JALÓN Y REINICIAR DESDE TECHO
-    MaxAirTimeBeforeReturn = 4.8,  -- Actual: 4.8 segundos en aire
-    TouchRoofHoldTime = 1.2,       -- Actual: 1.2 segundos confirmando pisada
+    AntiRubberMode = "WaitRubber", -- "WaitRubber" o "ReturnAndStep"
+    MaxAirTimeBeforeReturn = 4.8,
+    TouchRoofHoldTime = 1.2,
     RubberbandDetectDist = 12,
-    PostRubberWaitTime = 0.5,      -- Actual: 0.5 segundos antes de volver a salir
+    PostRubberWaitTime = 0.5,
 
-    -- Radar Anti-Misiles / Ácido con Ráfaga Rápida
+    -- Radar Anti-Misiles (Tyrant) / Ácido Ancho (Experiment) con Ráfaga Rápida
     AutoDodgeObjects = true,
-    RadarHorizRadius = 22,
-    RadarDownDepth = 50,
-    DodgeTriggerDist = 22,
-    DodgeBurstSpeed = 68,
-    DodgeSideStuds = 15,
-    DodgeUpStuds = 8,
+    BossExtraHeight = 8,
+    RadarHorizRadius = 26,
+    RadarDownDepth = 55,
+    DodgeTriggerDist = 24,
+    DodgeBurstSpeed = 70,
+    DodgeSideStuds = 16,
+    DodgeUpStuds = 9,
     DodgeHoldSeconds = 1.6,
 
     -- Poder 5 ("Anulación del Sistema") vinculado al Reloj de Noche Larga
     AutoWeaponCycle = true,
     Power5Mode = "EternalNightStop", -- "EternalNightStop" o "TimerFixed"
     TimeCheckInterval = 1.5,
-    TimeStopDelay = 15,              -- Actual: 15 segundos tras detenerse Survived
-    Power5Interval = 120,            -- Actual: Cada 120 segundos (recarga del 5to poder)
+    TimeStopDelay = 15,
+    Power5Interval = 120,
     Power5CastWait = 0.18,
     EquipSlot2Default = true
 }
@@ -71,10 +80,19 @@ local State = {
     RubberWaitUntil = 0,
     StatusText = "En espera (Detenido)",
 
+    -- Escudo Techos / Paredes
+    RoofAvoidJumpNeeded = false,
+    WallSideDodge = Vector3.zero,
+
+    -- Jefes Tyrant / Experiment bajo demanda
+    HasBossActive = false,
+    ActiveBossLabel = "Ninguno",
+
     -- Radar
     DodgeOffset = Vector3.zero,
     DodgeUntil = 0,
     IsBurstDodging = false,
+    MissileJinkSign = 1,
     LastThreatName = "Ninguno",
     DetectedBelowCount = 0,
 
@@ -91,11 +109,93 @@ local DIRECTION_VECTORS = {
 }
 
 -- ==============================================================================
--- 1. RADAR ESPACIAL 0% LAG (RÁFAGA RÁPIDA CONTRA MISILES Y ÁCIDO)
+-- 1. VISUALIZADOR DEL CUADRADO DEL EDIFICIO (SOLO APARTMENTBROKEN.COLLISION.TILE_120)
 -- ==============================================================================
+
+local function setApartmentBoxesVisible(show)
+    local tilesFolder = workspace:FindFirstChild("Map") and workspace.Map:FindFirstChild("Tiles")
+    if not tilesFolder then return 0 end
+
+    local count = 0
+    for _, desc in ipairs(tilesFolder:GetDescendants()) do
+        if desc:IsA("BasePart") then
+            local isBuildingBox = (desc.Name == "Tile_120")
+                and (desc.Parent and desc.Parent.Name == "Collision")
+                and (desc.Parent.Parent and desc.Parent.Parent.Name == "ApartmentBroken")
+                and (desc.Size.X >= 50 and desc.Size.Z >= 50)
+
+            if isBuildingBox then
+                if show then
+                    desc.Transparency = 0.65
+                    desc.Color = Color3.fromRGB(0, 235, 255)
+                    desc.Material = Enum.Material.ForceField
+
+                    if not desc:FindFirstChild("CollisionBoxOutline") then
+                        local box = Instance.new("SelectionBox")
+                        box.Name = "CollisionBoxOutline"
+                        box.Adornee = desc
+                        box.Color3 = Color3.fromRGB(0, 255, 190)
+                        box.LineThickness = 0.05
+                        box.Parent = desc
+                    end
+                else
+                    local oldBox = desc:FindFirstChild("CollisionBoxOutline")
+                    if oldBox then oldBox:Destroy() end
+                    desc.Transparency = 1
+                    desc.Material = Enum.Material.Concrete
+                end
+                count = count + 1
+            else
+                -- Limpiar cualquier marca previa en basureros, carritos o carreteras
+                local stray = desc:FindFirstChild("CollisionBoxOutline") or desc:FindFirstChild("InvisibleBoxView")
+                if stray then
+                    stray:Destroy()
+                    desc.Transparency = 1
+                end
+            end
+        end
+    end
+    return count
+end
+
+-- Mostrar por defecto al iniciar el script
+if Config.ShowApartmentBoxDefault then
+    task.spawn(function()
+        task.wait(0.3)
+        setApartmentBoxesVisible(true)
+    end)
+end
+
+-- ==============================================================================
+-- 2. FILTROS OPTIMIZADOS (0% LAG CON 300 ZOMBIS) + DETECCIÓN BAJO DEMANDA
+-- ==============================================================================
+
+local envRayParams = RaycastParams.new()
+envRayParams.FilterType = Enum.RaycastFilterType.Exclude
+envRayParams.IgnoreWater = true
+
+local function refreshStaticFilter()
+    local ignore = {}
+    if lp.Character then table.insert(ignore, lp.Character) end
+    local charsFolder = workspace:FindFirstChild("Characters")
+    if charsFolder then table.insert(ignore, charsFolder) end
+    envRayParams.FilterDescendantsInstances = ignore
+end
 
 local overlapParams = OverlapParams.new()
 overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function refreshOverlapFilter()
+    local ignore = {}
+    if lp.Character then table.insert(ignore, lp.Character) end
+    local charsFolder = workspace:FindFirstChild("Characters")
+    if charsFolder then table.insert(ignore, charsFolder) end
+    if State.RoofPart then table.insert(ignore, State.RoofPart) end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr.Character then table.insert(ignore, plr.Character) end
+    end
+    overlapParams.FilterDescendantsInstances = ignore
+end
 
 local function isTeammateOrSelf(part)
     local char = lp.Character
@@ -134,12 +234,66 @@ local function isHostileProjectileOrHazard(part)
     return false
 end
 
+-- Rastreo de Tyrant y Experiment por eventos ChildAdded/ChildRemoved (0% bucle sobre 300 zombies)
+local trackedBossModels = {}
+local function refreshBossFlag()
+    local foundTyrant, foundExp = false, false
+    for m, kind in pairs(trackedBossModels) do
+        local hum = m and m.Parent and m:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Health > 0 and m:GetAttribute("Dead") ~= true then
+            if kind == "Tyrant" then foundTyrant = true end
+            if kind == "Experiment" then foundExp = true end
+        else
+            trackedBossModels[m] = nil
+        end
+    end
+    State.HasBossActive = (foundTyrant or foundExp)
+    if foundTyrant and foundExp then
+        State.ActiveBossLabel = "Tyrant + Experiment"
+    elseif foundTyrant then
+        State.ActiveBossLabel = "Tyrant"
+    elseif foundExp then
+        State.ActiveBossLabel = "Experiment"
+    else
+        State.ActiveBossLabel = "Ninguno"
+    end
+end
+
 task.spawn(function()
+    local cFolder = workspace:FindFirstChild("Characters") or workspace
+    local function checkModel(m)
+        if m and m:IsA("Model") then
+            local low = m.Name:lower()
+            if low:find("tyrant", 1, true) then
+                trackedBossModels[m] = "Tyrant"
+                refreshBossFlag()
+            elseif low:find("experiment", 1, true) then
+                trackedBossModels[m] = "Experiment"
+                refreshBossFlag()
+            end
+        end
+    end
+    for _, ch in ipairs(cFolder:GetChildren()) do checkModel(ch) end
+    cFolder.ChildAdded:Connect(checkModel)
+    cFolder.ChildRemoved:Connect(function(ch)
+        if trackedBossModels[ch] then
+            trackedBossModels[ch] = nil
+            refreshBossFlag()
+        end
+    end)
+end)
+
+task.spawn(function()
+    local filterTick = 0
+    local jinkTick = 0
+
     while true do
-        task.wait(0.07)
-        if not Config.Active or not Config.AutoDodgeObjects then
+        task.wait(0.10)
+        if not Config.Active then
             State.DodgeOffset = Vector3.zero
             State.IsBurstDodging = false
+            State.RoofAvoidJumpNeeded = false
+            State.WallSideDodge = Vector3.zero
             State.DetectedBelowCount = 0
             continue
         end
@@ -148,87 +302,119 @@ task.spawn(function()
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if not root then continue end
 
-        local ignoreList = {}
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr.Character then table.insert(ignoreList, plr.Character) end
+        local now = tick()
+        if (now - filterTick) >= 2.0 then
+            filterTick = now
+            refreshStaticFilter()
+            refreshOverlapFilter()
+            refreshBossFlag()
         end
-        if State.RoofPart then table.insert(ignoreList, State.RoofPart) end
-        overlapParams.FilterDescendantsInstances = ignoreList
 
         local myPos = root.Position
-        local maxHoriz = math.max(Config.RadarHorizRadius, Config.DodgeTriggerDist)
-        local downDepth = Config.RadarDownDepth
 
-        local boxSize = Vector3.new(maxHoriz * 2, downDepth + 14, maxHoriz * 2)
-        local boxCenter = myPos - Vector3.new(0, (downDepth - 14) * 0.5, 0)
-        local partsInBox = workspace:GetPartBoundsInBox(CFrame.new(boxCenter), boxSize, overlapParams)
+        -- Escudo anti-pisada de techos vecinos al ampliar radio/avance
+        if Config.AvoidOtherRoofs and (State.Phase == "Advancing" or State.Phase == "Pattern") then
+            local floorHit = workspace:Raycast(myPos, Vector3.new(0, -Config.FloorClearanceStuds, 0), envRayParams)
+            State.RoofAvoidJumpNeeded = (floorHit ~= nil)
 
-        local closestThreatPos = nil
-        local closestThreatVel = Vector3.zero
-        local closestDist = math.huge
-        local closestName = "Objeto"
-        local belowAlerts = 0
-
-        for _, part in ipairs(partsInBox) do
-            if isHostileProjectileOrHazard(part) then
-                local pPos = part.Position
-                local dist = (pPos - myPos).Magnitude
-
-                if pPos.Y < myPos.Y and (myPos.Y - pPos.Y) <= downDepth then
-                    belowAlerts = belowAlerts + 1
+            local velH = Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z)
+            if velH.Magnitude > 2.0 then
+                local fwdU = velH.Unit
+                local wallHit = workspace:Raycast(myPos, fwdU * Config.WallDetectStuds, envRayParams)
+                if wallHit then
+                    State.RoofAvoidJumpNeeded = true
+                    State.WallSideDodge = Vector3.new(-fwdU.Z, 0, fwdU.X) * 14
+                else
+                    State.WallSideDodge = Vector3.zero
                 end
-
-                if dist <= Config.DodgeTriggerDist and dist < closestDist then
-                    closestDist = dist
-                    closestThreatPos = pPos
-                    closestThreatVel = part.AssemblyLinearVelocity
-                    closestName = part.Name
-                end
+            else
+                State.WallSideDodge = Vector3.zero
             end
+        else
+            State.RoofAvoidJumpNeeded = false
+            State.WallSideDodge = Vector3.zero
         end
 
-        State.DetectedBelowCount = belowAlerts
+        -- Radar espacial de misiles / ácido
+        if Config.AutoDodgeObjects then
+            local maxHoriz = math.max(Config.RadarHorizRadius, Config.DodgeTriggerDist)
+            local downDepth = Config.RadarDownDepth
+            local boxSize = Vector3.new(maxHoriz * 2, downDepth + 14, maxHoriz * 2)
+            local boxCenter = myPos - Vector3.new(0, (downDepth - 14) * 0.5, 0)
+            local partsInBox = workspace:GetPartBoundsInBox(CFrame.new(boxCenter), boxSize, overlapParams)
 
-        if closestThreatPos then
-            local awayVec = Vector3.new(myPos.X - closestThreatPos.X, 0, myPos.Z - closestThreatPos.Z)
-            local sideDir
-            if closestThreatVel.Magnitude > 2.0 then
-                local velHoriz = Vector3.new(closestThreatVel.X, 0, closestThreatVel.Z)
-                if velHoriz.Magnitude > 0.2 then
-                    local perp = Vector3.new(-velHoriz.Z, 0, velHoriz.X).Unit
-                    sideDir = (perp:Dot(awayVec) >= 0) and perp or -perp
+            local closestThreatPos = nil
+            local closestThreatVel = Vector3.zero
+            local closestDist = math.huge
+            local closestName = "Objeto"
+            local belowAlerts = 0
+
+            for _, part in ipairs(partsInBox) do
+                if isHostileProjectileOrHazard(part) then
+                    local pPos = part.Position
+                    local dist = (pPos - myPos).Magnitude
+
+                    if pPos.Y < myPos.Y and (myPos.Y - pPos.Y) <= downDepth then
+                        belowAlerts = belowAlerts + 1
+                    end
+
+                    if dist <= Config.DodgeTriggerDist and dist < closestDist then
+                        closestDist = dist
+                        closestThreatPos = pPos
+                        closestThreatVel = part.AssemblyLinearVelocity
+                        closestName = part.Name
+                    end
                 end
             end
 
-            if not sideDir then
-                sideDir = (awayVec.Magnitude > 0.2) and awayVec.Unit or Vector3.new(1, 0, 0)
-            end
+            State.DetectedBelowCount = belowAlerts
 
-            State.DodgeOffset = (sideDir * Config.DodgeSideStuds) + Vector3.new(0, Config.DodgeUpStuds, 0)
-            State.DodgeUntil = tick() + Config.DodgeHoldSeconds
-            State.IsBurstDodging = true
-            State.LastThreatName = string.format("%s (%.0fm)", closestName, closestDist)
-        elseif tick() >= State.DodgeUntil then
+            if closestThreatPos then
+                local awayVec = Vector3.new(myPos.X - closestThreatPos.X, 0, myPos.Z - closestThreatPos.Z)
+                local sideDir
+                if closestThreatVel.Magnitude > 2.0 then
+                    local velHoriz = Vector3.new(closestThreatVel.X, 0, closestThreatVel.Z)
+                    if velHoriz.Magnitude > 0.2 then
+                        local perp = Vector3.new(-velHoriz.Z, 0, velHoriz.X).Unit
+                        if closestName:lower():find("missile") or closestName:lower():find("rocket") then
+                            if (now - jinkTick) >= 0.35 then
+                                jinkTick = now
+                                State.MissileJinkSign = -State.MissileJinkSign
+                            end
+                            sideDir = perp * State.MissileJinkSign
+                        else
+                            sideDir = (perp:Dot(awayVec) >= 0) and perp or -perp
+                        end
+                    end
+                end
+
+                if not sideDir then
+                    sideDir = (awayVec.Magnitude > 0.2) and awayVec.Unit or Vector3.new(1, 0, 0)
+                end
+
+                State.DodgeOffset = (sideDir * Config.DodgeSideStuds) + Vector3.new(0, Config.DodgeUpStuds, 0)
+                State.DodgeUntil = now + Config.DodgeHoldSeconds
+                State.IsBurstDodging = true
+                State.LastThreatName = string.format("%s (%.0fm)", closestName, closestDist)
+            elseif now >= State.DodgeUntil then
+                State.DodgeOffset = Vector3.zero
+                State.IsBurstDodging = false
+            end
+        else
             State.DodgeOffset = Vector3.zero
             State.IsBurstDodging = false
+            State.DetectedBelowCount = 0
         end
     end
 end)
 
 -- ==============================================================================
--- 2. DETECCIÓN FÍSICA REAL DE SUELO SÓLIDO
+-- 3. DETECCIÓN FÍSICA REAL DE SUELO SÓLIDO EN CUALQUIER ALTURA (INCLUYENDO TILE_120)
 -- ==============================================================================
 
 local function detectFloorBelow(root)
-    local char = lp.Character
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    local ignore = {char}
-    local charsFolder = workspace:FindFirstChild("Characters")
-    if charsFolder then table.insert(ignore, charsFolder) end
-    params.FilterDescendantsInstances = ignore
-
-    local hit = workspace:Raycast(root.Position, Vector3.new(0, -18, 0), params)
+    refreshStaticFilter()
+    local hit = workspace:Raycast(root.Position, Vector3.new(0, -25, 0), envRayParams)
     if hit and hit.Instance and hit.Instance:IsA("BasePart") and hit.Instance.CanCollide then
         State.RoofPart = hit.Instance
         return hit.Position
@@ -242,15 +428,7 @@ local function isActuallyStandingOnSolid(root, hum)
         return true
     end
 
-    local char = lp.Character
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    local ignore = {char}
-    local charsFolder = workspace:FindFirstChild("Characters")
-    if charsFolder then table.insert(ignore, charsFolder) end
-    params.FilterDescendantsInstances = ignore
-
-    local footHit = workspace:Raycast(root.Position, Vector3.new(0, -3.8, 0), params)
+    local footHit = workspace:Raycast(root.Position, Vector3.new(0, -4.2, 0), envRayParams)
     if footHit and footHit.Instance and footHit.Instance:IsA("BasePart") and footHit.Instance.CanCollide then
         return true
     end
@@ -259,7 +437,7 @@ local function isActuallyStandingOnSolid(root, hum)
 end
 
 -- ==============================================================================
--- 3. GENERADOR DE COORDENADAS PRECALCULADAS (0% LAG)
+-- 4. GENERADOR DE COORDENADAS PRECALCULADAS (0% LAG)
 -- ==============================================================================
 
 local function buildPatternWaypoints(originPos)
@@ -321,7 +499,7 @@ local function buildPatternWaypoints(originPos)
 end
 
 -- ==============================================================================
--- 4. LECTOR DEL RELOJ DE NOCHE LARGA + REACTIVACIÓN CADA 120s SI SIGUE DETENIDO
+-- 5. LECTOR DEL RELOJ DE NOCHE LARGA + REACTIVACIÓN CADA 120s SI SIGUE DETENIDO
 -- ==============================================================================
 
 local function pressNumberKey(num)
@@ -524,9 +702,7 @@ task.spawn(function()
             end
 
             if lastSeconds then
-                -- Detecta si el reloj de supervivencia (que va hacia adelante) se detuvo
                 if math.abs(curSec - lastSeconds) < 0.01 then
-                    -- 1. Esperar los 15s iniciales tras detenerse el reloj
                     local waitEnd = tick() + Config.TimeStopDelay
                     while tick() < waitEnd do
                         task.wait(0.25)
@@ -535,23 +711,21 @@ task.spawn(function()
                         end
                         local checkNow = getSurvivalTimeSecondsAndLabel()
                         if checkNow and math.abs(checkNow - curSec) >= 0.01 then
-                            break -- El reloj volvió a moverse
+                            break
                         end
                         local rem = math.max(0, math.ceil(waitEnd - tick()))
                         State.Power5StatusText = string.format("Noche (%s): Activando en %ds", labelStr, rem)
                     end
 
-                    -- 2. Bucle continuo: Mientras el reloj SIGA detenido, activar Poder 5 y esperar recarga (120s)
                     while Config.Active and Config.AutoWeaponCycle and Config.Power5Mode == "EternalNightStop" do
                         local checkSec = getSurvivalTimeSecondsAndLabel()
                         if not checkSec or math.abs(checkSec - curSec) >= 0.01 then
-                            break -- Salió de la noche larga
+                            break
                         end
 
                         State.Power5StatusText = "⚡ ¡Activando Anulación -> Arma 2!"
                         triggerSystemOverrideAndReturnSlot2()
 
-                        -- Esperar los 120s de recarga del 5to poder verificando que el reloj siga quieto
                         local rechargeEnd = tick() + Config.Power5Interval
                         while tick() < rechargeEnd do
                             task.wait(0.5)
@@ -560,7 +734,7 @@ task.spawn(function()
                             end
                             local stillFrozenSec = getSurvivalTimeSecondsAndLabel()
                             if not stillFrozenSec or math.abs(stillFrozenSec - curSec) >= 0.01 then
-                                break -- El reloj volvió a avanzar durante la recarga
+                                break
                             end
                             local remCd = math.max(0, math.ceil(rechargeEnd - tick()))
                             State.Power5StatusText = string.format("Noche (%s): Recarga 5to poder (%ds)", labelStr, remCd)
@@ -588,7 +762,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 5. FÍSICA PARABÓLICA (ARCO MANUAL AMPLIO + RÁFAGA EVASIVA DE MISILES)
+-- 6. FÍSICA PARABÓLICA (CUALQUIER ALTURA + RÁFAGA EVASIVA + ANTI-TECHOS)
 -- ==============================================================================
 
 local function resetPhysicsCompletely()
@@ -596,6 +770,8 @@ local function resetPhysicsCompletely()
     State.LastRealPos = nil
     State.GroundedConfirmedSince = nil
     State.DodgeOffset = Vector3.zero
+    State.RoofAvoidJumpNeeded = false
+    State.WallSideDodge = Vector3.zero
     State.IsBurstDodging = false
     State.DodgeUntil = 0
 
@@ -634,6 +810,8 @@ RunService.Heartbeat:Connect(function()
     if not State.StartOrigin then
         State.StartOrigin = root.Position
         State.LastRealPos = root.Position
+        refreshStaticFilter()
+        refreshOverlapFilter()
         detectFloorBelow(root)
         State.Phase = "Advancing"
         State.AirStartTime = tick()
@@ -650,7 +828,7 @@ RunService.Heartbeat:Connect(function()
     local advanceDest = State.StartOrigin + (fwdDir * Config.ForwardStuds)
     local mode = Config.AntiRubberMode
 
-    -- MODO 1: PISANDO TECHO SÓLIDO
+    -- MODO 1: PISANDO TECHO SÓLIDO (INCLUYENDO TILE_120 O CUALQUIER TECHO ALTO)
     if State.Phase == "SteppingOnRoof" then
         local onSolidGround = isActuallyStandingOnSolid(root, hum)
         if onSolidGround then
@@ -703,13 +881,11 @@ RunService.Heartbeat:Connect(function()
         return
     end
 
-    -- Disparadores según modo elegido
     if State.Phase == "Advancing" or State.Phase == "Pattern" then
         if mode == "ReturnAndStep" then
             if (now - State.AirStartTime) >= Config.MaxAirTimeBeforeReturn then
                 State.Phase = "ReturningToRoof"
             end
-
         elseif mode == "WaitRubber" then
             if State.LastRealPos then
                 local jumpBackDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(State.LastRealPos.X, 0, State.LastRealPos.Z)).Magnitude
@@ -744,7 +920,7 @@ RunService.Heartbeat:Connect(function()
 
     elseif State.Phase == "Advancing" then
         State.StatusText = string.format("🦘 Avanzando al %s (%d studs)...", Config.Direction, Config.ForwardStuds)
-        targetWp = advanceDest
+        targetWp = advanceDest + State.WallSideDodge
 
         local horizDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(advanceDest.X, 0, advanceDest.Z)).Magnitude
         if horizDist <= 3.0 then
@@ -759,21 +935,25 @@ RunService.Heartbeat:Connect(function()
             wps = State.Waypoints
         end
 
-        targetWp = (wps[State.CurrentWpIndex] or advanceDest) + State.DodgeOffset
+        targetWp = (wps[State.CurrentWpIndex] or advanceDest) + State.DodgeOffset + State.WallSideDodge
 
         if State.IsBurstDodging then
             State.StatusText = string.format("🚨 ¡RÁFAGA EVASIVA: %s! | %s", State.LastThreatName, Config.Pattern)
+        elseif State.HasBossActive then
+            State.StatusText = string.format("⚠️ %s activo (+%dm altura) | %s", State.ActiveBossLabel, Config.BossExtraHeight, Config.Pattern)
+        elseif State.RoofAvoidJumpNeeded then
+            State.StatusText = string.format("🛡️ Evitando techo vecino | %s", Config.Pattern)
         elseif mode == "ReturnAndStep" then
             local left = math.max(0, Config.MaxAirTimeBeforeReturn - (now - State.AirStartTime))
             State.StatusText = string.format("🌪️ %s (%d/%d) | Pisar techo en %.1fs", Config.Pattern, State.CurrentWpIndex, #wps, left)
         else
-            State.StatusText = string.format("🌪️ %s (%d/%d) | Modo Esperar Jalón", Config.Pattern, State.CurrentWpIndex, #wps)
+            State.StatusText = string.format("🌪️ %s (%d/%d) | Y:%.0f", Config.Pattern, State.CurrentWpIndex, #wps, root.Position.Y)
         end
 
         local horizDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(targetWp.X, 0, targetWp.Z)).Magnitude
         if horizDist <= 3.8 then
             State.CurrentWpIndex = (State.CurrentWpIndex % #wps) + 1
-            targetWp = (wps[State.CurrentWpIndex] or advanceDest) + State.DodgeOffset
+            targetWp = (wps[State.CurrentWpIndex] or advanceDest) + State.DodgeOffset + State.WallSideDodge
         end
     end
 
@@ -784,7 +964,8 @@ RunService.Heartbeat:Connect(function()
     end
 
     local curVelY = root.AssemblyLinearVelocity.Y
-    local desiredY = targetWp.Y
+    local bossBoost = State.HasBossActive and Config.BossExtraHeight or 0
+    local desiredY = math.max(targetWp.Y + bossBoost, State.StartOrigin.Y + 2.0 + bossBoost)
 
     if State.Phase == "ReturningToRoof" then
         if root.Position.Y < (State.StartOrigin.Y + 1.5) then
@@ -792,7 +973,11 @@ RunService.Heartbeat:Connect(function()
             hum:ChangeState(Enum.HumanoidStateType.Jumping)
         end
     else
-        if (now - State.LastJumpPulse) >= Config.JumpPulseInterval or root.Position.Y < (desiredY - 2.0) then
+        local needJump = ((now - State.LastJumpPulse) >= Config.JumpPulseInterval)
+            or (root.Position.Y < (desiredY - 2.0))
+            or (State.RoofAvoidJumpNeeded and (now - State.LastJumpPulse) >= 0.35)
+
+        if needJump then
             State.LastJumpPulse = now
             curVelY = Config.JumpImpulseY
             hum:ChangeState(Enum.HumanoidStateType.Jumping)
@@ -807,15 +992,15 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ==============================================================================
--- 6. INTERFAZ GRÁFICA NATIVA ROBLOX (3 PESTAÑAS + CONFIGURACIÓN POR DEFECTO)
+-- 7. INTERFAZ GRÁFICA NATIVA ROBLOX (3 PESTAÑAS + CUADRADO DEL EDIFICIO)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV71")
+local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV10")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RoofAerialPilotGuiV71"
+ScreenGui.Name = "RoofAerialPilotGuiV10"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -823,7 +1008,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.35, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(20, 125, 175)
-FloatBtn.Text = "✈️\nV7.1"
+FloatBtn.Text = "✈️\nV10.0"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -845,7 +1030,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 29, 40)
-TitleBar.Text = "  ✈️ PILOTO PARABÓLICO V7.1 | RÁFAGA MISILES & RECARGA 120s"
+TitleBar.Text = "  ✈️ PILOTO PARABÓLICO V10.0 | CUADRADO EDIFICIO & CUALQUIER ALTURA"
 TitleBar.TextColor3 = Color3.fromRGB(0, 235, 255)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -908,7 +1093,7 @@ ConfigPage.Size = UDim2.new(1, 0, 1, -74)
 ConfigPage.Position = UDim2.new(0, 0, 0, 74)
 ConfigPage.BackgroundTransparency = 1
 ConfigPage.BorderSizePixel = 0
-ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 740)
+ConfigPage.CanvasSize = UDim2.new(0, 0, 0, 820)
 ConfigPage.ScrollBarThickness = 5
 ConfigPage.Visible = false
 ConfigPage.Parent = MainFrame
@@ -988,7 +1173,7 @@ local function createStepper(parent, yPos, title, getSubText, onMinus, onPlus, r
 end
 
 -- ==============================================================================
--- 7. PESTAÑA 1: CONTROL DE VUELO
+-- 8. PESTAÑA 1: CONTROL DE VUELO
 -- ==============================================================================
 
 local StatusCard = Instance.new("Frame")
@@ -1013,16 +1198,18 @@ StatusLabel.Parent = StatusCard
 
 task.spawn(function()
     while true do
-        task.wait(0.25)
-        StatusLabel.Text = string.format(
-            "Estado: %s\nSurvived: [%s] | Radar: %s (Abajo: %d)\nPoder 5: %s | Arma 2: %s",
-            State.StatusText,
-            State.DetectedHudTime,
-            Config.AutoDodgeObjects and "ON" or "OFF",
-            State.DetectedBelowCount,
-            State.Power5StatusText,
-            Config.AutoWeaponCycle and "ON" or "OFF"
-        )
+        task.wait(0.35)
+        if MainFrame.Visible and MainPage.Visible then
+            StatusLabel.Text = string.format(
+                "Estado: %s\nSurvived: [%s] | Jefes: %s | Radar: %s\nPoder 5: %s | Arma 2: %s",
+                State.StatusText,
+                State.DetectedHudTime,
+                State.ActiveBossLabel,
+                Config.AutoDodgeObjects and "ON" or "OFF",
+                State.Power5StatusText,
+                Config.AutoWeaponCycle and "ON" or "OFF"
+            )
+        end
     end
 end)
 
@@ -1053,6 +1240,9 @@ StartBtn.MouseButton1Click:Connect(function()
     if root then
         State.StartOrigin = root.Position
         State.LastRealPos = root.Position
+        refreshStaticFilter()
+        refreshOverlapFilter()
+        refreshBossFlag()
         detectFloorBelow(root)
         State.Phase = "Advancing"
         State.AirStartTime = tick()
@@ -1191,7 +1381,7 @@ Power5ModeBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 8. PESTAÑA 2: RADAR OBJETOS / MISILES / ÁCIDO
+-- 9. PESTAÑA 2: RADAR OBJETOS / MISILES / ÁCIDO
 -- ==============================================================================
 
 local RadarToggleBtn = Instance.new("TextButton")
@@ -1264,7 +1454,7 @@ createStepper(RadarPage, 322, "⏱️ DURACIÓN DE ESQUIVA (PARA ÁCIDO DE 1.5s)
 )
 
 -- ==============================================================================
--- 9. PESTAÑA 3: CONFIGURACIÓN DE VUELO (VALORES DE CAPTURA POR DEFECTO)
+-- 10. PESTAÑA 3: CONFIGURACIÓN DE VUELO (CUADRADO EDIFICIO + TIEMPOS DE CAPTURA)
 -- ==============================================================================
 
 local AntiRubberModes = {
@@ -1294,8 +1484,26 @@ AntiRubberBtn.MouseButton1Click:Connect(function()
     State.Phase = "Advancing"
 end)
 
+local AptBoxBtn = Instance.new("TextButton")
+AptBoxBtn.Size = UDim2.new(1, -24, 0, 34)
+AptBoxBtn.Position = UDim2.new(0, 10, 0, 50)
+AptBoxBtn.BackgroundColor3 = Color3.fromRGB(0, 145, 165)
+AptBoxBtn.Text = "🏢 VER CUADRADO DE EDIFICIO (APARTMENTBROKEN): ON"
+AptBoxBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+AptBoxBtn.TextSize = 9
+AptBoxBtn.Font = Enum.Font.GothamBold
+AptBoxBtn.Parent = ConfigPage
+Instance.new("UICorner", AptBoxBtn).CornerRadius = UDim.new(0, 8)
+
+AptBoxBtn.MouseButton1Click:Connect(function()
+    Config.ShowApartmentBoxDefault = not Config.ShowApartmentBoxDefault
+    setApartmentBoxesVisible(Config.ShowApartmentBoxDefault)
+    AptBoxBtn.BackgroundColor3 = Config.ShowApartmentBoxDefault and Color3.fromRGB(0, 145, 165) or Color3.fromRGB(65, 70, 85)
+    AptBoxBtn.Text = Config.ShowApartmentBoxDefault and "🏢 VER CUADRADO DE EDIFICIO (APARTMENTBROKEN): ON" or "🏢 VER CUADRADO DE EDIFICIO (APARTMENTBROKEN): OFF"
+end)
+
 -- TIEMPO 1: 15 segundos tras detenerse Survived
-createStepper(ConfigPage, 52, "⏱️ ESPERA TRAS DETENERSE RELOJ NOCHE (PODER 5)",
+createStepper(ConfigPage, 92, "⏱️ ESPERA TRAS DETENERSE RELOJ NOCHE (PODER 5)",
     function() return string.format("Actual: %d segundos tras detenerse Survived", Config.TimeStopDelay) end,
     function()
         Config.TimeStopDelay = math.max(5, Config.TimeStopDelay - 5)
@@ -1313,7 +1521,7 @@ createStepper(ConfigPage, 52, "⏱️ ESPERA TRAS DETENERSE RELOJ NOCHE (PODER 5
 )
 
 -- TIEMPO 2: 0.5 segundos tras jalón rubberband
-createStepper(ConfigPage, 106, "⏳ ESPERA TRAS JALÓN RUBBERBAND (MODO ESPERAR)",
+createStepper(ConfigPage, 146, "⏳ ESPERA TRAS JALÓN RUBBERBAND (MODO ESPERAR)",
     function() return string.format("Actual: %.1f segundos antes de volver a salir", Config.PostRubberWaitTime) end,
     function() Config.PostRubberWaitTime = math.max(0.1, Config.PostRubberWaitTime - 0.1) end,
     function() Config.PostRubberWaitTime = math.min(4.0, Config.PostRubberWaitTime + 0.1) end,
@@ -1321,7 +1529,7 @@ createStepper(ConfigPage, 106, "⏳ ESPERA TRAS JALÓN RUBBERBAND (MODO ESPERAR)
 )
 
 -- TIEMPO 3: 4.8 segundos máximo en aire
-createStepper(ConfigPage, 160, "⏱️ TIEMPO MÁX. EN EL AIRE (MODO RETORNAR TECHO)",
+createStepper(ConfigPage, 200, "⏱️ TIEMPO MÁX. EN EL AIRE (MODO RETORNAR TECHO)",
     function() return string.format("Actual: %.1f segundos en aire (límite ~6.2s)", Config.MaxAirTimeBeforeReturn) end,
     function() Config.MaxAirTimeBeforeReturn = math.max(1.5, Config.MaxAirTimeBeforeReturn - 0.2) end,
     function() Config.MaxAirTimeBeforeReturn = math.min(6.2, Config.MaxAirTimeBeforeReturn + 0.2) end,
@@ -1329,7 +1537,7 @@ createStepper(ConfigPage, 160, "⏱️ TIEMPO MÁX. EN EL AIRE (MODO RETORNAR TE
 )
 
 -- TIEMPO 4: 1.2 segundos pisando techo sólido
-createStepper(ConfigPage, 214, "👣 TIEMPO PISANDO EL TECHO SÓLIDO (MODO RETORNAR)",
+createStepper(ConfigPage, 254, "👣 TIEMPO PISANDO EL TECHO SÓLIDO (MODO RETORNAR)",
     function() return string.format("Actual: %.1f segundos confirmando pisada", Config.TouchRoofHoldTime) end,
     function() Config.TouchRoofHoldTime = math.max(0.2, Config.TouchRoofHoldTime - 0.1) end,
     function() Config.TouchRoofHoldTime = math.min(5.0, Config.TouchRoofHoldTime + 0.1) end,
@@ -1337,15 +1545,15 @@ createStepper(ConfigPage, 214, "👣 TIEMPO PISANDO EL TECHO SÓLIDO (MODO RETOR
 )
 
 -- TIEMPO 5: 1.05 segundos entre impulsos de salto
-createStepper(ConfigPage, 268, "🦘 INTERVALO ENTRE IMPULSOS DE SALTO (ARCO)",
+createStepper(ConfigPage, 308, "🦘 INTERVALO ENTRE IMPULSOS DE SALTO (ARCO)",
     function() return string.format("Actual: Cada %.2f segundos (Fuerza Y: %.0f)", Config.JumpPulseInterval, Config.JumpImpulseY) end,
     function() Config.JumpPulseInterval = math.max(0.40, Config.JumpPulseInterval - 0.05) end,
     function() Config.JumpPulseInterval = math.min(1.60, Config.JumpPulseInterval + 0.05) end,
     false
 )
 
--- TIEMPO 6: 120 segundos de recarga del Poder 5 (reactiva en noche o modo fijo)
-createStepper(ConfigPage, 322, "⚡ RECARGA / TEMPORIZADOR PODER 5 (SEGUNDOS)",
+-- TIEMPO 6: 120 segundos de recarga del Poder 5
+createStepper(ConfigPage, 362, "⚡ RECARGA / TEMPORIZADOR PODER 5 (SEGUNDOS)",
     function() return string.format("Actual: Cada %d segundos", Config.Power5Interval) end,
     function()
         Config.Power5Interval = math.max(10, Config.Power5Interval - 10)
@@ -1367,7 +1575,7 @@ createStepper(ConfigPage, 322, "⚡ RECARGA / TEMPORIZADOR PODER 5 (SEGUNDOS)",
 )
 
 -- TIEMPO 7: Pausa activación Anulación del Sistema
-createStepper(ConfigPage, 376, "⏳ PAUSA ACTIVACIÓN 'ANULACIÓN DEL SISTEMA' (SEG)",
+createStepper(ConfigPage, 416, "⏳ PAUSA ACTIVACIÓN 'ANULACIÓN DEL SISTEMA' (SEG)",
     function() return string.format("Actual: %.2f segundos antes de equipar Arma 2", Config.Power5CastWait) end,
     function() Config.Power5CastWait = math.max(0.05, Config.Power5CastWait - 0.05) end,
     function() Config.Power5CastWait = math.min(1.50, Config.Power5CastWait + 0.05) end,
@@ -1375,28 +1583,28 @@ createStepper(ConfigPage, 376, "⏳ PAUSA ACTIVACIÓN 'ANULACIÓN DEL SISTEMA' (
 )
 
 -- DISTANCIAS Y VELOCIDADES
-createStepper(ConfigPage, 430, "➡️ DISTANCIA AVANCE INICIAL (STUDS)",
+createStepper(ConfigPage, 470, "➡️ DISTANCIA AVANCE INICIAL (STUDS)",
     function() return string.format("Actual: %d studs hacia delante", Config.ForwardStuds) end,
     function() Config.ForwardStuds = math.max(5, Config.ForwardStuds - 5) end,
     function() Config.ForwardStuds = math.min(120, Config.ForwardStuds + 5) end,
     true
 )
 
-createStepper(ConfigPage, 484, "🔄 AMPLITUD DE FORMA (CÍRCULO / I INVERTIDA / ETC.)",
+createStepper(ConfigPage, 524, "🔄 AMPLITUD DE FORMA (CÍRCULO / I INVERTIDA / ETC.)",
     function() return string.format("Actual: %d studs de radio / amplitud", Config.PatternRadius) end,
     function() Config.PatternRadius = math.max(8, Config.PatternRadius - 2) end,
     function() Config.PatternRadius = math.min(60, Config.PatternRadius + 2) end,
     true
 )
 
-createStepper(ConfigPage, 538, "✈️ VELOCIDAD HORIZONTAL CRUCERO (STUDS/S)",
+createStepper(ConfigPage, 578, "✈️ VELOCIDAD HORIZONTAL CRUCERO (STUDS/S)",
     function() return string.format("Actual: %.1f studs/s (30.0 = límite sin jalón previo)", Config.FlySpeed) end,
     function() Config.FlySpeed = math.max(15.0, Config.FlySpeed - 1.5) end,
     function() Config.FlySpeed = math.min(60.0, Config.FlySpeed + 1.5) end,
     false
 )
 
-createStepper(ConfigPage, 592, "📏 UMBRAL DETECCIÓN TIRÓN RUBBERBAND (STUDS)",
+createStepper(ConfigPage, 632, "📏 UMBRAL DETECCIÓN TIRÓN RUBBERBAND (STUDS)",
     function() return string.format("Actual: >%d studs de retroceso repentino", Config.RubberbandDetectDist) end,
     function() Config.RubberbandDetectDist = math.max(4, Config.RubberbandDetectDist - 2) end,
     function() Config.RubberbandDetectDist = math.min(40, Config.RubberbandDetectDist + 2) end,
