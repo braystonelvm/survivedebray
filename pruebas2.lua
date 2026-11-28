@@ -1,5 +1,5 @@
 -- ==============================================================================
--- PILOTO AÉREO PARABÓLICO V10.1 (VALORES DE CAPTURA POR DEFECTO)
+-- PILOTO AÉREO PARABÓLICO V11.0 (ESCUDO TOTAL CYBORG / EXPERIMENT / SPITTER)
 -- ==============================================================================
 
 local Players = game:GetService("Players")
@@ -46,16 +46,16 @@ local Config = {
     RubberbandDetectDist = 12,     -- Actual: >12 studs de retroceso repentino
     PostRubberWaitTime = 0.5,      -- Actual: 0.5 segundos antes de volver a salir
 
-    -- Radar Anti-Misiles (Tyrant) / Ácido Ancho (Experiment) con Ráfaga Rápida
+    -- Radar Forense (Missile, Spit, BlightSpit, Boulder, AcidPool, StalkerSlash)
     AutoDodgeObjects = true,
-    BossExtraHeight = 8,
-    RadarHorizRadius = 26,
-    RadarDownDepth = 55,
-    DodgeTriggerDist = 24,
-    DodgeBurstSpeed = 70,
-    DodgeSideStuds = 16,
-    DodgeUpStuds = 9,
-    DodgeHoldSeconds = 1.6,
+    BossExtraHeight = 8,        -- Altura extra cuando Cyborg, Experiment o Tyrant están vivos
+    RadarHorizRadius = 32,      -- Radio ampliado para salva de 7 misiles del Cyborg
+    RadarDownDepth = 60,        -- Vigilancia hacia abajo (studs)
+    DodgeTriggerDist = 28,      -- Distancia a la que dispara el quiebre evasivo
+    DodgeBurstSpeed = 72,       -- Ráfaga rápida para romper el giro de los misiles (40 studs/s)
+    DodgeSideStuds = 18,        -- Corte lateral amplio
+    DodgeUpStuds = 10,          -- Elevación rápida al esquivar
+    DodgeHoldSeconds = 1.6,     -- Mantiene la maniobra evasiva
 
     -- Poder 5 ("Anulación del Sistema") vinculado al Reloj de Noche Larga
     AutoWeaponCycle = true,
@@ -84,7 +84,7 @@ local State = {
     RoofAvoidJumpNeeded = false,
     WallSideDodge = Vector3.zero,
 
-    -- Jefes Tyrant / Experiment bajo demanda
+    -- Jefes Cyborg / Experiment / Tyrant bajo demanda
     HasBossActive = false,
     ActiveBossLabel = "Ninguno",
 
@@ -165,7 +165,7 @@ if Config.ShowApartmentBoxDefault then
 end
 
 -- ==============================================================================
--- 2. FILTROS OPTIMIZADOS (0% LAG CON 300 ZOMBIS) + DETECCIÓN BAJO DEMANDA
+-- 2. FILTROS OPTIMIZADOS (0% LAG CON 300 ZOMBIS) + RADAR DE MISILES / SPIT / BOULDER
 -- ==============================================================================
 
 local envRayParams = RaycastParams.new()
@@ -188,6 +188,10 @@ local function refreshOverlapFilter()
     if lp.Character then table.insert(ignore, lp.Character) end
     local charsFolder = workspace:FindFirstChild("Characters")
     if charsFolder then table.insert(ignore, charsFolder) end
+    local mapFolder = workspace:FindFirstChild("Map")
+    if mapFolder then table.insert(ignore, mapFolder) end
+    local droppedFolder = workspace:FindFirstChild("DroppedItems")
+    if droppedFolder then table.insert(ignore, droppedFolder) end
     if State.RoofPart then table.insert(ignore, State.RoofPart) end
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr.Character then table.insert(ignore, plr.Character) end
@@ -195,65 +199,49 @@ local function refreshOverlapFilter()
     overlapParams.FilterDescendantsInstances = ignore
 end
 
-local function isTeammateOrSelf(part)
-    local char = lp.Character
-    if char and part:IsDescendantOf(char) then return true end
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr.Character and part:IsDescendantOf(plr.Character) then
-            return true
-        end
+-- Clasifica exactamente los proyectiles reales descubiertos en los logs forenses
+-- (Todos viajan con Anchored=true y Vel=0 mediante interpolación de CFrame)
+local function classifyCapturedHazard(part)
+    if not part or not part:IsA("BasePart") then return nil end
+
+    local pName = part.Name
+    local parentName = part.Parent and part.Parent.Name or ""
+
+    if pName == "Missile" or parentName == "Missile" then
+        return "Missile"
+    elseif pName == "Spit" or parentName == "Spit" or pName == "BlightSpit" or parentName == "BlightSpit" then
+        return "Spit"
+    elseif pName == "Boulder" or parentName == "Boulder" then
+        return "Boulder"
+    elseif pName == "AcidPool" or parentName == "AcidPool" then
+        return "AcidPool"
+    elseif pName == "StalkerSlash" or parentName == "StalkerSlash" then
+        return "StalkerSlash"
     end
-    return false
+
+    return nil
 end
 
-local function isHostileProjectileOrHazard(part)
-    if not part or not part:IsA("BasePart") then return false end
-    if part == State.RoofPart then return false end
-    if isTeammateOrSelf(part) then return false end
-
-    local maxDim = math.max(part.Size.X, part.Size.Y, part.Size.Z)
-    if maxDim > 28 and part.Anchored and part.AssemblyLinearVelocity.Magnitude < 0.5 then
-        return false
-    end
-
-    if not part.Anchored or part.AssemblyLinearVelocity.Magnitude > 1.5 then
-        return true
-    end
-
-    local lowName = part.Name:lower()
-    local parentName = part.Parent and part.Parent.Name:lower() or ""
-    if lowName:find("acid") or lowName:find("missile") or lowName:find("rocket")
-        or lowName:find("proj") or lowName:find("spit") or lowName:find("goo")
-        or lowName:find("liquid") or lowName:find("hazard") or lowName:find("bomb")
-        or parentName:find("projectiles") or parentName:find("effects") or parentName:find("debris") then
-        return true
-    end
-
-    return false
-end
-
+-- Rastreo por eventos de Cyborg, Experiment y Tyrant (0% bucle sobre los 300 zombies)
 local trackedBossModels = {}
 local function refreshBossFlag()
-    local foundTyrant, foundExp = false, false
+    local foundCyborg, foundExp, foundTyrant = false, false, false
     for m, kind in pairs(trackedBossModels) do
         local hum = m and m.Parent and m:FindFirstChildOfClass("Humanoid")
         if hum and hum.Health > 0 and m:GetAttribute("Dead") ~= true then
-            if kind == "Tyrant" then foundTyrant = true end
+            if kind == "Cyborg" then foundCyborg = true end
             if kind == "Experiment" then foundExp = true end
+            if kind == "Tyrant" then foundTyrant = true end
         else
             trackedBossModels[m] = nil
         end
     end
-    State.HasBossActive = (foundTyrant or foundExp)
-    if foundTyrant and foundExp then
-        State.ActiveBossLabel = "Tyrant + Experiment"
-    elseif foundTyrant then
-        State.ActiveBossLabel = "Tyrant"
-    elseif foundExp then
-        State.ActiveBossLabel = "Experiment"
-    else
-        State.ActiveBossLabel = "Ninguno"
-    end
+    State.HasBossActive = (foundCyborg or foundExp or foundTyrant)
+    local names = {}
+    if foundCyborg then table.insert(names, "Cyborg") end
+    if foundExperiment then table.insert(names, "Experiment") end
+    if foundTyrant then table.insert(names, "Tyrant") end
+    State.ActiveBossLabel = (#names > 0) and table.concat(names, "+") or "Ninguno"
 end
 
 task.spawn(function()
@@ -261,11 +249,14 @@ task.spawn(function()
     local function checkModel(m)
         if m and m:IsA("Model") then
             local low = m.Name:lower()
-            if low:find("tyrant", 1, true) then
-                trackedBossModels[m] = "Tyrant"
+            if low:find("cyborg", 1, true) then
+                trackedBossModels[m] = "Cyborg"
                 refreshBossFlag()
             elseif low:find("experiment", 1, true) then
                 trackedBossModels[m] = "Experiment"
+                refreshBossFlag()
+            elseif low:find("tyrant", 1, true) then
+                trackedBossModels[m] = "Tyrant"
                 refreshBossFlag()
             end
         end
@@ -280,9 +271,11 @@ task.spawn(function()
     end)
 end)
 
+-- Bucle ligero (cada 0.10s) que calcula la trayectoria real por cambio de posición CFrame
 task.spawn(function()
     local filterTick = 0
     local jinkTick = 0
+    local prevPositions = setmetatable({}, {__mode = "k"}) -- Tabla débil: no fuga memoria
 
     while true do
         task.wait(0.10)
@@ -309,6 +302,7 @@ task.spawn(function()
 
         local myPos = root.Position
 
+        -- A. Escudo anti-pisada de techos vecinos al ampliar radio/avance
         if Config.AvoidOtherRoofs and (State.Phase == "Advancing" or State.Phase == "Pattern") then
             local floorHit = workspace:Raycast(myPos, Vector3.new(0, -Config.FloorClearanceStuds, 0), envRayParams)
             State.RoofAvoidJumpNeeded = (floorHit ~= nil)
@@ -331,53 +325,65 @@ task.spawn(function()
             State.WallSideDodge = Vector3.zero
         end
 
+        -- B. Radar Forense de Proyectiles CFrame (Missile, Spit, BlightSpit, Boulder, AcidPool)
         if Config.AutoDodgeObjects then
             local maxHoriz = math.max(Config.RadarHorizRadius, Config.DodgeTriggerDist)
             local downDepth = Config.RadarDownDepth
-            local boxSize = Vector3.new(maxHoriz * 2, downDepth + 14, maxHoriz * 2)
-            local boxCenter = myPos - Vector3.new(0, (downDepth - 14) * 0.5, 0)
+            local boxSize = Vector3.new(maxHoriz * 2, downDepth + 18, maxHoriz * 2)
+            local boxCenter = myPos - Vector3.new(0, (downDepth - 18) * 0.5, 0)
             local partsInBox = workspace:GetPartBoundsInBox(CFrame.new(boxCenter), boxSize, overlapParams)
 
             local closestThreatPos = nil
-            local closestThreatVel = Vector3.zero
+            local closestEstimatedVel = Vector3.zero
             local closestDist = math.huge
-            local closestName = "Objeto"
+            local closestType = nil
             local belowAlerts = 0
 
             for _, part in ipairs(partsInBox) do
-                if isHostileProjectileOrHazard(part) then
+                local hazardType = classifyCapturedHazard(part)
+                if hazardType then
                     local pPos = part.Position
-                    local dist = (pPos - myPos).Magnitude
+                    local prevP = prevPositions[part]
+                    prevPositions[part] = pPos
 
+                    -- Calcular velocidad real por diferencia de CFrame (ya que Vel es 0)
+                    local estVel = prevP and ((pPos - prevP) / 0.10) or part.AssemblyLinearVelocity
+
+                    local dist = (pPos - myPos).Magnitude
                     if pPos.Y < myPos.Y and (myPos.Y - pPos.Y) <= downDepth then
                         belowAlerts = belowAlerts + 1
                     end
 
-                    if dist <= Config.DodgeTriggerDist and dist < closestDist then
-                        closestDist = dist
+                    -- Priorizar Missile sobre otros proyectiles si está dentro del rango
+                    local effectiveDist = (hazardType == "Missile") and (dist * 0.8) or dist
+                    if dist <= Config.DodgeTriggerDist and effectiveDist < closestDist then
+                        closestDist = effectiveDist
                         closestThreatPos = pPos
-                        closestThreatVel = part.AssemblyLinearVelocity
-                        closestName = part.Name
+                        closestEstimatedVel = estVel
+                        closestType = hazardType
                     end
                 end
             end
 
             State.DetectedBelowCount = belowAlerts
 
-            if closestThreatPos then
+            if closestThreatPos and closestType then
                 local awayVec = Vector3.new(myPos.X - closestThreatPos.X, 0, myPos.Z - closestThreatPos.Z)
                 local sideDir
-                if closestThreatVel.Magnitude > 2.0 then
-                    local velHoriz = Vector3.new(closestThreatVel.X, 0, closestThreatVel.Z)
+
+                if closestEstimatedVel.Magnitude > 2.0 then
+                    local velHoriz = Vector3.new(closestEstimatedVel.X, 0, closestEstimatedVel.Z)
                     if velHoriz.Magnitude > 0.2 then
                         local perp = Vector3.new(-velHoriz.Z, 0, velHoriz.X).Unit
-                        if closestName:lower():find("missile") or closestName:lower():find("rocket") then
+                        if closestType == "Missile" then
+                            -- Contra misiles teledirigidos del Cyborg: quiebre brusco alternando cada 0.35s para romper su giro
                             if (now - jinkTick) >= 0.35 then
                                 jinkTick = now
                                 State.MissileJinkSign = -State.MissileJinkSign
                             end
                             sideDir = perp * State.MissileJinkSign
                         else
+                            -- Contra Spit, Boulder o AcidPool: corte perpendicular hacia el lado despejado
                             sideDir = (perp:Dot(awayVec) >= 0) and perp or -perp
                         end
                     end
@@ -390,7 +396,7 @@ task.spawn(function()
                 State.DodgeOffset = (sideDir * Config.DodgeSideStuds) + Vector3.new(0, Config.DodgeUpStuds, 0)
                 State.DodgeUntil = now + Config.DodgeHoldSeconds
                 State.IsBurstDodging = true
-                State.LastThreatName = string.format("%s (%.0fm)", closestName, closestDist)
+                State.LastThreatName = string.format("%s (%.0fm)", closestType, (closestThreatPos - myPos).Magnitude)
             elseif now >= State.DodgeUntil then
                 State.DodgeOffset = Vector3.zero
                 State.IsBurstDodging = false
@@ -814,7 +820,7 @@ task.spawn(function()
 end)
 
 -- ==============================================================================
--- 6. FÍSICA PARABÓLICA (CUALQUIER ALTURA + RÁFAGA EVASIVA + ANTI-TECHOS)
+-- 6. FÍSICA PARABÓLICA (CUALQUIER ALTURA + RÁFAGA ANTI-MISILES CYBORG)
 -- ==============================================================================
 
 local function resetPhysicsCompletely()
@@ -971,7 +977,7 @@ RunService.Heartbeat:Connect(function()
 
     elseif State.Phase == "Advancing" then
         State.StatusText = string.format("🦘 Avanzando al %s (%d studs)...", Config.Direction, Config.ForwardStuds)
-        targetWp = advanceDest + State.WallSideDodge
+        targetWp = advanceDest + State.WallSideDodge + State.DodgeOffset
 
         local horizDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(advanceDest.X, 0, advanceDest.Z)).Magnitude
         if horizDist <= 3.0 then
@@ -989,7 +995,7 @@ RunService.Heartbeat:Connect(function()
         targetWp = (wps[State.CurrentWpIndex] or advanceDest) + State.DodgeOffset + State.WallSideDodge
 
         if State.IsBurstDodging then
-            State.StatusText = string.format("🚨 ¡RÁFAGA EVASIVA: %s! | %s", State.LastThreatName, Config.Pattern)
+            State.StatusText = string.format("🚨 ¡ESQUIVA %s! | %s", State.LastThreatName, Config.Pattern)
         elseif State.HasBossActive then
             State.StatusText = string.format("⚠️ %s activo (+%dm altura) | %s", State.ActiveBossLabel, Config.BossExtraHeight, Config.Pattern)
         elseif State.RoofAvoidJumpNeeded then
@@ -1043,15 +1049,15 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ==============================================================================
--- 7. INTERFAZ GRÁFICA NATIVA ROBLOX (3 PESTAÑAS + CUADRADO DEL EDIFICIO)
+-- 7. INTERFAZ GRÁFICA NATIVA ROBLOX (3 PESTAÑAS + ESCUDO FORENSE COMPLETO)
 -- ==============================================================================
 
 local GuiParent = gethui and gethui() or (CoreGui:FindFirstChild("RobloxGui") or lp:WaitForChild("PlayerGui"))
-local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV101")
+local existing = GuiParent:FindFirstChild("RoofAerialPilotGuiV11")
 if existing then existing:Destroy() end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "RoofAerialPilotGuiV101"
+ScreenGui.Name = "RoofAerialPilotGuiV11"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = GuiParent
 
@@ -1059,7 +1065,7 @@ local FloatBtn = Instance.new("TextButton")
 FloatBtn.Size = UDim2.new(0, 54, 0, 54)
 FloatBtn.Position = UDim2.new(0.04, 0, 0.35, 0)
 FloatBtn.BackgroundColor3 = Color3.fromRGB(20, 125, 175)
-FloatBtn.Text = "✈️\nV10.1"
+FloatBtn.Text = "✈️\nV11.0"
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 FloatBtn.TextSize = 10
 FloatBtn.Font = Enum.Font.GothamBold
@@ -1081,7 +1087,7 @@ Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local TitleBar = Instance.new("TextLabel")
 TitleBar.Size = UDim2.new(1, 0, 0, 34)
 TitleBar.BackgroundColor3 = Color3.fromRGB(24, 29, 40)
-TitleBar.Text = "  ✈️ PILOTO PARABÓLICO V10.1 | CICLO RELOJ DETENIDO & UNEQUIP ARMA 2"
+TitleBar.Text = "  ✈️ PILOTO PARABÓLICO V11.0 | ESCUDO MISILES CYBORG & SPIT (0% LAG)"
 TitleBar.TextColor3 = Color3.fromRGB(0, 235, 255)
 TitleBar.TextSize = 10
 TitleBar.Font = Enum.Font.GothamBold
@@ -1134,7 +1140,7 @@ RadarPage.Size = UDim2.new(1, 0, 1, -74)
 RadarPage.Position = UDim2.new(0, 0, 0, 74)
 RadarPage.BackgroundTransparency = 1
 RadarPage.BorderSizePixel = 0
-RadarPage.CanvasSize = UDim2.new(0, 0, 0, 390)
+RadarPage.CanvasSize = UDim2.new(0, 0, 0, 450)
 RadarPage.ScrollBarThickness = 5
 RadarPage.Visible = false
 RadarPage.Parent = MainFrame
@@ -1432,14 +1438,14 @@ Power5ModeBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==============================================================================
--- 9. PESTAÑA 2: RADAR OBJETOS / MISILES / ÁCIDO
+-- 9. PESTAÑA 2: RADAR FORENSE (MISSILE / SPIT / BLIGHTSPIT / BOULDER / ACIDPOOL)
 -- ==============================================================================
 
 local RadarToggleBtn = Instance.new("TextButton")
 RadarToggleBtn.Size = UDim2.new(1, -24, 0, 38)
 RadarToggleBtn.Position = UDim2.new(0, 10, 0, 6)
 RadarToggleBtn.BackgroundColor3 = Color3.fromRGB(30, 155, 95)
-RadarToggleBtn.Text = "🛡️ EVADIR MISILES Y ÁCIDO CON RÁFAGA (IGNORA COMPAÑEROS): ON"
+RadarToggleBtn.Text = "🛡️ ESCUDO MISSILE (CYBORG), SPIT Y BOULDER (0% LAG): ON"
 RadarToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 RadarToggleBtn.TextSize = 9
 RadarToggleBtn.Font = Enum.Font.GothamBold
@@ -1449,55 +1455,62 @@ Instance.new("UICorner", RadarToggleBtn).CornerRadius = UDim.new(0, 8)
 RadarToggleBtn.MouseButton1Click:Connect(function()
     Config.AutoDodgeObjects = not Config.AutoDodgeObjects
     RadarToggleBtn.BackgroundColor3 = Config.AutoDodgeObjects and Color3.fromRGB(30, 155, 95) or Color3.fromRGB(65, 70, 85)
-    RadarToggleBtn.Text = Config.AutoDodgeObjects and "🛡️ EVADIR MISILES Y ÁCIDO CON RÁFAGA (IGNORA COMPAÑEROS): ON" or "🛡️ EVADIR MISILES Y ÁCIDO: OFF"
+    RadarToggleBtn.Text = Config.AutoDodgeObjects and "🛡️ ESCUDO MISSILE (CYBORG), SPIT Y BOULDER (0% LAG): ON" or "🛡️ ESCUDO PROYECTILES: OFF"
     if not Config.AutoDodgeObjects then
         State.DodgeOffset = Vector3.zero
         State.IsBurstDodging = false
     end
 end)
 
-createStepper(RadarPage, 52, "⚡ VELOCIDAD RÁFAGA EVASIVA (MISILES)",
+createStepper(RadarPage, 52, "⬆️ ALTURA EXTRA AL DETECTAR CYBORG / EXPERIMENT",
+    function() return string.format("Actual: +%d studs extra en el aire", Config.BossExtraHeight) end,
+    function() Config.BossExtraHeight = math.max(0, Config.BossExtraHeight - 2) end,
+    function() Config.BossExtraHeight = math.min(25, Config.BossExtraHeight + 2) end,
+    false
+)
+
+createStepper(RadarPage, 106, "⚡ VELOCIDAD RÁFAGA EVASIVA (MISILES 40m/s)",
     function() return string.format("Actual: %d studs/s al detectar proyectil", Config.DodgeBurstSpeed) end,
     function() Config.DodgeBurstSpeed = math.max(35, Config.DodgeBurstSpeed - 5) end,
     function() Config.DodgeBurstSpeed = math.min(120, Config.DodgeBurstSpeed + 5) end,
     false
 )
 
-createStepper(RadarPage, 106, "📡 RADIO VIGILANCIA ALREDEDOR (STUDS)",
+createStepper(RadarPage, 160, "📡 RADIO VIGILANCIA ALREDEDOR (STUDS)",
     function() return string.format("Actual: %d studs alrededor de tu personaje", Config.RadarHorizRadius) end,
-    function() Config.RadarHorizRadius = math.max(8, Config.RadarHorizRadius - 2) end,
+    function() Config.RadarHorizRadius = math.max(10, Config.RadarHorizRadius - 2) end,
     function() Config.RadarHorizRadius = math.min(60, Config.RadarHorizRadius + 2) end,
     false
 )
 
-createStepper(RadarPage, 160, "⬇️ VIGILANCIA CONSTANTE HACIA ABAJO (STUDS)",
+createStepper(RadarPage, 214, "⬇️ VIGILANCIA CONSTANTE HACIA ABAJO (STUDS)",
     function() return string.format("Actual: %d studs debajo de ti", Config.RadarDownDepth) end,
     function() Config.RadarDownDepth = math.max(15, Config.RadarDownDepth - 5) end,
     function() Config.RadarDownDepth = math.min(120, Config.RadarDownDepth + 5) end,
     false
 )
 
-createStepper(RadarPage, 214, "🚨 DISTANCIA DE ESQUIVA INMEDIATA (STUDS)",
-    function() return string.format("Actual: Esquiva cuando el objeto esté a <%d studs", Config.DodgeTriggerDist) end,
-    function() Config.DodgeTriggerDist = math.max(8, Config.DodgeTriggerDist - 2) end,
-    function() Config.DodgeTriggerDist = math.min(45, Config.DodgeTriggerDist + 2) end,
+createStepper(RadarPage, 268, "🚨 DISTANCIA DE ESQUIVA INMEDIATA (STUDS)",
+    function() return string.format("Actual: Esquiva cuando el misil/ácido esté a <%d studs", Config.DodgeTriggerDist) end,
+    function() Config.DodgeTriggerDist = math.max(10, Config.DodgeTriggerDist - 2) end,
+    function() Config.DodgeTriggerDist = math.min(50, Config.DodgeTriggerDist + 2) end,
     false
 )
 
-createStepper(RadarPage, 268, "↗️ DESPLAZAMIENTO AL ESQUIVAR (LADO / ARRIBA)",
+createStepper(RadarPage, 322, "↗️ DESPLAZAMIENTO AL ESQUIVAR (LADO / ARRIBA)",
     function() return string.format("Actual: %d studs lateral / +%d studs arriba", Config.DodgeSideStuds, Config.DodgeUpStuds) end,
     function()
-        Config.DodgeSideStuds = math.max(6, Config.DodgeSideStuds - 2)
+        Config.DodgeSideStuds = math.max(8, Config.DodgeSideStuds - 2)
         Config.DodgeUpStuds = math.max(2, Config.DodgeUpStuds - 1)
     end,
     function()
-        Config.DodgeSideStuds = math.min(35, Config.DodgeSideStuds + 2)
-        Config.DodgeUpStuds = math.min(18, Config.DodgeUpStuds + 1)
+        Config.DodgeSideStuds = math.min(40, Config.DodgeSideStuds + 2)
+        Config.DodgeUpStuds = math.min(20, Config.DodgeUpStuds + 1)
     end,
     false
 )
 
-createStepper(RadarPage, 322, "⏱️ DURACIÓN DE ESQUIVA (PARA ÁCIDO DE 1.5s)",
+createStepper(RadarPage, 376, "⏱️ DURACIÓN DE ESQUIVA (SEGUNDOS)",
     function() return string.format("Actual: Mantiene esquiva por %.1f segundos", Config.DodgeHoldSeconds) end,
     function() Config.DodgeHoldSeconds = math.max(0.6, Config.DodgeHoldSeconds - 0.2) end,
     function() Config.DodgeHoldSeconds = math.min(5.0, Config.DodgeHoldSeconds + 0.2) end,
